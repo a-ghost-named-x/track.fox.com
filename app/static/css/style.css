@@ -1,0 +1,184 @@
+:root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --good: #2ea043;
+    --bad: #da3633;
+    --accent: #58a6ff;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+/* ---------- Dashboard (BrightSign display) ---------- */
+
+.dashboard {
+    padding: 2rem 3rem;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.dashboard-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 1.5rem;
+}
+
+.dashboard-header h1 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: 0.02em;
+}
+
+.dashboard-date {
+    font-size: 1.25rem;
+    color: var(--text-dim);
+}
+
+.grid {
+    width: 100%;
+    border-collapse: collapse;
+    flex: 1;
+}
+
+.grid th,
+.grid td {
+    border: 1px solid var(--border);
+    padding: 1rem;
+    text-align: center;
+    font-size: 1.5rem;
+}
+
+.grid thead th {
+    background: var(--surface);
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 1.1rem;
+}
+
+.machine-col {
+    font-weight: 700;
+    font-size: 1.75rem;
+    background: var(--surface);
+    text-align: left;
+    width: 10%;
+}
+
+.cell {
+    font-weight: 700;
+}
+
+.cell[data-status=":)"] {
+    color: var(--good);
+    background: rgba(46, 160, 67, 0.12);
+}
+
+.cell[data-status=":("] {
+    color: var(--bad);
+    background: rgba(218, 54, 51, 0.12);
+}
+
+.dashboard-footer {
+    margin-top: 1rem;
+    text-align: right;
+    color: var(--text-dim);
+    font-size: 1rem;
+}
+
+/* ---------- Console (entry form) ---------- */
+
+.console {
+    max-width: 480px;
+    margin: 3rem auto;
+    padding: 0 1.5rem;
+}
+
+.console h1 {
+    font-size: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.entry-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.entry-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    font-size: 0.95rem;
+    color: var(--text-dim);
+}
+
+.optional {
+    font-style: italic;
+}
+
+.entry-form input,
+.entry-form select,
+.entry-form textarea {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 0.65rem 0.75rem;
+    font-size: 1rem;
+    font-family: inherit;
+}
+
+.entry-form input:focus,
+.entry-form select:focus,
+.entry-form textarea:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.entry-form button {
+    margin-top: 0.5rem;
+    background: var(--accent);
+    color: #0d1117;
+    border: none;
+    border-radius: 6px;
+    padding: 0.85rem;
+    font-size: 1.05rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.entry-form button:hover {
+    filter: brightness(1.1);
+}
+
+.banner {
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    font-size: 0.95rem;
+}
+
+.banner-success {
+    background: rgba(46, 160, 67, 0.15);
+    color: var(--good);
+    border: 1px solid var(--good);
+}
+
+.banner-error {
+    background: rgba(218, 54, 51, 0.15);
+    color: var(--bad);
+    border: 1px solid var(--bad);
+}

@@ -1,0 +1,37 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    # No volumes mounted in prod; for local dev, uncomment to live-reload:
+    # volumes:
+    #   - ./app:/app/app
+    # command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      # Bootstrap/superuser identity, used ONLY for initialization. The app
+      # never connects with this — see APP_DB_USER/PASSWORD below, which the
+      # app actually uses (created by 01_roles.sh as a non-superuser role).
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+      # Passed through to 01_roles.sh to create the app's low-privilege role.
+      APP_DB_USER: ${POSTGRES_USER}
+      APP_DB_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/01_roles.sh:/docker-entrypoint-initdb.d/01_roles.sh:ro
+      - ./sql/02_schema.sql:/docker-entrypoint-initdb.d/02_schema.sql:ro
+      - ./sql/03_seed_standards.sql:/docker-entrypoint-initdb.d/03_seed_standards.sql:ro
+    # No "ports" mapping — db is only reachable from `app` over the internal
+    # Docker network, per the architecture doc's no-exposed-port decision.
+
+volumes:
+  pgdata:

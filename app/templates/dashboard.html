@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Floor Dashboard{% endblock %}
+{% block content %}
+<div class="dashboard">
+    <header class="dashboard-header">
+        <h1>Production Status</h1>
+        <span class="dashboard-date" id="dashboard-date"></span>
+    </header>
+
+    <table class="grid" id="grid">
+        <thead>
+            <tr>
+                <th class="machine-col">Machine</th>
+                {% for slot in time_slots %}
+                <th>{{ slot }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody id="grid-body">
+            {% for machine in machine_ids %}
+            <tr data-machine="{{ machine }}">
+                <td class="machine-col">{{ machine }}</td>
+                {% for slot in time_slots %}
+                <td class="cell" data-slot="{{ slot }}">—</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <footer class="dashboard-footer">
+        <span id="last-updated">Loading…</span>
+    </footer>
+</div>
+
+<script>
+    window.POLL_INTERVAL_MS = {{ poll_interval_ms }};
+</script>
+<script src="/static/js/dashboard.js"></script>
+{% endblock %}

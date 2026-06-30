@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Entry Console{% endblock %}
+{% block content %}
+<div class="console">
+    <h1>Log Production Entry</h1>
+
+    {% if request.query_params.get('submitted') %}
+    <p class="banner banner-success">Entry saved.</p>
+    {% endif %}
+
+    {% if error %}
+    <p class="banner banner-error">{{ error }}</p>
+    {% endif %}
+
+    <form method="post" action="/console" class="entry-form">
+        <label>
+            Machine
+            <select name="machine_id" required>
+                <option value="" disabled selected>Select machine</option>
+                {% for machine in machine_ids %}
+                <option value="{{ machine }}">{{ machine }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label>
+            Operator
+            <input type="text" name="operator" required maxlength="100">
+        </label>
+
+        <label>
+            Time slot
+            <select name="time_slot" required>
+                <option value="" disabled selected>Select time</option>
+                {% for slot in time_slots %}
+                <option value="{{ slot }}">{{ slot }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label>
+            Units produced (cumulative for the day)
+            <input type="number" name="units_produced" min="0" required>
+        </label>
+
+        <label>
+            Issue <span class="optional">(optional)</span>
+            <textarea name="issue" maxlength="500" rows="3"></textarea>
+        </label>
+
+        <label>
+            Your employee number
+            <input type="text" name="entered_by" required maxlength="20">
+        </label>
+
+        <input type="hidden" name="entry_date" value="{{ today }}">
+
+        <button type="submit">Save entry</button>
+    </form>
+</div>
+{% endblock %}
