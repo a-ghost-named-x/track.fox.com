@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
 # --- ODBC driver for MSSQL (pyodbc needs the system driver, not just the pip package) ---
 # Following Microsoft's official instructions for Debian-based images.
