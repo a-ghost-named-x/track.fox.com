@@ -48,7 +48,8 @@ async function refreshDashboard() {
 
             // Status is conveyed by color (data-status drives the CSS), not
             // by appending ":)"/":(" text — keeps the cell to just the number.
-            cell.querySelector(".cell-value").textContent = `${entry.units_produced}`;
+            // toLocaleString adds thousands separators (e.g. 1,234).
+            cell.querySelector(".cell-value").textContent = entry.units_produced.toLocaleString("en-US");
             cell.setAttribute("data-status", entry.status);
         }
 
