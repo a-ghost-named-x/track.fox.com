@@ -96,12 +96,17 @@ body {
     font-weight: 700;
 }
 
-.issue-badge {
-    display: inline-block;
-    margin-left: 0.4rem;
+.issue-col {
+    text-align: left;
     font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    width: 18%;
+}
+
+.issue-col.has-issue {
     color: #d29922;
-    cursor: default;
+    background: rgba(210, 153, 34, 0.15);
 }
 
 .slot-hidden {

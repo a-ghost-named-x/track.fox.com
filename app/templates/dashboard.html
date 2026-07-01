@@ -15,6 +15,7 @@
                 {% for slot in time_slots %}
                 <th data-slot="{{ slot }}"{% if slot not in active_slots %} class="slot-hidden"{% endif %}>{{ slot }}</th>
                 {% endfor %}
+                <th class="issue-col">Issue</th>
             </tr>
         </thead>
         <tbody id="grid-body">
@@ -27,6 +28,7 @@
                 {% for slot in time_slots %}
                 <td class="cell{% if slot not in active_slots %} slot-hidden{% endif %}" data-slot="{{ slot }}"><span class="cell-value">—</span></td>
                 {% endfor %}
+                <td class="issue-col">—</td>
             </tr>
             {% endfor %}
         </tbody>
