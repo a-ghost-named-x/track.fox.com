@@ -11,6 +11,8 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "5432:5432"   # temporary — remove when done
     environment:
       # Bootstrap/superuser identity, used ONLY for initialization. The app
       # never connects with this — see APP_DB_USER/PASSWORD below, which the
