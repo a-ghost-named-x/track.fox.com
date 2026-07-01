@@ -48,4 +48,3 @@ CREATE INDEX IF NOT EXISTS idx_entries_machine_date_slot
 GRANT SELECT, INSERT ON entries TO trackfox_app;
 GRANT USAGE, SELECT ON SEQUENCE entries_id_seq TO trackfox_app;
 GRANT SELECT ON standards TO trackfox_app;
-
