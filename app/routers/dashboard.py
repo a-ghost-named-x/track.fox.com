@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
-from app.db.entries import get_latest_entries_for_date
+from app.db.entries import get_latest_entries_for_date, get_shift_activity
 from app.models import (
     MACHINE_IDS,
     SHIFT_DISPLAY_DELAY_HOURS,
@@ -79,11 +79,15 @@ def dashboard_data():
     """
     now = datetime.now()
     today = now.date()
-    entries = get_latest_entries_for_date(today)
     shift = get_current_shift(now)
+    active_slots = SHIFT_SLOTS[shift]
+    entries = get_latest_entries_for_date(today)
     return {
         "date": today.isoformat(),
         "shift": shift,
-        "active_slots": SHIFT_SLOTS[shift],
+        "active_slots": active_slots,
         "entries": entries,
+        # Per-machine operator + carried issue for the shift in progress —
+        # see get_shift_activity() docstring for the carry-forward rule.
+        "machine_activity": get_shift_activity(today, active_slots),
     }

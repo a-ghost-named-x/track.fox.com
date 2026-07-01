@@ -26,10 +26,14 @@ async function refreshDashboard() {
         applyActiveSlots(data.active_slots);
 
         // Clear all cells first so slots with no entry yet show as empty,
-        // not a stale value from a previous poll.
+        // not a stale value from a previous poll. This also wipes any issue
+        // badge from the previous poll so it doesn't double up below.
         document.querySelectorAll(".cell").forEach((cell) => {
-            cell.textContent = "—";
+            cell.innerHTML = '<span class="cell-value">—</span>';
             cell.removeAttribute("data-status");
+        });
+        document.querySelectorAll(".operator").forEach((el) => {
+            el.textContent = "";
         });
 
         for (const entry of data.entries) {
@@ -41,10 +45,31 @@ async function refreshDashboard() {
 
             // Status is conveyed by color (data-status drives the CSS), not
             // by appending ":)"/":(" text — keeps the cell to just the number.
-            cell.textContent = `${entry.units_produced}`;
+            cell.querySelector(".cell-value").textContent = `${entry.units_produced}`;
             cell.setAttribute("data-status", entry.status);
-            if (entry.issue) {
-                cell.title = entry.issue; // surfaces on hover; BrightSign won't show this, but useful when viewed in a browser
+        }
+
+        // Operator (shown once per machine row) and carried issue (shown as
+        // a badge on every active-shift cell for that machine). Backed by
+        // get_shift_activity() server-side — "newest issue wins" and it
+        // carries through the rest of the shift once reported, even on
+        // slots logged afterward without repeating it.
+        for (const [machineId, activity] of Object.entries(data.machine_activity || {})) {
+            const row = document.querySelector(`tr[data-machine="${machineId}"]`);
+            if (!row) continue;
+
+            const operatorEl = row.querySelector(".operator");
+            if (operatorEl) operatorEl.textContent = activity.operator || "";
+
+            if (activity.issue) {
+                row.querySelectorAll("td[data-slot]").forEach((cell) => {
+                    if (!data.active_slots.includes(cell.getAttribute("data-slot"))) return;
+                    const badge = document.createElement("span");
+                    badge.className = "issue-badge";
+                    badge.textContent = "⚠";
+                    badge.title = activity.issue; // surfaces on hover; BrightSign won't show this, but useful when viewed in a browser
+                    cell.appendChild(badge);
+                });
             }
         }
 

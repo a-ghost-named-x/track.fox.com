@@ -66,6 +66,56 @@ def create_entry(payload: EntryCreate) -> Entry:
     return Entry(id=row[0], status=status, **payload.model_dump())
 
 
+def get_shift_activity(entry_date: date_type, active_slots: list[str]) -> dict[str, dict]:
+    """Returns, per machine, the operator and issue currently in effect for
+    the shift in progress (i.e. whichever of `active_slots` have entries so
+    far today).
+
+    - operator: from that machine's most recently created entry anywhere in
+      the shift (whichever slot it was logged against) — "who's on it right
+      now", shown once per machine row rather than repeated per cell.
+    - issue: from that machine's most recently created entry in the shift
+      that actually reported a non-empty issue. Once reported, it carries
+      forward across the rest of the shift's slot cells (per the floor's
+      request — e.g. "defective material" logged at 8AM should still show
+      through 2PM) even if later slots in the shift are logged without
+      repeating it. A newer issue replaces an older one ("newest wins");
+      there's currently no way to explicitly clear an issue mid-shift short
+      of the shift changing over.
+    """
+    with get_pg_connection() as conn:
+        operator_rows = conn.execute(
+            """
+            SELECT DISTINCT ON (machine_id) machine_id, operator
+            FROM entries
+            WHERE entry_date = %s AND time_slot = ANY(%s)
+            ORDER BY machine_id, created_at DESC
+            """,
+            (entry_date, active_slots),
+        ).fetchall()
+
+        issue_rows = conn.execute(
+            """
+            SELECT DISTINCT ON (machine_id) machine_id, issue
+            FROM entries
+            WHERE entry_date = %s AND time_slot = ANY(%s)
+              AND issue IS NOT NULL AND issue <> ''
+            ORDER BY machine_id, created_at DESC
+            """,
+            (entry_date, active_slots),
+        ).fetchall()
+
+    activity: dict[str, dict] = {
+        machine_id: {"operator": operator, "issue": None}
+        for machine_id, operator in operator_rows
+    }
+    for machine_id, issue in issue_rows:
+        activity.setdefault(machine_id, {"operator": None, "issue": None})
+        activity[machine_id]["issue"] = issue
+
+    return activity
+
+
 def get_latest_entries_for_date(entry_date: date_type) -> list[dict]:
     """Returns the latest entry per (machine_id, time_slot) for a given date.
 

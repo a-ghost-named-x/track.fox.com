@@ -20,9 +20,12 @@
         <tbody id="grid-body">
             {% for machine in machine_ids %}
             <tr data-machine="{{ machine }}">
-                <td class="machine-col">{{ machine }}</td>
+                <td class="machine-col">
+                    {{ machine }}
+                    <span class="operator"></span>
+                </td>
                 {% for slot in time_slots %}
-                <td class="cell{% if slot not in active_slots %} slot-hidden{% endif %}" data-slot="{{ slot }}">—</td>
+                <td class="cell{% if slot not in active_slots %} slot-hidden{% endif %}" data-slot="{{ slot }}"><span class="cell-value">—</span></td>
                 {% endfor %}
             </tr>
             {% endfor %}

@@ -84,8 +84,24 @@ body {
     width: 10%;
 }
 
+.machine-col .operator {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 400;
+    color: var(--text-dim);
+    margin-top: 0.15rem;
+}
+
 .cell {
     font-weight: 700;
+}
+
+.issue-badge {
+    display: inline-block;
+    margin-left: 0.4rem;
+    font-size: 1.1rem;
+    color: #d29922;
+    cursor: default;
 }
 
 .slot-hidden {
