@@ -12,24 +12,36 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import settings
 from app.db.entries import get_latest_entries_for_date
-from app.models import MACHINE_IDS, SHIFT_SLOTS, SHIFTS, TIME_SLOTS
+from app.models import (
+    MACHINE_IDS,
+    SHIFT_DISPLAY_DELAY_HOURS,
+    SHIFT_SLOTS,
+    SHIFTS,
+    TIME_SLOTS,
+)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 
 def get_current_shift(now: datetime) -> str:
-    """Returns the label of whichever shift is in progress at `now`, using
-    server-local time (see SHIFTS in app.models). Display-only.
+    """Returns the label of whichever shift the dashboard should display at
+    `now`, using server-local time (see SHIFTS in app.models). Display-only.
 
-    SHIFTS is sorted by start hour; we walk it and keep the last boundary
-    that `now` has passed. Hours before the first boundary (e.g. 3AM) fall
+    Each shift's real start hour is pushed back by SHIFT_DISPLAY_DELAY_HOURS
+    before comparing, so the dashboard keeps showing the outgoing shift for
+    that many hours past its real changeover — giving the incoming crew time
+    to review the outgoing shift's production before the display switches.
+
+    SHIFTS is sorted by start hour; we walk it and keep the last (delayed)
+    boundary that `now` has passed. Hours before the first boundary fall
     through to the final shift in the list, since that shift wraps past
     midnight (10PM-6AM).
     """
     current = SHIFTS[-1][1]
     for start_hour, label in SHIFTS:
-        if now.hour >= start_hour:
+        display_hour = (start_hour + SHIFT_DISPLAY_DELAY_HOURS) % 24
+        if now.hour >= display_hour:
             current = label
     return current
 

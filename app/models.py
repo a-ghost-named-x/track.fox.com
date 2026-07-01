@@ -19,13 +19,22 @@ MACHINE_IDS: list[str] = [
 ]
 
 # Three fixed 8-hour shifts covering the full day, keyed by the server-local
-# hour (24h) each shift begins. Display-only — has no bearing on the
-# time_slot/standards logic above.
+# hour (24h) each shift *actually* begins. Display-only — has no bearing on
+# the time_slot/standards logic above.
 SHIFTS: list[tuple[int, str]] = [
     (6, "1st Shift"),   # 6AM - 2PM
     (14, "2nd Shift"),  # 2PM - 10PM
     (22, "3rd Shift"),  # 10PM - 6AM
 ]
+
+# How many hours after a shift's real start the dashboard should keep
+# showing the *outgoing* shift, giving the incoming crew a window to review
+# the previous shift's production before the display switches over. E.g.
+# with a value of 1, 2nd Shift actually starts at 2PM, but the dashboard
+# doesn't switch to it until 3PM. Change this single number to adjust the
+# buffer for all three shift changeovers at once (see get_current_shift()
+# in app/routers/dashboard.py, which applies it).
+SHIFT_DISPLAY_DELAY_HOURS: int = 1
 
 # Which 4 of the 12 TIME_SLOTS columns to display for a given shift. The
 # dashboard grid shows only the current shift's slots rather than all 12.
