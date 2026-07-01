@@ -15,12 +15,15 @@ class Settings(BaseSettings):
     postgres_password: str
 
     # MSSQL (existing production server, read-only)
+    # Left with defaults, not required, since MSSQL querying isn't wired into
+    # the app yet (see TODO in dashboard.py) — nothing reads these values in
+    # production today, so they shouldn't be able to block app startup.
+    # Revisit making these required once the MSSQL read query is implemented.
     mssql_host: str = "your-mssql-host"
     mssql_port: int = 1433
     mssql_db: str = "ProductionDB"
     mssql_user: str = "readonly_app_user"
-    # No default — same fail-fast reasoning as postgres_password above.
-    mssql_password: str
+    mssql_password: str = "changeme"
     mssql_driver: str = "ODBC Driver 18 for SQL Server"
 
     # App behavior
