@@ -1,0 +1,26 @@
+# Local development override — Compose auto-merges this with
+# docker-compose.yml whenever you run `docker compose up` in this
+# directory, no extra flags needed.
+#
+# Safe to commit: the deploy workflow (.github/workflows/deploy.yml) only
+# ever copies the file literally named docker-compose.yml to
+# /opt/track-fox-com/ on lost-woods — this file isn't part of that copy, so
+# it has zero effect on production no matter what's in it.
+#
+# What this changes vs. the production compose file:
+#   - Builds the `app` image from the local Dockerfile instead of pulling
+#     ghcr.io/.../track.fox.com:latest, tagged distinctly (track-fox-com:dev)
+#     so it can never be confused with the real image.
+#   - Bind-mounts ./app into the container, so edits made on the host (e.g.
+#     in VS Code) show up inside the container immediately — no rebuild.
+#   - Adds uvicorn --reload for .py changes (routers, models, etc.).
+#     CSS/JS/template changes don't even need that: StaticFiles reads files
+#     from disk per request, and Jinja2's default auto_reload picks up
+#     template edits — just save and refresh the browser.
+services:
+  app:
+    build: .
+    image: track-fox-com:dev
+    volumes:
+      - ./app:/app/app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
