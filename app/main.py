@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.routers import console, dashboard
 
-app = FastAPI(title="track.fox.com v2")
+app = FastAPI(title="track.fox.com")
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 

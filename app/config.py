@@ -38,13 +38,6 @@ class Settings(BaseSettings):
     poll_interval_ms: int = 60000
 
     @property
-    def postgres_dsn(self) -> str:
-        return (
-            f"postgresql://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
-
-    @property
     def mssql_connection_string(self) -> str:
         return (
             f"DRIVER={{{self.mssql_driver}}};"
