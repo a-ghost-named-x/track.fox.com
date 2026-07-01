@@ -23,6 +23,21 @@ body {
 /* ---------- Dashboard (BrightSign display) ---------- */
 
 .dashboard {
+    /* Light theme, scoped to just this page — redeclaring the same custom
+       property names here overrides them for every var(--x) reference used
+       by descendants below (header, grid, cells, etc.) without touching
+       :root, so /console keeps its dark theme untouched. */
+    --bg: #ffffff;
+    --surface: #f6f8fa;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --text-dim: #57606a;
+    --good: #1a7f37;
+    --bad: #cf222e;
+    --accent: #0969da;
+
+    background: var(--bg);
+    color: var(--text);
     padding: 2rem 3rem;
     min-height: 100vh;
     display: flex;
@@ -86,7 +101,7 @@ body {
 
 .machine-col .operator {
     display: block;
-    font-size: 0.85rem;
+    font-size: 1.2rem;
     font-weight: 400;
     color: var(--text-dim);
     margin-top: 0.15rem;
