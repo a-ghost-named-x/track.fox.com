@@ -4,7 +4,7 @@ Example here is a "mixed" dashboard per the architecture doc: it merges a
 read-only MSSQL query with manual-entry data from Postgres into one view.
 Swap or duplicate this pattern for SQL-only or manual-entry-only dashboards.
 """
-from datetime import date
+from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -12,10 +12,26 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import settings
 from app.db.entries import get_latest_entries_for_date
-from app.models import MACHINE_IDS, TIME_SLOTS
+from app.models import MACHINE_IDS, SHIFTS, TIME_SLOTS
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+
+
+def get_current_shift(now: datetime) -> str:
+    """Returns the label of whichever shift is in progress at `now`, using
+    server-local time (see SHIFTS in app.models). Display-only.
+
+    SHIFTS is sorted by start hour; we walk it and keep the last boundary
+    that `now` has passed. Hours before the first boundary (e.g. 3AM) fall
+    through to the final shift in the list, since that shift wraps past
+    midnight (10PM-6AM).
+    """
+    current = SHIFTS[-1][1]
+    for start_hour, label in SHIFTS:
+        if now.hour >= start_hour:
+            current = label
+    return current
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -42,6 +58,11 @@ def dashboard_data():
     returning — left out here since the production query itself depends on
     your actual MSSQL schema, which this scaffold doesn't have visibility into.
     """
-    today = date.today()
+    now = datetime.now()
+    today = now.date()
     entries = get_latest_entries_for_date(today)
-    return {"date": today.isoformat(), "entries": entries}
+    return {
+        "date": today.isoformat(),
+        "shift": get_current_shift(now),
+        "entries": entries,
+    }

@@ -10,14 +10,17 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
     postgres_db: str = "trackfox"
     postgres_user: str = "trackfox_app"
-    postgres_password: str = "changeme"
+    # No default — the app should refuse to start rather than silently
+    # connect with a placeholder password if .env is missing or misconfigured.
+    postgres_password: str
 
     # MSSQL (existing production server, read-only)
     mssql_host: str = "your-mssql-host"
     mssql_port: int = 1433
     mssql_db: str = "ProductionDB"
     mssql_user: str = "readonly_app_user"
-    mssql_password: str = "changeme"
+    # No default — same fail-fast reasoning as postgres_password above.
+    mssql_password: str
     mssql_driver: str = "ODBC Driver 18 for SQL Server"
 
     # App behavior

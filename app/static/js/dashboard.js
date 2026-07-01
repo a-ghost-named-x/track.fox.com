@@ -11,6 +11,7 @@ async function refreshDashboard() {
         const data = await res.json();
 
         document.getElementById("dashboard-date").textContent = data.date;
+        document.getElementById("dashboard-shift").textContent = data.shift;
 
         // Clear all cells first so slots with no entry yet show as empty,
         // not a stale value from a previous poll.

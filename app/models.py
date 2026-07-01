@@ -3,18 +3,29 @@ from datetime import date as date_type
 
 from pydantic import BaseModel, Field
 
-# Fixed time-slot list, in display order. Placeholder per architecture
-# discussion — confirm this is the final list before going live, and note
-# the seed data only covers 6 of these 12 slots for machine C1 so far.
+# Fixed time-slot list, in display order. Matches the slot values seeded
+# into the `standards` table (sql/03_seed_standards.sql).
 TIME_SLOTS: list[str] = [
-    "6AM", "8AM", "10AM", "12PM", "2PM", "4PM",
-    "6PM", "8PM", "10PM", "12AM", "2AM", "4AM",
+    "8AM", "10AM", "12PM", "2PM", "4PM", "6PM",
+    "8PM", "10PM", "12AM", "2AM", "4AM", "6AM",
 ]
 
-# Placeholder machine list for the /console dropdown. Replace with the real
-# machine roster (could also be loaded from the standards table instead of
-# hardcoded, once the full list is finalized).
-MACHINE_IDS: list[str] = ["C1", "C2"]
+# Full machine roster (23 total), matching the seeded `standards` table.
+MACHINE_IDS: list[str] = [
+    "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11",
+    "C14", "C15", "C16",
+    "FM1", "FM2", "FM3",
+    "WS1", "WS2", "WS3", "WS4", "WS5", "WS6",
+]
+
+# Three fixed 8-hour shifts covering the full day, keyed by the server-local
+# hour (24h) each shift begins. Display-only — has no bearing on the
+# time_slot/standards logic above.
+SHIFTS: list[tuple[int, str]] = [
+    (6, "1st Shift"),   # 6AM - 2PM
+    (14, "2nd Shift"),  # 2PM - 10PM
+    (22, "3rd Shift"),  # 10PM - 6AM
+]
 
 
 class EntryCreate(BaseModel):

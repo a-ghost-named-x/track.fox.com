@@ -48,6 +48,13 @@ body {
     color: var(--text-dim);
 }
 
+.dashboard-shift {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--accent);
+    margin-right: 1.5rem;
+}
+
 .grid {
     width: 100%;
     border-collapse: collapse;
