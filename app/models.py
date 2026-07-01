@@ -27,6 +27,14 @@ SHIFTS: list[tuple[int, str]] = [
     (22, "3rd Shift"),  # 10PM - 6AM
 ]
 
+# Which 4 of the 12 TIME_SLOTS columns to display for a given shift. The
+# dashboard grid shows only the current shift's slots rather than all 12.
+SHIFT_SLOTS: dict[str, list[str]] = {
+    "1st Shift": ["8AM", "10AM", "12PM", "2PM"],
+    "2nd Shift": ["4PM", "6PM", "8PM", "10PM"],
+    "3rd Shift": ["12AM", "2AM", "4AM", "6AM"],
+}
+
 
 class EntryCreate(BaseModel):
     """Payload accepted from the /console submission form."""

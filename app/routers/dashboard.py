@@ -12,7 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import settings
 from app.db.entries import get_latest_entries_for_date
-from app.models import MACHINE_IDS, SHIFTS, TIME_SLOTS
+from app.models import MACHINE_IDS, SHIFT_SLOTS, SHIFTS, TIME_SLOTS
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -37,12 +37,15 @@ def get_current_shift(now: datetime) -> str:
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard_page(request: Request):
     """Initial page load — renders the shell; data is filled in via polling."""
+    now = datetime.now()
+    shift = get_current_shift(now)
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
         context={
             "machine_ids": MACHINE_IDS,
             "time_slots": TIME_SLOTS,
+            "active_slots": SHIFT_SLOTS[shift],
             "poll_interval_ms": settings.poll_interval_ms,
         },
     )
@@ -52,7 +55,11 @@ def dashboard_page(request: Request):
 def dashboard_data():
     """JSON endpoint the dashboard page polls periodically (see static/js/dashboard.js).
 
-    Returns today's manual entries, pivoted by the frontend into the grid.
+    Returns today's manual entries, pivoted by the frontend into the grid,
+    plus which 4 time-slot columns are relevant to the shift in progress
+    right now (so the grid can narrow down from 12 columns to 4 without a
+    page reload if the shift changes while the page stays open).
+
     TODO: this is where a SQL-only or mixed dashboard would also query MSSQL
     via app.db.mssql.run_readonly_query(...) and merge results before
     returning — left out here since the production query itself depends on
@@ -61,8 +68,10 @@ def dashboard_data():
     now = datetime.now()
     today = now.date()
     entries = get_latest_entries_for_date(today)
+    shift = get_current_shift(now)
     return {
         "date": today.isoformat(),
-        "shift": get_current_shift(now),
+        "shift": shift,
+        "active_slots": SHIFT_SLOTS[shift],
         "entries": entries,
     }

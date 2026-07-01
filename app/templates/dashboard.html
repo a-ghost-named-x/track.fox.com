@@ -13,7 +13,7 @@
             <tr>
                 <th class="machine-col">Machine</th>
                 {% for slot in time_slots %}
-                <th>{{ slot }}</th>
+                <th data-slot="{{ slot }}"{% if slot not in active_slots %} class="slot-hidden"{% endif %}>{{ slot }}</th>
                 {% endfor %}
             </tr>
         </thead>
@@ -22,7 +22,7 @@
             <tr data-machine="{{ machine }}">
                 <td class="machine-col">{{ machine }}</td>
                 {% for slot in time_slots %}
-                <td class="cell" data-slot="{{ slot }}">—</td>
+                <td class="cell{% if slot not in active_slots %} slot-hidden{% endif %}" data-slot="{{ slot }}">—</td>
                 {% endfor %}
             </tr>
             {% endfor %}

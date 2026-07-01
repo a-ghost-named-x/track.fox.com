@@ -7,6 +7,13 @@ services:
       - "8000:8000"
     depends_on:
       - db
+    volumes:
+      # Containers default to UTC regardless of the host's configured
+      # timezone. The shift indicator (app/routers/dashboard.py) relies on
+      # server-local time, so borrow lost-woods' own timezone files rather
+      # than hardcoding a zone name here.
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
 
   db:
     image: postgres:16-alpine

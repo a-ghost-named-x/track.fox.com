@@ -88,6 +88,10 @@ body {
     font-weight: 700;
 }
 
+.slot-hidden {
+    display: none;
+}
+
 .cell[data-status=":)"] {
     color: var(--good);
     background: rgba(46, 160, 67, 0.12);
