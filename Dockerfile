@@ -1,5 +1,12 @@
 FROM python:3.12-slim-bookworm
 
+# tzdata: ensures the TZ env var (set for local dev in
+# docker-compose.override.yml, since bind-mounting /etc/localtime from the
+# host doesn't carry the real timezone through Docker Desktop's own Linux
+# VM the way it does on a native Linux host like lost-woods) has zoneinfo
+# data to resolve against. Harmless in production, which doesn't set TZ and
+# keeps using the bind-mounted files as before.
+#
 # --- ODBC driver for MSSQL (pyodbc needs the system driver, not just the pip package) ---
 # Following Microsoft's official instructions for Debian-based images.
 # Uses a dedicated keyring file instead of the deprecated/removed `apt-key`,
@@ -10,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         gnupg \
         unixodbc-dev \
+        tzdata \
     && curl -sSL https://packages.microsoft.com/keys/microsoft.asc \
         | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
     && . /etc/os-release \

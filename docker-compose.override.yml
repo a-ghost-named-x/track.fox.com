@@ -17,10 +17,28 @@
 #     CSS/JS/template changes don't even need that: StaticFiles reads files
 #     from disk per request, and Jinja2's default auto_reload picks up
 #     template edits — just save and refresh the browser.
+#   - Sets TZ explicitly. Production gets the real host timezone via the
+#     /etc/localtime bind mount in docker-compose.yml because lost-woods is
+#     a real Linux host — but that same mount, run through Docker Desktop on
+#     Windows, resolves against Docker Desktop's own internal Linux VM
+#     instead (commonly UTC), not your actual Windows clock/timezone. TZ
+#     takes precedence over that, so it's the reliable fix here. Change this
+#     if the floor's actual timezone is ever different from Central.
+#   - Resets the port mapping back to 8000. Production moved to host port 80
+#     (docker-compose.yml) for its DNS record; Compose merges "ports" by
+#     concatenating lists rather than replacing, so without this reset,
+#     local dev would try to bind host port 80 too — which commonly
+#     conflicts with something already using it on Windows (IIS, Skype,
+#     etc). !reset clears the inherited value before applying this one
+#     (requires a reasonably current Docker Compose — v2.24+).
 services:
   app:
     build: .
     image: track-fox-com:dev
+    environment:
+      - TZ=America/Chicago
+    ports: !reset
+      - "8000:8000"
     volumes:
       - ./app:/app/app
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

@@ -4,7 +4,11 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
-      - "8000:8000"
+      # Host port 80 so a DNS record can point straight at lost-woods with
+      # no :8000 in the URL. Uvicorn still listens on 8000 inside the
+      # container (unprivileged, no code/Dockerfile change needed) — only
+      # the host-side mapping changed.
+      - "80:8000"
     depends_on:
       - db
     volumes:
