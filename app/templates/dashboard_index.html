@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Dashboards{% endblock %}
+{% block content %}
+<div class="dashboard dashboard-index">
+    <header class="dashboard-header">
+        <h1>Production Tracking</h1>
+    </header>
+
+    <p class="dashboard-index-sub">Choose a floor section:</p>
+
+    <ul class="zone-list">
+        {% for zone in zones %}
+        <li>
+            <a class="zone-link" href="/dashboard/{{ zone.slug }}">
+                <span class="zone-link-label">{{ zone.label }}</span>
+                <span class="zone-link-count">{{ zone.machine_count }} machine{{ 's' if zone.machine_count != 1 else '' }}</span>
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endblock %}

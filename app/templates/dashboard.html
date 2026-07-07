@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Floor Dashboard{% endblock %}
+{% block title %}{% if zone_label %}{{ zone_label }} Dashboard{% else %}Floor Dashboard{% endif %}{% endblock %}
 {% block content %}
 <div class="dashboard">
     <header class="dashboard-header">
-        <h1>Production Tracking</h1>
+        <h1>Production Tracking{% if zone_label %} — {{ zone_label }}{% endif %}</h1>
         <span class="dashboard-shift" id="dashboard-shift"></span>
         <span class="dashboard-date" id="dashboard-date"></span>
     </header>
@@ -20,7 +20,7 @@
         </thead>
         <tbody id="grid-body">
             {% for machine in machine_ids %}
-            <tr data-machine="{{ machine }}">
+            <tr data-machine="{{ machine }}" class="row-hidden">
                 <td class="machine-col">
                     {{ machine }}
                     <span class="operator"></span>

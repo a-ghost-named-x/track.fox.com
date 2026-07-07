@@ -10,13 +10,49 @@ TIME_SLOTS: list[str] = [
     "8PM", "10PM", "12AM", "2AM", "4AM", "6AM",
 ]
 
-# Full machine roster (23 total), matching the seeded `standards` table.
+# Full machine roster. Used by /console's machine dropdown and as the
+# superset DASHBOARD_ZONES below is drawn from.
+#
+# P1-P4 and A1-A7 are new machines with no row in the `standards` table yet
+# (standards are on the way — see DASHBOARD_ZONES). They're listed here so
+# they show up in /console and on their dashboard zones now, but until
+# someone adds their standards rows, submitting an entry for any of them
+# will fail with StandardNotFoundError (app/db/entries.py) — that's the
+# existing, intentional "can't compute status" guard, not a bug.
 MACHINE_IDS: list[str] = [
     "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11",
     "C14", "C15", "C16",
     "FM1", "FM2", "FM3",
     "WS1", "WS2", "WS3", "WS4", "WS5", "WS6",
+    "P1", "P2", "P3", "P4",
+    "A1", "A2", "A3", "A4", "A5", "A6", "A7",
 ]
+
+# Dashboard zones — each one is a physical floor-section display, reachable
+# at /dashboard/<slug> (e.g. /dashboard/b3), showing only its own machines'
+# rows out of the full MACHINE_IDS roster above. /dashboard itself lists
+# these as links rather than rendering a single all-machines grid.
+#
+# NOTE: C10 is part of MACHINE_IDS (so it's still loggable via /console) but
+# deliberately isn't assigned to any zone below, per what was specified —
+# flag if that's not intentional and it should be added to one.
+DASHBOARD_ZONES: dict[str, list[str]] = {
+    "b2": ["FM1", "FM2", "FM3"],
+    "b3": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C11", "C14", "C15", "C16"],
+    "b4": ["P1", "P2", "P3", "P4"],
+    "ws": ["WS1", "WS2", "WS3", "WS4", "WS5", "WS6"],
+    "leno": ["A1", "A2", "A3", "A4", "A5", "A6", "A7"],
+}
+
+# Display label per zone slug, for the /dashboard index page and each zone
+# page's header.
+DASHBOARD_ZONE_LABELS: dict[str, str] = {
+    "b2": "B2",
+    "b3": "B3",
+    "b4": "B4",
+    "ws": "WS",
+    "leno": "Leno",
+}
 
 # Three fixed 8-hour shifts covering the full day, keyed by the server-local
 # hour (24h) each shift *actually* begins. Display-only — has no bearing on

@@ -24,20 +24,22 @@
 #     instead (commonly UTC), not your actual Windows clock/timezone. TZ
 #     takes precedence over that, so it's the reliable fix here. Change this
 #     if the floor's actual timezone is ever different from Central.
-#   - Resets the port mapping back to 8000. Production moved to host port 80
-#     (docker-compose.yml) for its DNS record; Compose merges "ports" by
-#     concatenating lists rather than replacing, so without this reset,
+#   - Replaces the port mapping with 8000:8000. Production moved to host port
+#     80 (docker-compose.yml) for its DNS record; Compose merges "ports" by
+#     concatenating lists rather than replacing, so without overriding it,
 #     local dev would try to bind host port 80 too — which commonly
 #     conflicts with something already using it on Windows (IIS, Skype,
-#     etc). !reset clears the inherited value before applying this one
-#     (requires a reasonably current Docker Compose — v2.24+).
+#     etc). !override replaces the inherited list with this one instead of
+#     concatenating with it. (Note: !reset does NOT do this — !reset clears
+#     an attribute entirely regardless of what value follows it, which is
+#     why this was silently producing an app service with no ports at all.)
 services:
   app:
     build: .
     image: track-fox-com:dev
     environment:
       - TZ=America/Chicago
-    ports: !reset
+    ports: !override
       - "8000:8000"
     volumes:
       - ./app:/app/app

@@ -1,6 +1,10 @@
 -- track.fox.com v2 — Standards seed data
 -- Idempotent: safe to re-run whenever standards change.
 -- All machines share the same cumulative targets per slot.
+--
+-- Reference only: this was applied by hand to the standalone Postgres server
+-- per docs/postgres-server-setup.md Step 6 — it's no longer mounted into any
+-- container's init process (there is no bundled `db` container anymore).
 
 INSERT INTO standards (machine_id, time_slot, standard_units) VALUES
     ('C1', '8AM', 11700),

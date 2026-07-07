@@ -17,10 +17,11 @@ risk in taking your time and re-running steps if something doesn't look right.
 
 - SSH access to the new VM with `sudo` rights.
 - PostgreSQL already installed and running on it (`systemctl status postgresql`).
-- This repo's `sql/02_schema.sql` and `sql/03_seed_standards.sql` files, copied
-  onto the new server. (`sql/01_roles.sh` is reference only here — its logic
-  is run by hand in Step 3, since its actual script only runs automatically
-  inside the bundled Docker container's init process.)
+- This repo's `docs/sql/02_schema.sql` and `docs/sql/03_seed_standards.sql`
+  files, copied onto the new server. (`docs/sql/01_roles.sh` is reference
+  only here — its logic is run by hand in Step 3, since its actual script
+  only ever ran automatically inside a bundled Docker container's init
+  process, which this project no longer has.)
 - The IP address of whatever will connect to this database — for now, that's
   just your workstation (or wherever you're testing from); the real app
   server's IP gets added later when you're ready to cut over.
@@ -54,10 +55,10 @@ Keep both paths handy — you'll edit them in Steps 8 and 9.
 
 ### 3. Copy the SQL files onto the server
 
-From your workstation, run this from the repo root (where the `sql/` folder lives):
+From your workstation, run this from the repo root (where the `docs/sql/` folder lives):
 
 ```bash
-scp sql/02_schema.sql sql/03_seed_standards.sql youruser@<new-server-ip>:/tmp/
+scp docs/sql/02_schema.sql docs/sql/03_seed_standards.sql youruser@<new-server-ip>:/tmp/
 ```
 
 ### 4. Create the database and the app's role
@@ -74,10 +75,11 @@ CREATE ROLE trackfox_app WITH LOGIN PASSWORD 'REPLACE_WITH_A_STRONG_PASSWORD';
 \q
 ```
 
-This is the manual equivalent of what `sql/01_roles.sh` does automatically
-inside the Docker container's first-boot init — a standalone server never
-runs that script, so the role has to be created by hand, and it must exist
-**before** Step 5, since that script's `GRANT` statements reference it by name.
+This is the manual equivalent of what `docs/sql/01_roles.sh` did automatically
+inside the old bundled container's first-boot init — a standalone server
+never runs that script, so the role has to be created by hand, and it must
+exist **before** Step 5, since that script's `GRANT` statements reference it
+by name.
 
 ### 5. Apply the schema
 

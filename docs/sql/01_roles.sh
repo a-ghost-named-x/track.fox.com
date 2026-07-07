@@ -7,6 +7,12 @@
 # Reads APP_DB_USER / APP_DB_PASSWORD from the environment (passed through
 # from .env via docker-compose.yml) rather than hardcoding credentials in a
 # .sql file that gets committed to git.
+#
+# Reference only: kept for the record of what was run to bootstrap the
+# manual-entry database. Postgres now lives on a dedicated standalone server
+# instead of a bundled `db` container, so this script isn't executed by
+# anything anymore — see docs/postgres-server-setup.md Step 4 for the manual
+# equivalent that was actually run.
 set -euo pipefail
 
 : "${APP_DB_USER:?APP_DB_USER must be set}"

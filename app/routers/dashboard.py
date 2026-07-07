@@ -6,14 +6,15 @@ Swap or duplicate this pattern for SQL-only or manual-entry-only dashboards.
 """
 from datetime import datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
 from app.db.entries import get_latest_entries_for_date, get_shift_activity
 from app.models import (
-    MACHINE_IDS,
+    DASHBOARD_ZONE_LABELS,
+    DASHBOARD_ZONES,
     SHIFT_DISPLAY_DELAY_HOURS,
     SHIFT_SLOTS,
     SHIFTS,
@@ -47,18 +48,49 @@ def get_current_shift(now: datetime) -> str:
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-def dashboard_page(request: Request):
-    """Initial page load — renders the shell; data is filled in via polling."""
+def dashboard_index(request: Request):
+    """Landing page — lists each floor-section zone as a link rather than
+    rendering a single all-machines grid. Point BrightSign at a specific
+    /dashboard/<zone> URL directly; this page is for a person browsing on a
+    computer to find the right one.
+    """
+    zones = [
+        {
+            "slug": slug,
+            "label": DASHBOARD_ZONE_LABELS.get(slug, slug.upper()),
+            "machine_count": len(machine_ids),
+        }
+        for slug, machine_ids in DASHBOARD_ZONES.items()
+    ]
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard_index.html",
+        context={"zones": zones},
+    )
+
+
+@router.get("/dashboard/{zone}", response_class=HTMLResponse)
+def dashboard_zone_page(request: Request, zone: str):
+    """Initial page load for one zone's grid (e.g. /dashboard/b3) — renders
+    the shell scoped to just that zone's machines; data is filled in via
+    polling, same as before. 404s on an unrecognized zone slug rather than
+    silently rendering an empty grid.
+    """
+    machine_ids = DASHBOARD_ZONES.get(zone)
+    if machine_ids is None:
+        raise HTTPException(status_code=404, detail=f"No dashboard zone named '{zone}'.")
+
     now = datetime.now()
     shift = get_current_shift(now)
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
         context={
-            "machine_ids": MACHINE_IDS,
+            "machine_ids": machine_ids,
             "time_slots": TIME_SLOTS,
             "active_slots": SHIFT_SLOTS[shift],
             "poll_interval_ms": settings.poll_interval_ms,
+            "zone_label": DASHBOARD_ZONE_LABELS.get(zone, zone.upper()),
         },
     )
 

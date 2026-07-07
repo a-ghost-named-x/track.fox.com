@@ -137,6 +137,10 @@ body {
     display: none;
 }
 
+.row-hidden {
+    display: none;
+}
+
 .cell[data-status=":)"] {
     color: var(--good);
     background: rgba(46, 160, 67, 0.12);
@@ -152,6 +156,50 @@ body {
     text-align: right;
     color: var(--text-dim);
     font-size: 1rem;
+}
+
+/* ---------- Dashboard index (/dashboard zone picker) ---------- */
+
+.dashboard-index-sub {
+    font-size: 1.1rem;
+    color: var(--text-dim);
+    margin: 0 0 1.5rem;
+}
+
+.zone-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+}
+
+.zone-link {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 1.5rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    text-decoration: none;
+    color: var(--text);
+    transition: border-color 0.15s ease;
+}
+
+.zone-link:hover {
+    border-color: var(--accent);
+}
+
+.zone-link-label {
+    font-size: 1.75rem;
+    font-weight: 700;
+}
+
+.zone-link-count {
+    font-size: 0.95rem;
+    color: var(--text-dim);
 }
 
 /* ---------- Console (entry form) ---------- */

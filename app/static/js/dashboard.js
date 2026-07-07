@@ -15,6 +15,26 @@ function applyActiveSlots(activeSlots) {
     });
 }
 
+// Hides machine rows with no logged entry in the shift currently in
+// progress. Deliberately scoped to `machine_activity` (server-side, backed
+// by get_shift_activity() -> WHERE time_slot = ANY(active_slots)) rather
+// than the full-day `entries` list. Using the full day here was tried first
+// and rejected: a machine logged only in an earlier shift today would still
+// show, as a row with every currently-visible column blank (its one entry
+// sits in a now-hidden slot) — looking like it's running with no data
+// instead of just not having reported this shift. Tradeoff accepted: right
+// after a shift changeover, a machine won't (re)appear until its first entry
+// for the new shift lands, which can be a real gap since manual entries only
+// come in ~every 2 hours — rows may be sparse for a bit right after the
+// change. Re-evaluated every poll, so this resolves itself as entries land,
+// without needing a page reload.
+function applyMachineVisibility(machineActivity) {
+    const activeMachines = new Set(Object.keys(machineActivity || {}));
+    document.querySelectorAll("tr[data-machine]").forEach((row) => {
+        row.classList.toggle("row-hidden", !activeMachines.has(row.getAttribute("data-machine")));
+    });
+}
+
 async function refreshDashboard() {
     try {
         const res = await fetch("/api/dashboard-data");
@@ -24,6 +44,7 @@ async function refreshDashboard() {
         document.getElementById("dashboard-date").textContent = data.date;
         document.getElementById("dashboard-shift").textContent = data.shift;
         applyActiveSlots(data.active_slots);
+        applyMachineVisibility(data.machine_activity);
 
         // Clear all cells first so slots with no entry yet show as empty,
         // not a stale value from a previous poll.

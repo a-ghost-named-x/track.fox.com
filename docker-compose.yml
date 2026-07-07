@@ -9,8 +9,6 @@ services:
       # container (unprivileged, no code/Dockerfile change needed) — only
       # the host-side mapping changed.
       - "80:8000"
-    depends_on:
-      - db
     volumes:
       # Containers default to UTC regardless of the host's configured
       # timezone. The shift indicator (app/routers/dashboard.py) relies on
@@ -19,30 +17,9 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
 
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    ports:
-      - "5432:5432"   # temporary — remove when done
-    environment:
-      # Bootstrap/superuser identity, used ONLY for initialization. The app
-      # never connects with this — see APP_DB_USER/PASSWORD below, which the
-      # app actually uses (created by 01_roles.sh as a non-superuser role).
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
-      # Passed through to 01_roles.sh to create the app's low-privilege role.
-      # These must reference .env's own APP_DB_* variables directly, not the
-      # superuser POSTGRES_* names above — they are two separate identities.
-      APP_DB_USER: ${APP_DB_USER}
-      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./sql/01_roles.sh:/docker-entrypoint-initdb.d/01_roles.sh:ro
-      - ./sql/02_schema.sql:/docker-entrypoint-initdb.d/02_schema.sql:ro
-      - ./sql/03_seed_standards.sql:/docker-entrypoint-initdb.d/03_seed_standards.sql:ro
-    # No "ports" mapping — db is only reachable from `app` over the internal
-    # Docker network, per the architecture doc's no-exposed-port decision.
-
-volumes:
-  pgdata:
+# Postgres now lives on a dedicated standalone server (see
+# docs/postgres-server-setup.md and POSTGRES_HOST in .env), not a bundled
+# `db` container here — removed. sql/01_roles.sh, 02_schema.sql, and
+# 03_seed_standards.sql are no longer mounted anywhere; they're kept in the
+# repo only as a reference for what was run manually against the standalone
+# server.

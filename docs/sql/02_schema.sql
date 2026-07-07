@@ -1,10 +1,14 @@
 -- track.fox.com v2 — Postgres schema (manual-entry data only)
 -- This database owns ONLY manual-entry / app data. Production data lives in
 -- MSSQL and is never written to from this app.
+--
+-- Reference only: this was applied by hand to the standalone Postgres server
+-- per docs/postgres-server-setup.md Step 5 — it's no longer mounted into any
+-- container's init process (there is no bundled `db` container anymore).
 
 -- ---------------------------------------------------------------------------
 -- Reference data: per-machine, per-time-slot cumulative production standards.
--- Maintained manually (see sql/03_seed_standards.sql) — not editable via /console.
+-- Maintained manually (see docs/sql/03_seed_standards.sql) — not editable via /console.
 -- Example: machine 'C1', slot '8AM' -> standard_units 11700 means "by 8AM,
 -- C1 should have produced 11,700 units cumulative for the day."
 -- ---------------------------------------------------------------------------
@@ -40,7 +44,8 @@ CREATE INDEX IF NOT EXISTS idx_entries_machine_date_slot
     ON entries (machine_id, entry_date, time_slot, created_at DESC);
 
 -- ---------------------------------------------------------------------------
--- Grants for the app's low-privilege role (created by 01_roles.sh).
+-- Grants for the app's low-privilege role (created by docs/sql/01_roles.sh,
+-- or its manual equivalent — see docs/postgres-server-setup.md Step 4).
 -- Scoped to exactly what the app needs: read/write on entries, read-only on
 -- standards (standards are maintained manually via seed scripts, not via
 -- any app endpoint), and usage on the sequence backing entries.id.
