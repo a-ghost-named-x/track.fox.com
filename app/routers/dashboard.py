@@ -15,36 +15,13 @@ from app.db.entries import get_latest_entries_for_date, get_shift_activity
 from app.models import (
     DASHBOARD_ZONE_LABELS,
     DASHBOARD_ZONES,
-    SHIFT_DISPLAY_DELAY_HOURS,
     SHIFT_SLOTS,
-    SHIFTS,
     TIME_SLOTS,
+    get_current_shift,
 )
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
-
-
-def get_current_shift(now: datetime) -> str:
-    """Returns the label of whichever shift the dashboard should display at
-    `now`, using server-local time (see SHIFTS in app.models). Display-only.
-
-    Each shift's real start hour is pushed back by SHIFT_DISPLAY_DELAY_HOURS
-    before comparing, so the dashboard keeps showing the outgoing shift for
-    that many hours past its real changeover — giving the incoming crew time
-    to review the outgoing shift's production before the display switches.
-
-    SHIFTS is sorted by start hour; we walk it and keep the last (delayed)
-    boundary that `now` has passed. Hours before the first boundary fall
-    through to the final shift in the list, since that shift wraps past
-    midnight (10PM-6AM).
-    """
-    current = SHIFTS[-1][1]
-    for start_hour, label in SHIFTS:
-        display_hour = (start_hour + SHIFT_DISPLAY_DELAY_HOURS) % 24
-        if now.hour >= display_hour:
-            current = label
-    return current
 
 
 @router.get("/dashboard", response_class=HTMLResponse)

@@ -1,5 +1,6 @@
 """Models and fixed reference lists for the manual-entry (floor) dashboard."""
 from datetime import date as date_type
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -32,13 +33,9 @@ MACHINE_IDS: list[str] = [
 # at /dashboard/<slug> (e.g. /dashboard/b3), showing only its own machines'
 # rows out of the full MACHINE_IDS roster above. /dashboard itself lists
 # these as links rather than rendering a single all-machines grid.
-#
-# NOTE: C10 is part of MACHINE_IDS (so it's still loggable via /console) but
-# deliberately isn't assigned to any zone below, per what was specified —
-# flag if that's not intentional and it should be added to one.
 DASHBOARD_ZONES: dict[str, list[str]] = {
     "b2": ["FM1", "FM2", "FM3"],
-    "b3": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C11", "C14", "C15", "C16"],
+    "b3": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C14", "C15", "C16"],
     "b4": ["P1", "P2", "P3", "P4"],
     "ws": ["WS1", "WS2", "WS3", "WS4", "WS5", "WS6"],
     "leno": ["A1", "A2", "A3", "A4", "A5", "A6", "A7"],
@@ -69,16 +66,42 @@ SHIFTS: list[tuple[int, str]] = [
 # with a value of 1, 2nd Shift actually starts at 2PM, but the dashboard
 # doesn't switch to it until 3PM. Change this single number to adjust the
 # buffer for all three shift changeovers at once (see get_current_shift()
-# in app/routers/dashboard.py, which applies it).
+# below, which applies it).
 SHIFT_DISPLAY_DELAY_HOURS: int = 1
 
 # Which 4 of the 12 TIME_SLOTS columns to display for a given shift. The
 # dashboard grid shows only the current shift's slots rather than all 12.
+# Also used by /console/<zone>'s batch entry form to narrow its time-slot
+# picker to just the 4 slots that make sense to log right now.
 SHIFT_SLOTS: dict[str, list[str]] = {
     "1st Shift": ["8AM", "10AM", "12PM", "2PM"],
     "2nd Shift": ["4PM", "6PM", "8PM", "10PM"],
     "3rd Shift": ["12AM", "2AM", "4AM", "6AM"],
 }
+
+
+def get_current_shift(now: datetime) -> str:
+    """Returns the label of whichever shift is in progress / should be
+    displayed at `now`, using server-local time. Shared by the dashboard
+    routes (which shift's grid to show) and /console/<zone>'s batch entry
+    form (which 4 time slots make sense to offer right now).
+
+    Each shift's real start hour is pushed back by SHIFT_DISPLAY_DELAY_HOURS
+    before comparing, so the dashboard keeps showing the outgoing shift for
+    that many hours past its real changeover — giving the incoming crew time
+    to review the outgoing shift's production before the display switches.
+
+    SHIFTS is sorted by start hour; we walk it and keep the last (delayed)
+    boundary that `now` has passed. Hours before the first boundary fall
+    through to the final shift in the list, since that shift wraps past
+    midnight (10PM-6AM).
+    """
+    current = SHIFTS[-1][1]
+    for start_hour, label in SHIFTS:
+        display_hour = (start_hour + SHIFT_DISPLAY_DELAY_HOURS) % 24
+        if now.hour >= display_hour:
+            current = label
+    return current
 
 
 class EntryCreate(BaseModel):

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{{ zone_label }} Batch Entry{% endblock %}
+{% block content %}
+<div class="console console-batch">
+    <h1>Log Production — {{ zone_label }}</h1>
+    <p class="console-batch-hint">
+        <a href="/console">Single-machine entry / corrections</a> ·
+        <a href="/dashboard/{{ zone }}">View {{ zone_label }} dashboard</a>
+    </p>
+
+    {% if top_error %}
+    <p class="banner banner-error">{{ top_error }}</p>
+    {% endif %}
+
+    {% if saved_count %}
+    <p class="banner banner-success">Saved {{ saved_count }} entr{{ 'y' if saved_count == 1 else 'ies' }}.</p>
+    {% endif %}
+    {% if failed_rows %}
+    <p class="banner banner-error">
+        {{ failed_rows | length }} machine{{ 's' if failed_rows | length != 1 else '' }} didn't save:
+        {% for machine_id, row in failed_rows %}{{ machine_id }} ({{ row.error }}){% if not loop.last %}, {% endif %}{% endfor %}
+    </p>
+    {% endif %}
+
+    <form method="post" action="/console/{{ zone }}" class="entry-form batch-form">
+        <div class="batch-shared-fields">
+            <label>
+                Time slot
+                <select name="time_slot" required>
+                    <option value="" disabled {% if not time_slot %}selected{% endif %}>Select time</option>
+                    {% for slot in active_slots %}
+                    <option value="{{ slot }}" {% if slot == time_slot %}selected{% endif %}>{{ slot }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                Your employee number
+                <input type="text" name="entered_by" required maxlength="20" value="{{ entered_by }}">
+            </label>
+        </div>
+
+        <input type="hidden" name="entry_date" value="{{ today }}">
+
+        <table class="batch-grid">
+            <thead>
+                <tr>
+                    <th class="machine-col">Machine</th>
+                    <th>Operator</th>
+                    <th>Units produced (cumulative)</th>
+                    <th>Issue <span class="optional">(optional)</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for machine in machine_ids %}
+                {% set row = rows[machine] if rows and machine in rows else None %}
+                <tr class="batch-row{% if row and row.status %} batch-row-{{ row.status }}{% endif %}">
+                    <td class="machine-col">
+                        {{ machine }}
+                        {% if row and row.status == 'saved' %}<span class="batch-status batch-status-saved">saved</span>{% endif %}
+                        {% if row and row.status == 'failed' %}<span class="batch-status batch-status-failed">failed</span>{% endif %}
+                    </td>
+                    <td>
+                        <input type="text" name="operator_{{ machine }}" maxlength="100" value="{{ row.operator if row else '' }}">
+                    </td>
+                    <td>
+                        <input type="number" name="units_{{ machine }}" min="0" value="{{ row.units if row else '' }}">
+                    </td>
+                    <td>
+                        <input type="text" name="issue_{{ machine }}" maxlength="500" value="{{ row.issue if row else '' }}">
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <button type="submit">Save all entries</button>
+    </form>
+</div>
+{% endblock %}

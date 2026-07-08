@@ -4,6 +4,13 @@
 <div class="console">
     <h1>Log Production Entry</h1>
 
+    {% if zones %}
+    <p class="console-batch-hint">
+        Logging a whole zone? Try the faster batch form:
+        {% for zone in zones %}<a href="/console/{{ zone.slug }}">{{ zone.label }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+    </p>
+    {% endif %}
+
     {% if request.query_params.get('submitted') %}
     <p class="banner banner-success">Entry saved.</p>
     {% endif %}
