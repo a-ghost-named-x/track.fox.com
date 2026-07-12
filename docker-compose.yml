@@ -3,12 +3,23 @@ services:
     image: ghcr.io/a-ghost-named-x/track.fox.com:latest
     restart: unless-stopped
     env_file: .env
-    ports:
-      # Host port 80 so a DNS record can point straight at lost-woods with
-      # no :8000 in the URL. Uvicorn still listens on 8000 inside the
-      # container (unprivileged, no code/Dockerfile change needed) — only
-      # the host-side mapping changed.
-      - "80:8000"
+    # No host port published anymore. A separate project (Traefik +
+    # docker-socket-proxy — see the ingress project's README) is now the
+    # only thing bound to host port 80 on lost-woods; it reaches this
+    # container over the `ingress` Docker network instead, using the
+    # routing rule declared in the labels below. Uvicorn still listens on
+    # 8000 inside the container, same as always.
+    #
+    # DO NOT deploy this change to lost-woods until the ingress project is
+    # confirmed up and running there first (see its README's "Sequencing"
+    # section) — deploying this before Traefik exists means nothing is
+    # listening on port 80 at all, which takes the live dashboard down
+    # until Traefik is actually routing.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.track.rule=Host(`track.fox.com`)"
+      - "traefik.http.routers.track.entrypoints=web"
+      - "traefik.http.services.track.loadbalancer.server.port=8000"
     volumes:
       # Containers default to UTC regardless of the host's configured
       # timezone. The shift indicator (app/routers/dashboard.py) relies on
@@ -16,6 +27,18 @@ services:
       # than hardcoding a zone name here.
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+    networks:
+      - ingress
+
+networks:
+  # Created by the separate ingress project (Traefik + docker-socket-proxy),
+  # not this one. `external: true` means Compose expects this network to
+  # already exist on the host rather than trying to create it — if it
+  # doesn't exist yet when this file runs, `docker compose up` fails
+  # outright instead of silently doing the wrong thing. Deploy the ingress
+  # project FIRST.
+  ingress:
+    external: true
 
 # Postgres now lives on a dedicated standalone server (see
 # docs/postgres-server-setup.md and POSTGRES_HOST in .env), not a bundled

@@ -33,6 +33,17 @@
 #     concatenating with it. (Note: !reset does NOT do this — !reset clears
 #     an attribute entirely regardless of what value follows it, which is
 #     why this was silently producing an app service with no ports at all.)
+#   - Makes the `ingress` network local/real instead of `external: true`.
+#     Production's `ingress` network is created by a separate Traefik
+#     project on lost-woods — nothing on your workstation creates it, so
+#     without this override `docker compose up` here would fail outright
+#     looking for a network that doesn't exist locally. This isn't a
+#     special tag override like `ports` above needs (`external` is a plain
+#     scalar field, not a list, so Compose's normal merge — last file
+#     wins — already replaces it without needing !override). The app
+#     container ends up attached to a real, empty local bridge network;
+#     you still reach it directly via localhost:8000 above, Traefik isn't
+#     part of the local dev loop at all.
 services:
   app:
     build: .
@@ -44,3 +55,7 @@ services:
     volumes:
       - ./app:/app/app
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+networks:
+  ingress:
+    external: false
