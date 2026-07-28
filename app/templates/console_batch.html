@@ -8,6 +8,30 @@
         <a href="/dashboard/{{ zone }}">View {{ zone_label }} dashboard</a>
     </p>
 
+    {# Shift toggle. Plain links rather than form controls so it works with no
+       JS at all: each one reloads this page for that shift, carrying the date
+       along. Whichever shift is active decides which 4 time slots the dropdown
+       below offers, which is the whole point — the dashboard rolls over to the
+       next shift an hour after the real changeover, and this page used to roll
+       with it and take the outgoing shift's slots away. #}
+    <div class="shift-picker">
+        <span class="shift-picker-label">Logging for</span>
+        <div class="shift-toggle" role="group" aria-label="Shift">
+            {% for option in shift_options %}
+            <a class="shift-option{% if option == shift %} is-active{% endif %}"
+               href="/console/{{ zone }}?shift={{ option | urlencode }}&entry_date={{ entry_date }}"
+               {% if option == shift %}aria-current="true"{% endif %}>{{ option }}</a>
+            {% endfor %}
+        </div>
+    </div>
+
+    {% if shift != current_shift %}
+    <p class="banner banner-notice">
+        You're logging <strong>{{ shift }}</strong> — the shift in progress right now is {{ current_shift }}.
+        Check the date below is the day that shift ran.
+    </p>
+    {% endif %}
+
     {% if top_error %}
     <p class="banner banner-error">{{ top_error }}</p>
     {% endif %}
@@ -25,6 +49,16 @@
     <form method="post" action="/console/{{ zone }}" class="entry-form batch-form">
         <div class="batch-shared-fields">
             <label>
+                Date
+                {# The date that actually gets saved is whatever is in this box
+                   at submit time — it posts with the form, so editing it can't
+                   silently disagree with what gets written. Matters for 3rd
+                   shift, whose 12AM-6AM slots land on the day *after* the
+                   shift starts, and for fixing yesterday the next morning. #}
+                <input type="date" name="entry_date" id="entry-date" required value="{{ entry_date }}">
+            </label>
+
+            <label>
                 Time slot
                 <select name="time_slot" required>
                     <option value="" disabled {% if not time_slot %}selected{% endif %}>Select time</option>
@@ -40,7 +74,7 @@
             </label>
         </div>
 
-        <input type="hidden" name="entry_date" value="{{ today }}">
+        <input type="hidden" name="shift" value="{{ shift }}">
 
         <table class="batch-grid">
             <thead>
@@ -77,4 +111,28 @@
         <button type="submit">Save all entries</button>
     </form>
 </div>
+
+<script>
+    // Keeps the shift toggle's links pointing at whatever is currently in the
+    // Date box, so switching shifts after changing the date doesn't snap the
+    // date back to the one the page happened to load with.
+    //
+    // Convenience only: the date that gets saved is always the one in the box,
+    // which posts with the form. Without JS the toggle still works, it just
+    // carries the loaded date instead of an unsaved edit.
+    (function () {
+        var dateInput = document.getElementById("entry-date");
+        var links = document.querySelectorAll(".shift-option");
+        if (!dateInput || !links.length) {
+            return;
+        }
+        dateInput.addEventListener("change", function () {
+            links.forEach(function (link) {
+                var url = new URL(link.href);
+                url.searchParams.set("entry_date", dateInput.value);
+                link.href = url.toString();
+            });
+        });
+    })();
+</script>
 {% endblock %}

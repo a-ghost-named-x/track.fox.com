@@ -79,6 +79,10 @@ SHIFT_SLOTS: dict[str, list[str]] = {
     "3rd Shift": ["12AM", "2AM", "4AM", "6AM"],
 }
 
+# Shift labels in the order /console/<zone>'s shift toggle lays them out.
+# Derived from SHIFTS rather than written out again so the two can't drift.
+SHIFT_ORDER: list[str] = [label for _, label in SHIFTS]
+
 
 def get_current_shift(now: datetime) -> str:
     """Returns the label of whichever shift is in progress / should be
@@ -102,6 +106,29 @@ def get_current_shift(now: datetime) -> str:
         if now.hour >= display_hour:
             current = label
     return current
+
+
+def resolve_shift(requested: str | None, now: datetime) -> str:
+    """Which shift a /console/<zone> page should be logging against.
+
+    `requested` is whatever the user picked with that page's shift toggle —
+    a query param on GET, a hidden field on POST. Anything unrecognized
+    (None on a first visit, a hand-edited URL, a renamed shift) falls back
+    to get_current_shift(), so the page still opens on the sensible default
+    for the time of day.
+
+    Deliberately kept separate from get_current_shift(): the dashboard must
+    always follow the clock, but /console can't, because the two have
+    opposite needs at a changeover. SHIFT_DISPLAY_DELAY_HOURS rolls the
+    dashboard over to 2nd Shift at 3PM, and that same rollover used to take
+    1st Shift's time slots out of the console's dropdown with it — locking
+    people out of entering 1st Shift numbers they hadn't finished collecting
+    until 4PM. The console picks its shift from this function instead, so a
+    display rule can't decide what's still enterable.
+    """
+    if requested in SHIFT_SLOTS:
+        return requested
+    return get_current_shift(now)
 
 
 class EntryCreate(BaseModel):

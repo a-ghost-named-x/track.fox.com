@@ -212,6 +212,11 @@ body {
     max-width: 480px;
     margin: 3rem auto;
     padding: 0 1.5rem;
+    /* Tells the browser to draw native controls dark — without it the date
+       input's built-in calendar icon and picker render light-on-light against
+       this page's dark surface. Scoped to .console so the light-themed
+       dashboard is unaffected. */
+    color-scheme: dark;
 }
 
 .console h1 {
@@ -291,6 +296,14 @@ body {
     border: 1px solid var(--bad);
 }
 
+/* Not an error — just "heads up, this isn't the shift that's running right
+   now", which is a perfectly normal thing to be doing on this form. */
+.banner-notice {
+    background: rgba(210, 153, 34, 0.12);
+    color: #d29922;
+    border: 1px solid rgba(210, 153, 34, 0.5);
+}
+
 .console-batch-hint {
     font-size: 0.9rem;
     color: var(--text-dim);
@@ -310,9 +323,57 @@ body {
     max-width: 820px;
 }
 
+/* Shift toggle — three segments, styled as one control so it reads as
+   "which of these three" rather than three unrelated links. They ARE links
+   (each reloads the page for that shift), so the anchor defaults for colour
+   and underline have to be undone explicitly. */
+.shift-picker {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+}
+
+.shift-picker-label {
+    font-size: 0.95rem;
+    color: var(--text-dim);
+}
+
+.shift-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.shift-option {
+    padding: 0.55rem 1rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: var(--surface);
+    text-decoration: none;
+    white-space: nowrap;
+    border-left: 1px solid var(--border);
+}
+
+.shift-option:first-child {
+    border-left: none;
+}
+
+.shift-option:hover {
+    color: var(--text);
+}
+
+.shift-option.is-active {
+    background: var(--accent);
+    color: #0d1117;
+}
+
 .batch-shared-fields {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    /* Date, time slot, employee number. */
+    grid-template-columns: repeat(3, 1fr);
     gap: 1rem;
     margin-bottom: 1.5rem;
 }
