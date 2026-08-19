@@ -44,9 +44,9 @@ DASHBOARD_ZONES: dict[str, list[str]] = {
 # Display label per zone slug, for the /dashboard index page and each zone
 # page's header.
 DASHBOARD_ZONE_LABELS: dict[str, str] = {
-    "b2": "B2",
-    "b3": "B3",
-    "b4": "B4",
+    "b2": "FM",
+    "b3": "Combo/FMW",
+    "b4": "Poly",
     "ws": "WS",
     "leno": "Leno",
 }
