@@ -281,11 +281,12 @@ async def console_batch_submit(request: Request, zone: str):
     set of machines varies by zone — read via request.form() instead.
 
     Each row is saved independently rather than as one all-or-nothing
-    transaction: a machine with no standard yet (e.g. P1-P4/A1-A7 before
-    their standards rows are added), or one that's simply missing its
-    operator name, shouldn't block the other machines in the zone from
-    saving. Blank rows (no units entered) are just skipped, not treated as
-    errors — it's normal for a machine to have nothing to report yet.
+    transaction: a machine with no standard yet (a newly added machine
+    listed in MACHINE_IDS before its standards rows are seeded), or one
+    that's simply missing its operator name, shouldn't block the other
+    machines in the zone from saving. Blank rows (no units entered) are
+    just skipped, not treated as errors — it's normal for a machine to
+    have nothing to report yet.
     """
     machine_ids = DASHBOARD_ZONES.get(zone)
     if machine_ids is None:

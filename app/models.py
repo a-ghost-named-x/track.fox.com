@@ -14,19 +14,27 @@ TIME_SLOTS: list[str] = [
 # Full machine roster. Used by /console's machine dropdown and as the
 # superset DASHBOARD_ZONES below is drawn from.
 #
-# P1-P4 and A1-A7 are new machines with no row in the `standards` table yet
-# (standards are on the way — see DASHBOARD_ZONES). They're listed here so
-# they show up in /console and on their dashboard zones now, but until
-# someone adds their standards rows, submitting an entry for any of them
-# will fail with StandardNotFoundError (app/db/entries.py) — that's the
-# existing, intentional "can't compute status" guard, not a bug.
+# Every machine listed here has real standards seeded: the original 23 in
+# sql/03_seed_standards.sql, and P1-P4 (Poly) + AS1-AS7 (Leno) in
+# sql/04_seed_new_machines_standards.sql.
+#
+# The Leno machines are AS1-AS7, not A1-A7 — "AS" is the floor's own naming,
+# per the standards spreadsheet. An earlier revision of this list had them as
+# A1-A7, which is also what the all-zero placeholder rows in 04 were seeded
+# under; sql/05_drop_legacy_leno_machine_ids.sql removes those orphans.
+#
+# Adding a machine here without seeding its standards first makes every entry
+# for it fail with StandardNotFoundError (app/db/entries.py) — the deliberate
+# "can't compute status" guard. Seeding it with a standard of 0 is worse: the
+# entry saves and the cell is permanently green, since compute_status() is
+# `units_produced >= standard_units`. Seed real numbers, then list it.
 MACHINE_IDS: list[str] = [
     "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11",
     "C14", "C15", "C16",
     "FM1", "FM2", "FM3",
     "WS1", "WS2", "WS3", "WS4", "WS5", "WS6",
     "P1", "P2", "P3", "P4",
-    "A1", "A2", "A3", "A4", "A5", "A6", "A7",
+    "AS1", "AS2", "AS3", "AS4", "AS5", "AS6", "AS7",
 ]
 
 # Dashboard zones — each one is a physical floor-section display, reachable
@@ -38,7 +46,7 @@ DASHBOARD_ZONES: dict[str, list[str]] = {
     "b3": ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C14", "C15", "C16"],
     "b4": ["P1", "P2", "P3", "P4"],
     "ws": ["WS1", "WS2", "WS3", "WS4", "WS5", "WS6"],
-    "leno": ["A1", "A2", "A3", "A4", "A5", "A6", "A7"],
+    "leno": ["AS1", "AS2", "AS3", "AS4", "AS5", "AS6", "AS7"],
 }
 
 # Display label per zone slug, for the /dashboard index page and each zone

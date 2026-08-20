@@ -17,8 +17,9 @@ risk in taking your time and re-running steps if something doesn't look right.
 
 - SSH access to the new VM with `sudo` rights.
 - PostgreSQL already installed and running on it (`systemctl status postgresql`).
-- This repo's `docs/sql/02_schema.sql` and `docs/sql/03_seed_standards.sql`
-  files, copied onto the new server. (`docs/sql/01_roles.sh` is reference
+- This repo's `docs/sql/02_schema.sql`, `docs/sql/03_seed_standards.sql` and
+  `docs/sql/04_seed_new_machines_standards.sql` files, copied onto the new
+  server. (`docs/sql/01_roles.sh` is reference
   only here — its logic is run by hand in Step 3, since its actual script
   only ever ran automatically inside a bundled Docker container's init
   process, which this project no longer has.)
@@ -58,7 +59,7 @@ Keep both paths handy — you'll edit them in Steps 8 and 9.
 From your workstation, run this from the repo root (where the `docs/sql/` folder lives):
 
 ```bash
-scp docs/sql/02_schema.sql docs/sql/03_seed_standards.sql youruser@<new-server-ip>:/tmp/
+scp docs/sql/02_schema.sql docs/sql/03_seed_standards.sql docs/sql/04_seed_new_machines_standards.sql youruser@<new-server-ip>:/tmp/
 ```
 
 ### 4. Create the database and the app's role
@@ -94,18 +95,31 @@ broader.
 
 ### 6. Load the seed data
 
+Both seed files, in order. `03` covers the original 23 machines; `04` covers
+Poly (`P1`-`P4`) and Leno (`AS1`-`AS7`).
+
 ```bash
 sudo -u postgres psql -d trackfox -f /tmp/03_seed_standards.sql
 ```
 
+```bash
+sudo -u postgres psql -d trackfox -f /tmp/04_seed_new_machines_standards.sql
+```
+
 This matters functionally, not just for realism: the app refuses to save a
-`/console` entry for any machine+slot combo that has no standard row.
+`/console` entry for any machine+slot combo that has no standard row. Running
+only `03` leaves every Poly and Leno machine unusable.
+
+`05_drop_legacy_leno_machine_ids.sql` is **not** needed on a fresh server —
+it only cleans up legacy `A1`-`A7` rows on a database that predates the
+`AS1`-`AS7` rename. See `docs/applying-poly-leno-standards.md`.
 
 ### 7. Verify schema and data landed correctly
 
 ```bash
 sudo -u postgres psql -d trackfox -c "\dt"
-sudo -u postgres psql -d trackfox -c "SELECT count(*) FROM standards;"   # expect 276 (23 machines x 12 slots)
+sudo -u postgres psql -d trackfox -c "SELECT count(*) FROM standards;"   # expect 408 (34 machines x 12 slots)
+sudo -u postgres psql -d trackfox -c "SELECT count(*) FROM standards WHERE standard_units = 0;"   # expect 0
 sudo -u postgres psql -d trackfox -c "\dp entries"
 sudo -u postgres psql -d trackfox -c "\dp standards"
 ```
