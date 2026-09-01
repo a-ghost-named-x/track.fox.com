@@ -18,5 +18,13 @@
         </li>
         {% endfor %}
     </ul>
+
+    {# Deliberately only on this index page, never on /dashboard/<zone> — those
+       are the BrightSign boards and shouldn't carry navigation chrome. This
+       page is only ever seen by a person on a computer looking for a link. #}
+    <p class="dashboard-index-extra">
+        Reviewing a past shift?
+        <a class="review-link" href="/supervisor">Shift Review &rarr;</a>
+    </p>
 </div>
 {% endblock %}

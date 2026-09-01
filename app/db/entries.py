@@ -66,22 +66,75 @@ def create_entry(payload: EntryCreate) -> Entry:
     return Entry(id=row[0], status=status, **payload.model_dump())
 
 
+def _collapse_issue_runs(reported: list[tuple[str, str]]) -> list[dict]:
+    """Merges consecutive slots reporting the same issue into a single item.
+
+    Carry-forward means the floor often re-types the same text on every slot
+    it's still true for, which would otherwise stack up as four near-identical
+    lines in one cell. `[("8AM", "defective material"), ("10AM", "defective
+    material")]` collapses to one item spanning 8AM through 10AM, which is
+    both shorter and a truer statement of what happened.
+
+    Two details worth knowing:
+
+    - Matching ignores case and runs of whitespace, so "Defective material"
+      typed by one operator merges with "defective material" typed by the
+      next. The text displayed is the first spelling of the run.
+    - "Consecutive" means consecutive among the slots that actually REPORTED
+      an issue, not adjacent in the shift. An issue at 8AM and 12PM with a
+      silent 10AM between them still collapses to "8AM-12PM" — under the
+      carry-forward rule the issue was in effect at 10AM too, nobody just
+      re-typed it.
+
+    `reported` must already be in slot order; the caller sorts it.
+    """
+    collapsed: list[dict] = []
+    for time_slot, issue in reported:
+        key = " ".join(issue.split()).casefold()
+        if collapsed and collapsed[-1]["_key"] == key:
+            # Same issue still running — stretch the previous item's range
+            # instead of opening a new line for it.
+            collapsed[-1]["through"] = time_slot
+            continue
+        collapsed.append(
+            {"_key": key, "time_slot": time_slot, "through": None, "issue": issue}
+        )
+
+    for item in collapsed:
+        del item["_key"]
+    return collapsed
+
+
 def get_shift_activity(entry_date: date_type, active_slots: list[str]) -> dict[str, dict]:
-    """Returns, per machine, the operator and issue currently in effect for
-    the shift in progress (i.e. whichever of `active_slots` have entries so
-    far today).
+    """Returns, per machine, the operator and the issues in effect for the
+    shift in progress (i.e. whichever of `active_slots` have entries so far
+    today).
 
     - operator: from that machine's most recently created entry anywhere in
       the shift (whichever slot it was logged against) — "who's on it right
       now", shown once per machine row rather than repeated per cell.
-    - issue: from that machine's most recently created entry in the shift
-      that actually reported a non-empty issue. Once reported, it carries
-      forward across the rest of the shift's slot cells (per the floor's
-      request — e.g. "defective material" logged at 8AM should still show
-      through 2PM) even if later slots in the shift are logged without
-      repeating it. A newer issue replaces an older one ("newest wins");
-      there's currently no way to explicitly clear an issue mid-shift short
-      of the shift changing over.
+    - issues: EVERY slot in the shift that reported a non-empty issue, in
+      slot order, as `{time_slot, through, issue}` items — `through` is set
+      only when consecutive slots reported the same thing (see
+      _collapse_issue_runs). The display renders one line per item, prefixed
+      with its slot, so "defective material at 8AM" and "belt slip at 2PM"
+      stay distinguishable inside the single Issue cell per machine row.
+
+      This used to be a single string: DISTINCT ON (machine_id) took the
+      newest issue in the shift and every earlier one was dropped on the
+      floor. Nothing about carry-forward changes here — an issue reported at
+      8AM still shows for the rest of the shift; it's now an explicit line
+      that says 8AM rather than an unlabelled string that silently outlived
+      its slot.
+
+      An entry logged with a blank issue does NOT clear an earlier one — the
+      WHERE filter drops empty issues before DISTINCT ON picks a winner, so
+      a correction filed to fix a number (the batch form never pre-fills the
+      issue box) leaves the original issue standing. Same as the previous
+      behaviour: there is still no way to retract an issue mid-shift short of
+      the shift changing over. That's also the one case where a line here has
+      no matching corner marker on its slot cell, since the marker follows
+      the latest entry per slot.
     """
     with get_pg_connection() as conn:
         operator_rows = conn.execute(
@@ -94,24 +147,38 @@ def get_shift_activity(entry_date: date_type, active_slots: list[str]) -> dict[s
             (entry_date, active_slots),
         ).fetchall()
 
+        # DISTINCT ON (machine_id, time_slot), not just (machine_id): one
+        # issue per slot rather than one per machine, so a correction still
+        # supersedes within its own slot the way get_latest_entries_for_date()
+        # handles the numbers.
         issue_rows = conn.execute(
             """
-            SELECT DISTINCT ON (machine_id) machine_id, issue
+            SELECT DISTINCT ON (machine_id, time_slot) machine_id, time_slot, issue
             FROM entries
             WHERE entry_date = %s AND time_slot = ANY(%s)
               AND issue IS NOT NULL AND issue <> ''
-            ORDER BY machine_id, created_at DESC
+            ORDER BY machine_id, time_slot, created_at DESC
             """,
             (entry_date, active_slots),
         ).fetchall()
 
     activity: dict[str, dict] = {
-        machine_id: {"operator": operator, "issue": None}
+        machine_id: {"operator": operator, "issues": []}
         for machine_id, operator in operator_rows
     }
-    for machine_id, issue in issue_rows:
-        activity.setdefault(machine_id, {"operator": None, "issue": None})
-        activity[machine_id]["issue"] = issue
+
+    reported: dict[str, list[tuple[str, str]]] = {}
+    for machine_id, time_slot, issue in issue_rows:
+        reported.setdefault(machine_id, []).append((time_slot, issue))
+
+    # Chronological by `active_slots`, which the caller passes in shift order
+    # (SHIFT_SLOTS), NOT by created_at — a 4PM correction to the 8AM number
+    # belongs on the 8AM line, above 10AM's, not at the bottom of the cell.
+    slot_order = {slot: index for index, slot in enumerate(active_slots)}
+    for machine_id, rows in reported.items():
+        rows.sort(key=lambda row: slot_order.get(row[0], len(slot_order)))
+        activity.setdefault(machine_id, {"operator": None, "issues": []})
+        activity[machine_id]["issues"] = _collapse_issue_runs(rows)
 
     return activity
 
@@ -140,3 +207,28 @@ def get_latest_entries_for_date(entry_date: date_type) -> list[dict]:
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
 
     return [dict(zip(columns, row)) for row in rows]
+
+
+def get_available_entry_dates() -> list[date_type]:
+    """Every production date that has at least one entry, newest first.
+
+    Backs /supervisor's date picker: the newest and oldest values clamp the
+    date box's max/min so a date with no possible data (last January, 1999)
+    can't be picked in the first place, and the first few feed its quick-pick
+    buttons.
+
+    DISTINCT over idx_entries_date, so this stays cheap as the table grows —
+    it returns one row per production day (a few hundred a year), not one per
+    entry. Note it lists only days that have data, so interior gaps (a quiet
+    Sunday, a holiday) are absent from the list even though they fall inside
+    the min/max range the date box allows. /supervisor handles that by
+    showing an explicit "nothing recorded" state for such a day rather than
+    trying to make them unpickable — an HTML date input can clamp the ends of
+    a range but can't disable dates in the middle of it.
+    """
+    with get_pg_connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT entry_date FROM entries ORDER BY entry_date DESC"
+        ).fetchall()
+
+    return [row[0] for row in rows]

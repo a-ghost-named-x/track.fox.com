@@ -5,6 +5,11 @@
  * in dashboard.html.
  */
 
+// Most issue lines one Issue cell will render before the older ones collapse
+// into a "+N earlier" summary. Three fits the board without pushing rows off
+// the bottom; a shift caps out at four slots, so this rarely bites.
+const MAX_ISSUE_LINES = 3;
+
 // Shows only the current shift's 4 time-slot columns (header + cells),
 // hiding the other 8. Runs every poll in case the shift changes (e.g. at
 // 2PM) while the page stays open on BrightSign without a reload.
@@ -51,6 +56,7 @@ async function refreshDashboard() {
         document.querySelectorAll(".cell").forEach((cell) => {
             cell.innerHTML = '<span class="cell-value">—</span>';
             cell.removeAttribute("data-status");
+            cell.removeAttribute("data-has-issue");
         });
         document.querySelectorAll(".operator").forEach((el) => {
             el.textContent = "";
@@ -72,13 +78,19 @@ async function refreshDashboard() {
             // toLocaleString adds thousands separators (e.g. 1,234).
             cell.querySelector(".cell-value").textContent = entry.units_produced.toLocaleString("en-US");
             cell.setAttribute("data-status", entry.status);
+
+            // Corner flag on the exact slot whose entry reported an issue.
+            // Says WHEN trouble hit from across the floor, where the Issue
+            // column's text is too small to read; the text says what.
+            if (entry.issue) cell.setAttribute("data-has-issue", "");
         }
 
-        // Operator and carried issue, both shown once per machine row (not
-        // repeated per slot cell). Backed by get_shift_activity() server-side
-        // — "newest issue wins" and it carries in the Issue column through
-        // the rest of the shift once reported, even on slots logged
-        // afterward without repeating it.
+        // Operator and the shift's issues, both shown once per machine row
+        // (not repeated per slot cell). Backed by get_shift_activity()
+        // server-side: every slot that reported an issue comes back as its
+        // own item, already in slot order and with repeats collapsed into
+        // ranges, so an issue reported at 8AM still shows for the rest of
+        // the shift — now on a line that says so.
         for (const [machineId, activity] of Object.entries(data.machine_activity || {})) {
             const row = document.querySelector(`tr[data-machine="${machineId}"]`);
             if (!row) continue;
@@ -87,10 +99,7 @@ async function refreshDashboard() {
             if (operatorEl) operatorEl.textContent = activity.operator || "";
 
             const issueEl = row.querySelector("td.issue-col");
-            if (issueEl && activity.issue) {
-                issueEl.textContent = activity.issue;
-                issueEl.classList.add("has-issue");
-            }
+            if (issueEl) renderIssueCell(issueEl, activity.issues, MAX_ISSUE_LINES);
         }
 
         document.getElementById("last-updated").textContent =

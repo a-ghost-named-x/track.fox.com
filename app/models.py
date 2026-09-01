@@ -59,6 +59,17 @@ DASHBOARD_ZONE_LABELS: dict[str, str] = {
     "leno": "Leno",
 }
 
+# Order the /supervisor page stacks its zone sections in, top to bottom.
+# Deliberately its own list rather than reusing DASHBOARD_ZONES' key order:
+# Combo/FMW leads because it's the largest section and the one supervisors
+# read first, then FM and WS (the two zones sharing its standards set), then
+# Poly and Leno, which each have their own. Reorder this list to reorder the
+# page — nothing else depends on it.
+#
+# A slug here that's missing from DASHBOARD_ZONES is skipped rather than
+# raising, so retiring a zone from DASHBOARD_ZONES can't 500 /supervisor.
+SUPERVISOR_ZONE_ORDER: list[str] = ["b3", "b2", "ws", "b4", "leno"]
+
 # Three fixed 8-hour shifts covering the full day, keyed by the server-local
 # hour (24h) each shift *actually* begins. Display-only — has no bearing on
 # the time_slot/standards logic above.
@@ -90,6 +101,13 @@ SHIFT_SLOTS: dict[str, list[str]] = {
 # Shift labels in the order /console/<zone>'s shift toggle lays them out.
 # Derived from SHIFTS rather than written out again so the two can't drift.
 SHIFT_ORDER: list[str] = [label for _, label in SHIFTS]
+
+# The extra fourth option on /supervisor's shift toggle: show all 12 slot
+# columns at once instead of one shift's 4. Deliberately kept OUT of
+# SHIFT_ORDER and SHIFT_SLOTS — it isn't a real shift, and those two are read
+# by /console and /dashboard for genuine shift logic, where an "All Day"
+# value would be meaningless at best and saved onto an entry at worst.
+ALL_DAY_LABEL: str = "All Day"
 
 
 def get_current_shift(now: datetime) -> str:

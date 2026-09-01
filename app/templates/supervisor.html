@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Shift Review{% endblock %}
+{% block content %}
+<div class="supervisor" id="supervisor">
+    <header class="supervisor-header">
+        <h1>Shift Review</h1>
+        <span class="supervisor-sub">Production history by date and shift</span>
+    </header>
+
+    <div class="supervisor-controls">
+        <div class="control-group">
+            <label class="control-label" for="review-date">Date</label>
+            {# min/max are set by supervisor.js from the real first/last day of
+               data, so dates that can't possibly have entries aren't pickable. #}
+            <input type="date" id="review-date" class="review-date">
+        </div>
+
+        <div class="control-group control-group-grow">
+            <span class="control-label">Recent</span>
+            <div class="quick-picks" id="quick-picks"></div>
+        </div>
+
+        <div class="control-group">
+            <span class="control-label">Shift</span>
+            <div class="shift-toggle" id="shift-toggle">
+                {% for label in shift_order %}
+                <button type="button" class="shift-option" data-shift="{{ label }}">{{ label.split(' ')[0] }}</button>
+                {% endfor %}
+                <button type="button" class="shift-option" data-shift="{{ all_day_label }}">{{ all_day_label }}</button>
+            </div>
+        </div>
+    </div>
+
+    <p class="shift-note" id="shift-note" hidden></p>
+    <p class="supervisor-empty" id="supervisor-empty" hidden></p>
+
+    <div class="zone-sections" id="zone-sections">
+        {% for zone in zones %}
+        <section class="zone-section" data-zone="{{ zone.slug }}">
+            <h2 class="zone-section-title">
+                {{ zone.label }}
+                <span class="zone-section-count">{{ zone.machine_ids|length }} machines</span>
+            </h2>
+
+            <table class="review-grid">
+                <thead>
+                    {# Shift banding row, shown only in All Day mode. The colspans
+                       assume TIME_SLOTS is the three shifts' slots concatenated in
+                       SHIFT_ORDER order — which it is (8AM-2PM | 4PM-10PM |
+                       12AM-6AM). If either list is ever reordered, this row is what
+                       breaks first. #}
+                    <tr class="shift-group-row">
+                        <th class="machine-col"></th>
+                        {% for label in shift_order %}
+                        <th class="shift-group" colspan="{{ shift_slots[label]|length }}">{{ label }}</th>
+                        {% endfor %}
+                        <th class="issue-col"></th>
+                    </tr>
+                    <tr>
+                        <th class="machine-col">Machine</th>
+                        {% for slot in time_slots %}
+                        <th data-slot="{{ slot }}">{{ slot }}</th>
+                        {% endfor %}
+                        <th class="issue-col">Issue</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {# Every machine in the zone renders a row, including ones that
+                       never reported — unlike /dashboard, which hides those. A blank
+                       row here is the finding, not clutter. #}
+                    {% for machine in zone.machine_ids %}
+                    <tr data-machine="{{ machine }}">
+                        <td class="machine-col">
+                            <span class="machine-name">{{ machine }}</span>
+                            <span class="operator"></span>
+                        </td>
+                        {% for slot in time_slots %}
+                        <td class="cell" data-slot="{{ slot }}"><span class="cell-value">—</span></td>
+                        {% endfor %}
+                        <td class="issue-col">—</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+        {% endfor %}
+    </div>
+
+    <footer class="supervisor-footer">
+        <span id="loaded-at"></span>
+    </footer>
+</div>
+
+<script>
+    window.TIME_SLOTS = {{ time_slots|tojson }};
+    window.SHIFT_SLOTS = {{ shift_slots|tojson }};
+    window.SHIFT_ORDER = {{ shift_order|tojson }};
+    window.ALL_DAY_LABEL = {{ all_day_label|tojson }};
+    window.INITIAL_DATE = {{ requested_date|tojson }};
+    window.INITIAL_SHIFT = {{ requested_shift|tojson }};
+</script>
+<script src="/static/js/issue_cell.js"></script>
+<script src="/static/js/supervisor.js"></script>
+{% endblock %}

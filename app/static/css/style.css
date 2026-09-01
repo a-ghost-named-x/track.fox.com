@@ -111,6 +111,8 @@ body {
     font-weight: 700;
     font-size: 3.8rem;
     padding: 0.2rem 0.5rem;
+    /* Positioning context for the .cell[data-has-issue] corner flag. */
+    position: relative;
 }
 
 .grid .issue-col {
@@ -119,6 +121,9 @@ body {
     font-weight: 600;
     color: var(--text-dim);
     width: 18%;
+    /* Multi-line cells read from the top; centred, they'd drift against the
+       row's numbers as lines are added. */
+    vertical-align: top;
 }
 
 /* More specific than .grid .issue-col above, so just the "Issue" header
@@ -131,6 +136,56 @@ body {
 .issue-col.has-issue {
     color: #d29922;
     background: rgba(210, 153, 34, 0.15);
+}
+
+/* One line per reported issue inside the single Issue cell, oldest at the
+   top so the lines run down the cell in the same direction the slot columns
+   run across the row. Sized in em rather than rem so the same rules serve
+   the 2.4rem board column and the 0.8rem review column — see renderIssueCell
+   in static/js/issue_cell.js, which both pages share. */
+.issue-line {
+    display: block;
+    line-height: 1.15;
+}
+
+.issue-line + .issue-line {
+    margin-top: 0.3em;
+}
+
+/* The time slot (or "8AM-12PM" range) the issue was logged against. Smaller
+   and dimmer than the issue text on purpose: it's what disambiguates the
+   lines, but the words are what someone actually reads. */
+.issue-slot {
+    font-size: 0.68em;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    opacity: 0.75;
+    margin-right: 0.5em;
+    white-space: nowrap;
+}
+
+/* Stand-in for issue lines trimmed by the board's line cap (MAX_ISSUE_LINES
+   in dashboard.js). Never appears on /supervisor, which renders them all. */
+.issue-more {
+    display: block;
+    font-size: 0.62em;
+    font-style: italic;
+    opacity: 0.7;
+    margin-bottom: 0.2em;
+}
+
+/* Corner flag marking the exact slot cell whose entry carried an issue —
+   the tie between a line in the Issue column and the column it happened in.
+   White rather than the amber used on the issue text, because any cell with
+   an entry is already filled solid green or red by .cell[data-status], and
+   amber on either of those is unreadable from across the floor. */
+.cell[data-has-issue]::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    border-top: 0.55em solid rgba(255, 255, 255, 0.92);
+    border-left: 0.55em solid transparent;
 }
 
 .slot-hidden {
@@ -204,6 +259,24 @@ body {
 .zone-link-count {
     font-size: 0.95rem;
     color: var(--text-dim);
+}
+
+.dashboard-index-extra {
+    margin: 2.5rem 0 0;
+    font-size: 1rem;
+    color: var(--text-dim);
+}
+
+/* Inherits .dashboard's light-theme --accent (#0969da), not the dark :root
+   one, since this page renders inside the .dashboard wrapper. */
+.review-link {
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.review-link:hover {
+    text-decoration: underline;
 }
 
 /* ---------- Console (entry form) ---------- */
@@ -436,4 +509,253 @@ body {
 
 .batch-row-failed td {
     background: rgba(218, 54, 51, 0.06);
+}
+
+/* ---------- Supervisor (/supervisor shift review) ---------- */
+
+/* Deliberately keeps the dark :root palette instead of redeclaring the light
+   one the way .dashboard does. /dashboard is a bright board read from across
+   the floor on a BrightSign; this is a desk tool, so it matches /console. */
+.supervisor {
+    padding: 2rem 2.5rem;
+    max-width: 1600px;
+    margin: 0 auto;
+}
+
+.supervisor-header {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.supervisor-header h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.supervisor-sub {
+    color: var(--text-dim);
+    font-size: 0.95rem;
+}
+
+.supervisor-controls {
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 2rem;
+    padding: 1rem 1.25rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 1.25rem;
+}
+
+.control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.control-group-grow {
+    flex: 1;
+    min-width: 200px;
+}
+
+.control-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+}
+
+.review-date {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 0.5rem 0.6rem;
+    font-size: 0.95rem;
+    font-family: inherit;
+    /* Renders the native calendar popup dark to match the page, rather than
+       dropping a white panel onto a dark surface. */
+    color-scheme: dark;
+}
+
+.review-date:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.quick-picks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.quick-pick {
+    padding: 0.45rem 0.7rem;
+    font-size: 0.85rem;
+    font-family: inherit;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.quick-pick:hover {
+    color: var(--text);
+    border-color: var(--text-dim);
+}
+
+.quick-pick.is-active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #0d1117;
+}
+
+/* The .shift-option rules further up were written for /console's anchors.
+   These are <button>s (the toggle is client-side here, no page reload), so
+   the UA's own border, font and cursor defaults have to be undone. The
+   segment divider is border-left, which .shift-option already sets. */
+button.shift-option {
+    border-top: none;
+    border-right: none;
+    border-bottom: none;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.shift-note {
+    margin: 0 0 1rem;
+    padding: 0.6rem 0.85rem;
+    background: rgba(88, 166, 255, 0.08);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 4px 4px 0;
+    color: var(--text-dim);
+    font-size: 0.85rem;
+}
+
+.supervisor-empty {
+    margin: 3rem 0;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 1.05rem;
+}
+
+.zone-section {
+    margin-bottom: 2.5rem;
+    /* All 12 columns on a narrow window scrolls the table instead of
+       squeezing the page. */
+    overflow-x: auto;
+}
+
+.zone-section-title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin: 0 0 0.6rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid var(--border);
+}
+
+.zone-section-count {
+    font-size: 0.8rem;
+    font-weight: 400;
+    color: var(--text-dim);
+}
+
+/* Its own grid rather than reusing .grid: those sizes (3.3rem headers,
+   3.8rem cells) exist to be read from across the factory floor, which would
+   be absurd on a desk monitor showing 34 machines at once. Status colours
+   are shared, though — .cell[data-status] is declared globally. */
+.review-grid {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.review-grid th,
+.review-grid td {
+    border: 1px solid var(--border);
+    padding: 0.45rem 0.6rem;
+    text-align: center;
+    font-size: 0.9rem;
+}
+
+.review-grid thead th {
+    background: var(--surface);
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 0.8rem;
+}
+
+.review-grid .machine-col {
+    width: 9rem;
+    text-align: left;
+    font-weight: 700;
+    background: var(--surface);
+    white-space: nowrap;
+}
+
+.review-grid .machine-col .operator {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--text-dim);
+}
+
+.review-grid .cell {
+    font-weight: 700;
+    /* Equal-width digits, so the number columns line up down the grid. */
+    font-variant-numeric: tabular-nums;
+    /* Positioning context for the .cell[data-has-issue] corner flag. */
+    position: relative;
+}
+
+.review-grid .issue-col {
+    width: 16%;
+    text-align: left;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    vertical-align: top;
+}
+
+/* 0.68em of the board's 2.4rem is comfortably readable; 0.68em of this
+   grid's 0.8rem is not. Bumped back up for desk viewing. */
+.review-grid .issue-slot {
+    font-size: 0.82em;
+}
+
+/* Shift banding above the slot headers — only meaningful when all 12 columns
+   are on screen at once, so it's hidden in the single-shift views. */
+.shift-group-row {
+    display: none;
+}
+
+.supervisor.is-all-day .shift-group-row {
+    display: table-row;
+}
+
+.review-grid .shift-group {
+    background: var(--bg);
+    color: var(--accent);
+    font-size: 0.8rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+/* Operator and carried issue are per-shift values (get_shift_activity is
+   scoped to one shift's four slots), so All Day mode drops both columns
+   rather than showing one shift's arbitrarily. See fillGrid() in
+   static/js/supervisor.js, which skips filling them in that mode. */
+.supervisor.is-all-day .issue-col,
+.supervisor.is-all-day .operator {
+    display: none;
 }
