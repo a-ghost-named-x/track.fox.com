@@ -119,8 +119,10 @@ def oee_page(request: Request, date: str | None = None, shift: str | None = None
             "time_slots": TIME_SLOTS,
             "shift_order": SHIFT_ORDER,
             "shift_slots": SHIFT_SLOTS,
+            # Feeds window.STANDARD_PCT_OF_IDEAL, which oee.js derives its
+            # colour bands from — "good" starts at standard, so the bands move
+            # if the floor ever revises that figure.
             "standard_pct_of_ideal": STANDARD_PCT_OF_IDEAL,
-            "standard_pct_label": f"{STANDARD_PCT_OF_IDEAL:.0%}",
             "requested_date": date or "",
             "requested_shift": resolve_shift(shift, datetime.now()),
         },

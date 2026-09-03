@@ -782,19 +782,6 @@ button.shift-option {
     text-decoration: underline;
 }
 
-/* The "hitting standard scores 75%, not 100%" note. Reuses .shift-note's
-   accent-bar treatment but stays visible permanently rather than only for 3rd
-   shift — it is the first question every new reader of this page asks. */
-.oee-anchor {
-    max-width: 90ch;
-}
-
-.oee-anchor em {
-    font-style: normal;
-    font-weight: 600;
-    color: var(--text);
-}
-
 /* Per-column completeness, deliberately three separate counts rather than one
    overall percentage: three different people enter units, scrap and downtime,
    so knowing WHICH one is behind is the actionable part. */

@@ -40,17 +40,6 @@
         </div>
     </div>
 
-    {# The single most-asked question about this page, answered before it gets
-       asked. Standards are 75% of theoretical max, so a machine that hits
-       target exactly scores 75% OEE — not 100%. Without this note the first
-       reaction to a 72% is "the line is broken" or "the page is wrong". #}
-    <p class="shift-note oee-anchor">
-        Standards are set at <strong>{{ standard_pct_label }}</strong> of each machine's theoretical maximum,
-        so hitting standard exactly — no scrap, no downtime — scores <strong>{{ standard_pct_label }} OEE</strong>, not 100%.
-        The <em>% of std</em> column is the same measure the production boards use;
-        <em>OEE</em> is the one that compares against the 85%-is-world-class benchmark.
-    </p>
-
     {# Per-column completeness, not one overall percentage. Three different
        people enter units, scrap and downtime, so mid-shift the normal state is
        that one of them is behind — and "scrap 31/34" tells a supervisor who to
@@ -58,7 +47,10 @@
     <div class="completeness" id="completeness" hidden>
         <span class="control-label">Data entered</span>
         <div class="completeness-items">
-            <span class="completeness-item" data-field="units">Units <b>—</b></span>
+            {# Label reads "Machines" while the payload key stays "units" —
+               every count in this strip is a number of machines, and "Units
+               32/34" was being misread as a count of units produced. #}
+            <span class="completeness-item" data-field="units">Machines <b>—</b></span>
             <span class="completeness-item" data-field="downtime">Downtime <b>—</b></span>
             <span class="completeness-item" data-field="scrap">Scrap <b>—</b></span>
         </div>

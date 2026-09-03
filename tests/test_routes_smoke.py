@@ -144,7 +144,8 @@ check("GET /console/nope -> 404", client.get("/console/nope").status_code == 404
 
 print("\n== /oee page content ==")
 page = client.get("/oee").text
-check("carries the 75% anchor note", "75%" in page and "not 100%" in page)
+check("no explanatory 75% banner (removed by request)",
+      "not 100%" not in page and "oee-anchor" not in page)
 check("renders all 12 slot headers", all(f'data-slot="{s}"' in page for s in
       ["8AM", "10AM", "12PM", "2PM", "4PM", "6PM", "8PM", "10PM", "12AM", "2AM", "4AM", "6AM"]))
 check("has no All Day option", "All Day" not in page)
