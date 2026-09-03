@@ -277,6 +277,47 @@ check("re-ticking a not-scheduled machine writes scheduled=True",
       str(written["schedule"]))
 console_mod.get_schedule_for_date = lambda d: {}
 
+print("\n== filling ONE machine writes nothing for the other 13 ==")
+# The guarantee the whole shared-form design rests on. A zone form posts a
+# field for every machine in the zone whether or not anyone typed in it, so
+# each write path has to be gated on its OWN field being non-empty. If a blank
+# box ever became a 0, one person entering one machine would zero the entire
+# zone's production, scrap and availability in a single click.
+for bucket in written.values():
+    bucket.clear()
+post_full_form({
+    "units_C1": "11700", "operator_C1": "Sam",
+    "scrap_C1": "40", "dt_none_C1": "1",
+})
+check("exactly one production entry, for C1",
+      [p.machine_id for p in written["entry"]] == ["C1"],
+      str([p.machine_id for p in written["entry"]]))
+check("exactly one scrap row, for C1",
+      [p.machine_id for p in written["scrap"]] == ["C1"],
+      str([p.machine_id for p in written["scrap"]]))
+check("exactly one downtime submission, for C1",
+      [p.machine_id for p in written["downtime"]] == ["C1"],
+      str([p.machine_id for p in written["downtime"]]))
+check("no scheduling rows at all", written["schedule"] == [],
+      str(written["schedule"]))
+check("no zero-valued row written for any other machine",
+      not [p for p in written["entry"] + written["scrap"] if p.machine_id != "C1"])
+
+print("\n== a blank units box is not a zero ==")
+# Belt and braces: an EXPLICIT zero is a real reading and must still save,
+# so the gate has to be on the field being empty, not on it being falsy.
+for bucket in written.values():
+    bucket.clear()
+post_full_form({"units_C2": "0", "operator_C2": "Dana", "scrap_C2": "0"})
+check("an explicit 0 units still saves",
+      [p.machine_id for p in written["entry"]] == ["C2"]
+      and written["entry"][0].units_produced == 0,
+      str(written["entry"]))
+check("an explicit 0 scrap still saves",
+      [p.machine_id for p in written["scrap"]] == ["C2"]
+      and written["scrap"][0].scrap_cumulative == 0,
+      str(written["scrap"]))
+
 print("\n== scheduling alone needs no time slot ==")
 written["schedule"].clear()
 console_mod.get_schedule_for_date = lambda d: {}

@@ -33,21 +33,30 @@ const QUICK_PICK_COUNT = 7;
 // matter more than missing data: a blank cell is visible and someone chases
 // it, whereas a transposed digit produces a plausible wrong number nobody
 // questions.
+// Hard flags: the number itself cannot be right, whatever the machine's rate
+// is. These exclude the slot from OEE.
 const FLAG_LABELS = {
     negative_units: "cumulative units went backwards",
     negative_scrap: "cumulative scrap went backwards",
-    over_ceiling: "more units than the machine can physically make in 2 hours",
+    implausible_units: "over double the machine's theoretical maximum — likely " +
+        "a transposed digit, or a day-cumulative value in a shift-cumulative box",
     downtime_over_slot: "more downtime than fits in the slot",
+    baseline_suspect: "measured from the previous checkpoint, which is itself " +
+        "wrong — fix that one and this slot resolves too",
     no_ideal_rate: "no ideal rate seeded — OEE can't be computed",
 };
 
-// Soft warnings. Unlike the flags above, these do NOT invalidate the number —
-// each input is individually possible and it's the combination that's odd — so
-// the value is shown as-is with the warning attached. Nothing is clamped.
+// Soft warnings. Unlike the flags above these do NOT invalidate anything — the
+// slot still counts and the value is shown as-is, never clamped. They mean two
+// inputs disagree, and the one that's wrong is usually the machine's configured
+// rate rather than what the floor counted.
 const WARNING_LABELS = {
-    over_100: "OEE above 100%: the machine out-produced its ceiling for the " +
-        "time it was scheduled. Usually planned downtime was over-reported " +
-        "(the line kept running through it), or the ideal rate is set too low.",
+    over_100: "Above this machine's derived maximum for the time it was " +
+        "scheduled. On a single slot this is usually just a checkpoint read " +
+        "late or early — the units belong to the neighbouring slot and it " +
+        "evens out across the shift. Sustained across a whole shift it means " +
+        "planned downtime was over-reported, or the ideal rate is set too low. " +
+        "Counted either way, never clamped.",
 };
 
 const dateInput = document.getElementById("review-date");
@@ -372,11 +381,15 @@ function renderFlags(shiftData) {
         );
     }
     if (warned.length) {
-        // Shown at their real value rather than clamped, so the inconsistency
-        // is visible instead of being rounded away.
+        // Only fires on a WHOLE SHIFT over the ceiling, never on a single slot
+        // — a slot delta is the gap between two hand-taken readings, and a
+        // late one borrows from its neighbour. See _machine_warnings() in
+        // app/db/oee.py. Counted and shown at real value, never clamped.
         messages.push(
-            `OEE above 100% on ${warned.join(", ")} — the downtime and production ` +
-            "entries disagree, or the ideal rate is set too low. Hover the cell for detail."
+            `${warned.join(", ")} beat the maximum derived from their standard ` +
+            "across the whole shift — still counted. Either planned downtime was " +
+            "over-reported, or the ideal rate is set too low for these machines. " +
+            "docs/sql/10_diagnose_over_ceiling.sql works out which."
         );
     }
     flagsBanner.textContent = messages.join("  •  ");

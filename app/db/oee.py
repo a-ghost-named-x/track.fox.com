@@ -91,6 +91,18 @@ from app.models import (
 )
 
 
+# How far past the derived ceiling a slot has to be before its number is
+# treated as broken rather than merely surprising.
+#
+# The ceiling is standard / 0.75, so it carries real uncertainty — a machine
+# whose standard is actually 85% of its maximum will legitimately exceed it.
+# Doubling it, though, is not a rate disagreement: it is a transposed digit, or
+# a cumulative-for-the-day value in a cumulative-for-the-shift field. Below this
+# multiple the slot still counts and merely warns; at or above it, the slot is
+# excluded from OEE.
+IMPLAUSIBLE_CEILING_MULTIPLE: float = 2.0
+
+
 class UnknownReasonCodeError(Exception):
     """Raised when a downtime submission names a reason code that isn't in
     (or is no longer active in) the downtime_reasons table.
@@ -482,9 +494,12 @@ def _compute_slot(
         flags.append("negative_units")
     if has_scrap and scrap < 0:
         flags.append("negative_scrap")
-    if has_units and good > ideal_slot_units:
-        # More good units than the machine can physically make in two hours.
-        flags.append("over_ceiling")
+    if has_units and good > ideal_slot_units * IMPLAUSIBLE_CEILING_MULTIPLE:
+        # Comfortably past even a generous reading of the ceiling. At more than
+        # double the theoretical maximum this is a transposed digit or a value
+        # typed as cumulative-for-the-DAY rather than for the shift, not a
+        # disagreement about the machine's rate.
+        flags.append("implausible_units")
     if run is not None and run < 0:
         flags.append("downtime_over_slot")
 
@@ -496,11 +511,12 @@ def _compute_slot(
     # reason attached, rather than quietly rounded down to 100% and forgotten.
     oee_value = _safe_divide(good, ideal_per_minute * ppt) if ppt else None
     warnings: list[str] = []
+
+    # A single slot over its ceiling is recorded here for the cell's tooltip,
+    # but it is NOT raised to the page banner — see _machine_warnings(), which
+    # judges this at shift level instead. Per-slot deltas carry checkpoint
+    # timing noise that a shift total does not.
     if oee_value is not None and oee_value > 1:
-        # The machine out-produced its own theoretical ceiling for the time it
-        # was scheduled. Usually means planned downtime was over-reported (the
-        # line kept running through it), or the ideal rate is set too low for
-        # this machine. Either way the inputs disagree with each other.
         warnings.append("over_100")
 
     return {
@@ -621,6 +637,51 @@ def _aggregate(
             else None
         ),
     }
+
+
+def _machine_warnings(
+    machine_shift: dict | None, *, slots_counted: int, slots_in_shift: int
+) -> list[str]:
+    """Warnings worth raising to the top of the page for one machine.
+
+    Judged on the SHIFT aggregate, deliberately, not on individual slots.
+
+    A slot's delta is the gap between two hand-taken checkpoints, and those
+    readings are not taken exactly on the slot boundary — a reading logged late
+    pushes the next window's units into this one. Across a shift that cancels
+    out; within a slot it swings hard. Real numbers from the first day of use:
+
+        WS1   8AM 14225   10AM 7538   12PM 13438   2PM 12442
+        C8    8AM 19500   10AM    0   12PM  6000   2PM   600
+
+    Both machines finished the shift comfortably UNDER their ceiling (90% and
+    45% of it), yet a per-slot test flagged them, along with five others — six
+    of the seven on the 8AM slot, the first of the shift. That test was
+    measuring how punctually the checkpoints were read, not what the machines
+    were capable of, and it put an alarming banner on a completely ordinary
+    day.
+
+    The shift total has no such problem: four slots are 480 minutes no matter
+    when each reading was taken. So the ceiling gets compared there, where
+    exceeding it is a real statement about the machine's configured rate.
+
+    That only holds while the "shift" actually covers most of a shift, though.
+    AS4 reported 8AM and 12PM with 10AM missing, which leaves ONE countable
+    slot — and a one-slot aggregate is just a slot delta again, carrying all
+    the timing noise this function exists to see past. So a majority of the
+    shift's slots have to be counted before the comparison is allowed to speak.
+    Below that the machine simply reports its OEE with a low slot count, which
+    is the honest signal, rather than an accusation built on one reading.
+    """
+    if machine_shift is None:
+        return []
+
+    warnings: list[str] = []
+    oee = machine_shift.get("oee")
+    covers_most_of_shift = slots_counted * 2 > slots_in_shift
+    if oee is not None and oee > 1 and covers_most_of_shift:
+        warnings.append("over_100")
+    return warnings
 
 
 def _new_accumulator() -> dict:
@@ -758,6 +819,29 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
                     is_elapsed=slot in elapsed,
                 )
 
+            # A slot whose BASELINE is known-bad is measuring from a wrong
+            # number, so its own delta is meaningless even though it looks
+            # fine in isolation.
+            #
+            # The classic shape: 12PM gets typed low, so 12PM's delta comes out
+            # negative (caught) and 2PM's delta comes out huge — not because
+            # anything was produced, but because the counter is recovering the
+            # ground the typo lost. Counting that inflates the whole shift.
+            #
+            # This is the same rule _cumulative_deltas() already applies to a
+            # MISSING baseline; a known-wrong baseline deserves it just as
+            # much. One bad checkpoint poisons exactly two deltas: its own and
+            # the next.
+            for index, slot in enumerate(slots):
+                if index == 0:
+                    continue
+                previous = slot_results[slots[index - 1]]
+                if {"negative_units", "implausible_units"} & set(previous["flags"]):
+                    current = slot_results[slot]
+                    if "baseline_suspect" not in current["flags"]:
+                        current["flags"].append("baseline_suspect")
+                    current["counted"] = False
+
             counted = [s for s in slot_results.values() if s["counted"]]
             scrap_complete = bool(counted) and all(s["has_scrap"] for s in counted)
 
@@ -795,8 +879,10 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
                 "slots_elapsed": len(elapsed),
                 "scrap_complete": scrap_complete,
                 "flags": sorted({flag for s in slot_results.values() for flag in s["flags"]}),
-                "warnings": sorted(
-                    {warning for s in slot_results.values() for warning in s["warnings"]}
+                "warnings": _machine_warnings(
+                    machine_shift,
+                    slots_counted=len(counted),
+                    slots_in_shift=len(slots),
                 ),
             }
 

@@ -201,12 +201,39 @@ s = _compute_slot(
 check_eq("negative delta flagged", s["flags"], ["negative_units"])
 check_eq("negative delta not counted", s["counted"], False)
 
+# Above the derived ceiling (15,600 for C1) but under double it. The ceiling is
+# standard / 0.75 — a derived number resting on an unverified assumption — so
+# the machine beating it is far more likely to mean the RATE is wrong than that
+# the production is. It warns and still counts.
 s = _compute_slot(
     good=20000, scrap=0, standard=11700,
     downtime=dt(), ideal_per_minute=IDEAL_C1, is_elapsed=True,
 )
-check_eq("over ceiling flagged", s["flags"], ["over_ceiling"])
-check_eq("over ceiling not counted", s["counted"], False)
+check_eq("above ceiling is a warning, not a flag", s["flags"], [])
+check_eq("above ceiling warns on the slot", s["warnings"], ["over_100"])
+check_eq("above ceiling STILL COUNTS", s["counted"], True)
+check("and keeps its real value, unclamped", s["oee"], 20000 / 15600)
+
+# Over double the ceiling is a different claim: not a rate disagreement but a
+# transposed digit or a day-cumulative value in a shift-cumulative box.
+s = _compute_slot(
+    good=40000, scrap=0, standard=11700,
+    downtime=dt(), ideal_per_minute=IDEAL_C1, is_elapsed=True,
+)
+check_eq("over 2x the ceiling is flagged", s["flags"], ["implausible_units"])
+check_eq("and excluded", s["counted"], False)
+
+# Right at the boundary, to pin the threshold down.
+s = _compute_slot(
+    good=31200, scrap=0, standard=11700,
+    downtime=dt(), ideal_per_minute=IDEAL_C1, is_elapsed=True,
+)
+check_eq("exactly 2x the ceiling still counts", s["counted"], True)
+s = _compute_slot(
+    good=31201, scrap=0, standard=11700,
+    downtime=dt(), ideal_per_minute=IDEAL_C1, is_elapsed=True,
+)
+check_eq("a unit past 2x is excluded", s["counted"], False)
 
 s = _compute_slot(
     good=9000, scrap=0, standard=11700,

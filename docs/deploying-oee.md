@@ -380,3 +380,10 @@ Worth knowing so you can rule things out if something looks off:
   overridden individually once the floor gives you a measured nameplate rate —
   run `09_check_ideal_rate_calibration.sql` after a few weeks of real data to
   see which ones look wrong.
+- **If `/oee` reports machines "above the derived ceiling"**, that is a warning,
+  not an error, and those slots still count. It means the machine beat
+  `standard ÷ 0.75`, and the likelier wrong number is the ceiling — either the
+  standards moved since `08` was last run, or 75% isn't the right figure for
+  that machine. Run `docs/sql/10_diagnose_over_ceiling.sql`; its first query
+  distinguishes the two in one look. Only production past **double** the
+  ceiling is treated as a typo and excluded.

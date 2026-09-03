@@ -158,15 +158,26 @@ check("2PM delta fine", M["C2"]["slots"]["2PM"]["good"], 11700)
 check("oee covers counted slots only",
       M["C2"]["shift"]["oee"], (11700 + 11700) / (7800 / 60 * 240))
 
-print("\n== C3: backwards cumulative counter is flagged and excluded ==")
+print("\n== C3: backwards cumulative counter poisons exactly two deltas ==")
+# The 12PM checkpoint was typed as 20000 when 10AM already read 23400.
 check("12PM flagged", M["C3"]["slots"]["12PM"]["flags"], ["negative_units"])
 check("12PM not counted", M["C3"]["slots"]["12PM"]["counted"], False)
-# Both flags are correct: 46800 - 20000 = 26800, which is also over the
-# 15600 two-hour ceiling. One bad checkpoint poisons two deltas.
-check("both flags surfaced", M["C3"]["flags"], ["negative_units", "over_ceiling"])
-check("2PM over ceiling also caught",
-      "over_ceiling" in M["C3"]["slots"]["2PM"]["flags"], True)
-check("only clean slots counted", M["C3"]["slots_counted"], 2)
+
+# 2PM's delta (46800 - 20000 = 26800) looks fine in isolation, but it is the
+# counter recovering the ground the typo lost, not production. Counting it
+# would inflate the shift, so a known-bad baseline disqualifies it the same way
+# a missing one would.
+check("2PM disqualified by its baseline",
+      "baseline_suspect" in M["C3"]["slots"]["2PM"]["flags"], True)
+check("2PM not counted", M["C3"]["slots"]["2PM"]["counted"], False)
+check("both problems surfaced on the machine",
+      M["C3"]["flags"], ["baseline_suspect", "negative_units"])
+check("only the two clean slots counted", M["C3"]["slots_counted"], 2)
+
+# ...but the damage stops there. One bad checkpoint must not write off the
+# whole shift.
+check("8AM survives", M["C3"]["slots"]["8AM"]["counted"], True)
+check("10AM survives", M["C3"]["slots"]["10AM"]["counted"], True)
 
 print("\n== P1: not scheduled ==")
 check("scheduled false", M["P1"]["scheduled"], False)
@@ -239,6 +250,81 @@ check("scheduled machines", c["machines"], 33)  # 34 minus unscheduled P1
 check("units complete for 4 machines", c["units"], 4)  # C1 C3 AS1 AS6 (C2 has a gap)
 check("scrap complete for 3", c["scrap"], 3)  # C1 AS1 AS6
 check("downtime complete for 4", c["downtime"], 4)  # C1 C2 C3 AS1
+
+print("\n== uneven checkpoints must NOT raise a machine-level warning ==")
+# Real rows from the first day of production use. Checkpoints are read by hand
+# and not exactly on the slot boundary, so a late reading borrows units from
+# its neighbour: the per-slot deltas swing wildly while the SHIFT total stays
+# ordinary. WS1 finished at 90% of its ceiling and C8 at 45%, yet a per-slot
+# ceiling test flagged both — along with five other machines, six of the seven
+# on the 8AM slot — and put an alarming banner on a completely normal day.
+#
+# The warning is judged on the shift aggregate for exactly this reason.
+uneven = {
+    # machine: (cumulative checkpoints, per-slot increment)
+    "WS1": ([14225, 21763, 35201, 47643], 9900),   # deltas 14225/7538/13438/12442
+    "C8":  ([19500, 19500, 25500, 26100], 10800),  # deltas 19500/0/6000/600
+}
+for machine_id, (checkpoints, increment) in uneven.items():
+    entries[:] = [e for e in entries if e["machine_id"] != machine_id]
+    for slot, value in zip(S1, checkpoints):
+        entries.append({
+            "machine_id": machine_id, "operator": "Okafor", "time_slot": slot,
+            "units_produced": value, "status": ":)", "issue": None,
+            "entered_by": "4471", "entry_date": DAY, "created_at": NOW,
+        })
+        downtime[(machine_id, slot)] = {
+            "note": None, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0,
+        }
+
+uneven_report = oee.compute_oee_report(DAY, now=NOW)
+UM = uneven_report["shifts"]["1st Shift"]["machines"]
+
+for machine_id, (checkpoints, increment) in uneven.items():
+    machine = UM[machine_id]
+    ceiling_per_slot = increment / 0.75
+    over = [
+        slot for i, slot in enumerate(S1)
+        if (machine["slots"][slot]["good"] or 0) > ceiling_per_slot
+    ]
+    check(f"{machine_id}: at least one slot IS over the ceiling", bool(over), True)
+    check(f"{machine_id}: but the shift total is not",
+          machine["shift"]["oee"] < 1.0, True)
+    check(f"{machine_id}: no machine-level warning raised",
+          machine["warnings"], [])
+    check(f"{machine_id}: nothing flagged, every slot counted",
+          machine["flags"], [])
+    check(f"{machine_id}: all four slots counted", machine["slots_counted"], 4)
+
+# AS4's real row: 8AM and 12PM reported, 10AM missing. 12PM's delta can't be
+# computed without its baseline, so ONE slot counts — and a one-slot aggregate
+# is just a slot delta again, with all the timing noise the shift-level test
+# exists to see past. 3670 against a 3360 ceiling is 109%, which would have
+# raised the warning on the strength of a single reading.
+entries[:] = [e for e in entries if e["machine_id"] != "AS4"]
+for slot, value in (("8AM", 3670), ("12PM", 8040)):
+    entries.append({
+        "machine_id": "AS4", "operator": "Okafor", "time_slot": slot,
+        "units_produced": value, "status": ":)", "issue": None,
+        "entered_by": "4471", "entry_date": DAY, "created_at": NOW,
+    })
+for slot in S1:
+    downtime[("AS4", slot)] = {
+        "note": None, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0,
+    }
+
+sparse = oee.compute_oee_report(DAY, now=NOW)["shifts"]["1st Shift"]["machines"]["AS4"]
+check("AS4: only one slot countable", sparse["slots_counted"], 1)
+check("AS4: its single slot IS over the ceiling",
+      sparse["shift"]["oee"] > 1.0, True)
+check("AS4: but one slot can't speak for a shift, so no warning",
+      sparse["warnings"], [])
+
+# Restore the fixture for the checks that follow.
+entries[:] = [e for e in entries if e["machine_id"] not in set(uneven) | {"AS4"}]
+for machine_id in set(uneven) | {"AS4"}:
+    for slot in S1:
+        downtime.pop((machine_id, slot), None)
 
 print("\n== per-zone rollups come from the server, not the browser ==")
 zones = shift["zones"]
