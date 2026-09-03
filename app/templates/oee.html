@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}OEE{% endblock %}
+{% block content %}
+<div class="oee supervisor" id="oee">
+    <header class="supervisor-header">
+        <h1>OEE</h1>
+        <span class="supervisor-sub">Availability × Performance × Quality, by machine and shift</span>
+    </header>
+
+    <p class="oee-nav">
+        <a href="/supervisor">Shift review</a> ·
+        <a href="/dashboard">Dashboards</a>
+    </p>
+
+    {# Controls reuse /supervisor's .supervisor-controls block wholesale — same
+       audience at the same desk, so having the two pages put their date box in
+       different places would be a needless papercut. The one difference is the
+       shift toggle, which has three options here rather than four: OEE is
+       defined against Planned Production Time, and the three shifts have
+       separate PPTs, downtime and crews, so an "All Day" column would average
+       away the exact thing this page exists to show. #}
+    <div class="supervisor-controls">
+        <div class="control-group">
+            <label class="control-label" for="review-date">Date</label>
+            <input type="date" id="review-date" class="review-date">
+        </div>
+
+        <div class="control-group control-group-grow">
+            <span class="control-label">Recent</span>
+            <div class="quick-picks" id="quick-picks"></div>
+        </div>
+
+        <div class="control-group">
+            <span class="control-label">Shift</span>
+            <div class="shift-toggle" id="shift-toggle">
+                {% for label in shift_order %}
+                <button type="button" class="shift-option" data-shift="{{ label }}">{{ label.split(' ')[0] }}</button>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    {# The single most-asked question about this page, answered before it gets
+       asked. Standards are 75% of theoretical max, so a machine that hits
+       target exactly scores 75% OEE — not 100%. Without this note the first
+       reaction to a 72% is "the line is broken" or "the page is wrong". #}
+    <p class="shift-note oee-anchor">
+        Standards are set at <strong>{{ standard_pct_label }}</strong> of each machine's theoretical maximum,
+        so hitting standard exactly — no scrap, no downtime — scores <strong>{{ standard_pct_label }} OEE</strong>, not 100%.
+        The <em>% of std</em> column is the same measure the production boards use;
+        <em>OEE</em> is the one that compares against the 85%-is-world-class benchmark.
+    </p>
+
+    {# Per-column completeness, not one overall percentage. Three different
+       people enter units, scrap and downtime, so mid-shift the normal state is
+       that one of them is behind — and "scrap 31/34" tells a supervisor who to
+       go ask in a way that "91% complete" does not. #}
+    <div class="completeness" id="completeness" hidden>
+        <span class="control-label">Data entered</span>
+        <div class="completeness-items">
+            <span class="completeness-item" data-field="units">Units <b>—</b></span>
+            <span class="completeness-item" data-field="downtime">Downtime <b>—</b></span>
+            <span class="completeness-item" data-field="scrap">Scrap <b>—</b></span>
+        </div>
+        <span class="completeness-note" id="completeness-note"></span>
+    </div>
+
+    <p class="banner banner-error" id="quality-flags" hidden></p>
+    <p class="supervisor-empty" id="oee-empty" hidden></p>
+
+    <div class="zone-sections" id="zone-sections">
+        {% for zone in zones %}
+        <section class="zone-section" data-zone="{{ zone.slug }}">
+            <h2 class="zone-section-title">
+                {{ zone.label }}
+                <span class="zone-section-count">{{ zone.machine_ids|length }} machines</span>
+                <span class="zone-rollup" data-rollup></span>
+            </h2>
+
+            <table class="oee-grid">
+                <thead>
+                    <tr>
+                        <th class="machine-col" rowspan="2">Machine</th>
+                        {# All 12 slot columns render; the 8 that don't belong to
+                           the selected shift are hidden with .slot-hidden, the
+                           same mechanism dashboard.js and supervisor.js use. #}
+                        <th class="slot-group" colspan="{{ time_slots|length }}">OEE by slot</th>
+                        <th class="summary-group" colspan="9">Shift</th>
+                    </tr>
+                    <tr>
+                        {% for slot in time_slots %}
+                        <th data-slot="{{ slot }}" class="slot-head">{{ slot }}</th>
+                        {% endfor %}
+                        <th class="sum-head sum-oee">OEE</th>
+                        <th class="sum-head">Avail</th>
+                        <th class="sum-head">Perf</th>
+                        <th class="sum-head">Qual</th>
+                        <th class="sum-head">% of std</th>
+                        <th class="sum-head">Good</th>
+                        <th class="sum-head">Scrap</th>
+                        <th class="sum-head">Down</th>
+                        <th class="sum-head">Slots</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {# Every machine in the zone gets a row, including ones that
+                       never reported — the opposite of /dashboard's
+                       applyMachineVisibility(). A blank row here is the finding. #}
+                    {% for machine in zone.machine_ids %}
+                    <tr data-machine="{{ machine }}">
+                        <td class="machine-col">
+                            <span class="machine-name">{{ machine }}</span>
+                            <span class="operator"></span>
+                        </td>
+                        {% for slot in time_slots %}
+                        <td class="cell slot-cell" data-slot="{{ slot }}"><span class="cell-value">—</span></td>
+                        {% endfor %}
+                        <td class="sum sum-oee" data-field="oee">—</td>
+                        <td class="sum" data-field="availability">—</td>
+                        <td class="sum" data-field="performance">—</td>
+                        <td class="sum" data-field="quality">—</td>
+                        <td class="sum" data-field="pct_of_standard">—</td>
+                        <td class="sum" data-field="good">—</td>
+                        <td class="sum" data-field="scrap">—</td>
+                        <td class="sum" data-field="downtime">—</td>
+                        <td class="sum sum-slots" data-field="slots">—</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+        {% endfor %}
+    </div>
+
+    {# The Pareto is where OEE earns its keep. A single percentage tells a
+       supervisor nothing actionable; "42% of lost minutes were material waits"
+       does. Unplanned reasons lead, but planned ones stay in the list so the
+       unplanned shares aren't percentages of a hidden total. #}
+    <section class="pareto-section" id="pareto-section" hidden>
+        <h2 class="zone-section-title">
+            Downtime by reason
+            <span class="zone-section-count" id="pareto-total"></span>
+        </h2>
+        <div class="pareto" id="pareto"></div>
+    </section>
+
+    <footer class="supervisor-footer">
+        <span id="loaded-at"></span>
+    </footer>
+</div>
+
+<script>
+    window.TIME_SLOTS = {{ time_slots|tojson }};
+    window.SHIFT_SLOTS = {{ shift_slots|tojson }};
+    window.SHIFT_ORDER = {{ shift_order|tojson }};
+    window.STANDARD_PCT_OF_IDEAL = {{ standard_pct_of_ideal|tojson }};
+    window.INITIAL_DATE = {{ requested_date|tojson }};
+    window.INITIAL_SHIFT = {{ requested_shift|tojson }};
+</script>
+<script src="/static/js/oee.js"></script>
+{% endblock %}

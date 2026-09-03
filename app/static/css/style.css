@@ -759,3 +759,365 @@ button.shift-option {
 .supervisor.is-all-day .operator {
     display: none;
 }
+
+/* ---------- OEE (/oee) ---------- */
+
+/* Inherits .supervisor wholesale — the OEE page carries both classes, so it
+   picks up the dark palette, the controls block, the date box and the shift
+   toggle without redeclaring any of it. Only what is genuinely new to this
+   page lives below. */
+
+.oee-nav {
+    margin: -0.75rem 0 1.25rem;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+}
+
+.oee-nav a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.oee-nav a:hover {
+    text-decoration: underline;
+}
+
+/* The "hitting standard scores 75%, not 100%" note. Reuses .shift-note's
+   accent-bar treatment but stays visible permanently rather than only for 3rd
+   shift — it is the first question every new reader of this page asks. */
+.oee-anchor {
+    max-width: 90ch;
+}
+
+.oee-anchor em {
+    font-style: normal;
+    font-weight: 600;
+    color: var(--text);
+}
+
+/* Per-column completeness, deliberately three separate counts rather than one
+   overall percentage: three different people enter units, scrap and downtime,
+   so knowing WHICH one is behind is the actionable part. */
+.completeness {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin: 0 0 1.25rem;
+    padding: 0.6rem 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.completeness-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+}
+
+.completeness-item {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+}
+
+.completeness-item b {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Amber, not red: a column that is behind mid-shift is normal, not an error. */
+.completeness-item.is-short b {
+    color: #d29922;
+}
+
+.completeness-note {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+
+.zone-rollup {
+    margin-left: auto;
+    font-size: 0.85rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    padding: 0.15rem 0.55rem;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+}
+
+/* Its own grid rather than reusing .review-grid: this one carries 12 slot
+   columns plus 9 summary columns, so it needs tighter padding and a visible
+   divide between the two column groups. The status colours are its own too —
+   /dashboard's .cell[data-status] is a binary smiley and this is a band. */
+.oee-grid {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.oee-grid th,
+.oee-grid td {
+    border: 1px solid var(--border);
+    padding: 0.35rem 0.5rem;
+    text-align: center;
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.oee-grid thead th {
+    background: var(--surface);
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 0.75rem;
+}
+
+.oee-grid .slot-group,
+.oee-grid .summary-group {
+    background: var(--bg);
+    color: var(--accent);
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.oee-grid .machine-col {
+    width: 8rem;
+    text-align: left;
+    font-weight: 700;
+    background: var(--surface);
+}
+
+.oee-grid .machine-col .operator {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 400;
+    color: var(--text-dim);
+}
+
+.oee-grid .cell,
+.oee-grid .sum {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Divider between the last slot column and the shift summary block, so the eye
+   cannot read a per-slot OEE as a shift total. */
+.oee-grid .sum-oee {
+    border-left: 2px solid var(--text-dim);
+    font-weight: 700;
+}
+
+/* Band colours, derived from the 75%-of-theoretical standard: "good" starts at
+   standard, "excellent" at the 85% world-class mark, "fair" bottoms out around
+   the 60% industry-typical figure.
+
+   Slot cells get a tint with coloured text — 12 saturated columns would be
+   unreadable — while the single OEE summary column gets a solid fill, since
+   that is the number the page is actually for. */
+.oee-grid .cell[data-band="excellent"] { background: rgba(46, 160, 67, 0.28); color: #56d364; }
+.oee-grid .cell[data-band="good"]      { background: rgba(46, 160, 67, 0.15); color: #56d364; }
+.oee-grid .cell[data-band="fair"]      { background: rgba(210, 153, 34, 0.18); color: #e3b341; }
+.oee-grid .cell[data-band="poor"]      { background: rgba(218, 54, 51, 0.20); color: #ff7b72; }
+
+.oee-grid .sum-oee[data-band="excellent"] { background: #238636; color: #ffffff; }
+.oee-grid .sum-oee[data-band="good"]      { background: #2ea043; color: #ffffff; }
+.oee-grid .sum-oee[data-band="fair"]      { background: #9e6a03; color: #ffffff; }
+.oee-grid .sum-oee[data-band="poor"]      { background: var(--bad); color: #ffffff; }
+
+.oee-grid .sum-slots[data-band="fair"] {
+    color: #e3b341;
+    font-weight: 700;
+}
+
+/* An impossible value — a backwards cumulative counter, or more units than the
+   machine can physically make in two hours. Marked, and excluded from OEE,
+   because a plausible wrong number is more dangerous than a blank one. */
+.oee-grid .cell[data-flagged] {
+    background: repeating-linear-gradient(
+        45deg,
+        rgba(218, 54, 51, 0.25),
+        rgba(218, 54, 51, 0.25) 4px,
+        transparent 4px,
+        transparent 8px
+    );
+    color: #ff7b72;
+    font-weight: 700;
+    cursor: help;
+}
+
+/* A soft warning: the value is real and still counted, but two inputs
+   disagree (most often an OEE over 100%, meaning planned downtime was
+   over-reported). Outlined rather than recoloured, because the band colour is
+   still the truth about the number — nothing is clamped. */
+.oee-grid .cell[data-warned] {
+    outline: 2px dashed #e3b341;
+    outline-offset: -2px;
+    cursor: help;
+}
+
+/* Not scheduled is ABSENT from the rollup, not a zero — so the row is dimmed
+   rather than coloured, which would imply it scored badly. */
+.oee-grid tr[data-unscheduled] {
+    opacity: 0.45;
+}
+
+.oee-grid tr[data-unscheduled] .sum-oee {
+    font-weight: 400;
+    font-style: italic;
+    border-left-color: var(--border);
+}
+
+.zone-rollup[data-band="excellent"],
+.zone-rollup[data-band="good"] {
+    color: #56d364;
+    border-color: #2ea043;
+}
+
+.zone-rollup[data-band="fair"] {
+    color: #e3b341;
+    border-color: #9e6a03;
+}
+
+.zone-rollup[data-band="poor"] {
+    color: #ff7b72;
+    border-color: var(--bad);
+}
+
+/* ---------- OEE downtime Pareto ---------- */
+
+/* Where the page earns its keep: one OEE percentage is not actionable, but
+   "42% of lost minutes were material waits" is. */
+.pareto-section {
+    margin: 2.5rem 0 1rem;
+}
+
+.pareto {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.pareto-row {
+    display: grid;
+    grid-template-columns: 14rem 1fr 12rem;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.85rem;
+}
+
+.pareto-label {
+    text-align: right;
+    color: var(--text);
+}
+
+.pareto-track {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    height: 1.1rem;
+    overflow: hidden;
+}
+
+.pareto-bar {
+    display: block;
+    height: 100%;
+    background: var(--bad);
+}
+
+.pareto-value {
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Planned downtime is not a loss — it is excluded from the OEE denominator —
+   so it reads neutral rather than joining the red unplanned bars. It stays in
+   the list so the unplanned percentages are not shares of a hidden total. */
+.pareto-row[data-planned] .pareto-bar {
+    background: var(--text-dim);
+}
+
+.pareto-row[data-planned] .pareto-label {
+    color: var(--text-dim);
+}
+
+/* ---------- Console batch: OEE fields ---------- */
+
+.batch-grid-oee input[type="number"] {
+    width: 7rem;
+}
+
+/* What is already on record for scrap and downtime, shown BESIDE the input
+   rather than loaded into it. Loading it in would mean every save by anyone
+   rewrote it — including the production person, who has no business touching
+   downtime. A blank input means "no change". */
+.field-hint {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    white-space: normal;
+}
+
+.batch-grid .dt-col,
+.batch-grid .dt-cell {
+    min-width: 19rem;
+}
+
+.dt-cell {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.dt-none {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.dt-pair {
+    display: inline-flex;
+    gap: 0.25rem;
+}
+
+.dt-cell .dt-reason {
+    max-width: 9rem;
+}
+
+.batch-grid-oee .dt-cell .dt-min {
+    width: 4.2rem;
+}
+
+.batch-grid .sched-col {
+    text-align: center;
+    min-width: 5.5rem;
+}
+
+.batch-grid .sched-col .optional {
+    display: block;
+}
+
+/* A text button for the "tick all none" shortcut — it is an action inside a
+   table header, where a real button would dominate the row.
+
+   Scoped under .entry-form deliberately: `.entry-form button` further up
+   styles the big blue submit button, and at specificity (0,1,1) it outranks a
+   bare `.link-button` (0,1,0) — which rendered this shortcut as a full-size
+   primary button inside the table header. */
+.entry-form .link-button {
+    display: block;
+    margin-top: 0.2rem;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 0.72rem;
+    font-weight: 400;
+    text-decoration: underline;
+    cursor: pointer;
+}

@@ -1,0 +1,10 @@
+# Development-only dependencies. NOT installed into the Docker image —
+# requirements.txt is what the Dockerfile uses.
+#
+# httpx backs fastapi.testclient.TestClient, which tests/test_routes_smoke.py
+# uses to render every page and exercise the /console write paths.
+#
+#   python -m venv .venv
+#   .venv/Scripts/pip install -r requirements.txt -r requirements-dev.txt
+
+httpx==0.27.2

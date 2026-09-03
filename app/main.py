@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import console, dashboard, supervisor
+from app.routers import console, dashboard, oee, supervisor
 
 app = FastAPI(title="track.fox.com")
 
@@ -16,6 +16,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(dashboard.router)
 app.include_router(console.router)
 app.include_router(supervisor.router)
+app.include_router(oee.router)
 
 
 @app.get("/")

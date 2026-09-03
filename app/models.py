@@ -174,3 +174,144 @@ class Entry(EntryCreate):
 
     id: int
     status: str  # ":)" or ":("
+
+
+# ---------------------------------------------------------------------------
+# OEE — reference values and slot geometry
+#
+# OEE = Availability x Performance x Quality, computed in app/db/oee.py.
+# Schema and the full derivation are in docs/sql/06_oee_schema.sql and
+# docs/sql/08_seed_ideal_rates.sql.
+# ---------------------------------------------------------------------------
+
+# Every time slot is the END of a 2-hour window (the 8AM slot covers 6-8AM),
+# so four slots tile one 8-hour shift exactly: 4 x 120 = 480 minutes.
+#
+# This is also Planned Production Time for a fully-scheduled slot. Per the
+# floor, machines do NOT stop for breaks or lunch — someone covers the machine
+# so it keeps running — so there is no break allowance to deduct here. If that
+# ever changes, it becomes planned downtime via the reason codes, not a change
+# to this constant.
+SLOT_MINUTES: int = 120
+
+# Standards are set at 75% of each machine's theoretical maximum. Recorded here
+# for readers; nothing computes with it. The actual ceiling used by the OEE
+# math lives per-machine in the `machine_ideal_rates` table, seeded by
+# docs/sql/08_seed_ideal_rates.sql, precisely so that a target change can't
+# silently move historical OEE. See that file for the arithmetic.
+STANDARD_PCT_OF_IDEAL: float = 0.75
+
+
+def _slot_end_hour(slot: str) -> int:
+    """Converts a slot label to the 24h hour its window closes on.
+
+    "8AM" -> 8, "2PM" -> 14, "12AM" -> 0, "12PM" -> 12. Parsed rather than
+    written out as a literal map so it cannot drift from TIME_SLOTS.
+    """
+    meridiem = slot[-2:]
+    hour = int(slot[:-2])
+    if meridiem == "AM":
+        return 0 if hour == 12 else hour
+    return 12 if hour == 12 else hour + 12
+
+
+SLOT_END_HOURS: dict[str, int] = {slot: _slot_end_hour(slot) for slot in TIME_SLOTS}
+
+# Which shift a slot belongs to, and its 1-based position within that shift.
+# Position is what makes cumulative deltas work: units_produced resets at the
+# start of every shift, so slot 1's delta is its own value and slot n's is the
+# difference from slot n-1.
+#
+# Derived from SHIFT_SLOTS rather than written out again, so reordering a
+# shift's slots there can't leave a stale copy here.
+SLOT_POSITIONS: dict[str, tuple[str, int]] = {
+    slot: (label, index)
+    for label, slots in SHIFT_SLOTS.items()
+    for index, slot in enumerate(slots, start=1)
+}
+
+# Order the /oee page stacks its zone sections in. Same order /supervisor
+# uses — /oee is the same audience at the same desk, and having the two pages
+# disagree about where Poly sits would be its own small papercut.
+OEE_ZONE_ORDER: list[str] = SUPERVISOR_ZONE_ORDER
+
+
+def elapsed_slots(shift: str, entry_date: date_type, now: datetime) -> list[str]:
+    """Which of `shift`'s slots have actually finished, for `entry_date`.
+
+    Used so /oee doesn't report the rest of today as "missing data". A past
+    date has all four slots elapsed; today's has only the ones whose 2-hour
+    window has closed. A future date has none.
+
+    3rd Shift needs no special handling despite spanning midnight: its slots
+    (12AM-6AM) are logged against the calendar day they LAND on, which is how
+    entry_date already works everywhere in the app, so their end hours (0, 2,
+    4, 6) are genuinely early-morning hours of entry_date.
+    """
+    slots = SHIFT_SLOTS.get(shift, [])
+    today = now.date()
+    if entry_date < today:
+        return list(slots)
+    if entry_date > today:
+        return []
+    return [slot for slot in slots if now.hour >= SLOT_END_HOURS[slot]]
+
+
+class ScrapCreate(BaseModel):
+    """One scrap submission for a machine+date+slot.
+
+    CUMULATIVE within the shift, matching entries.units_produced — see
+    docs/sql/06_oee_schema.sql for why both are cumulative rather than
+    per-slot.
+    """
+
+    machine_id: str
+    entry_date: date_type
+    time_slot: str
+    scrap_cumulative: int = Field(ge=0)
+    entered_by: str = Field(min_length=1, max_length=20)
+
+
+class DowntimeReasonInput(BaseModel):
+    """One (reason, minutes) pair inside a downtime submission.
+
+    minutes is PER SLOT, not cumulative, and must be positive: a zero-minute
+    reason says nothing. "Ran clean" is a submission with an empty `reasons`
+    list, which is a materially different statement from no submission at all.
+    """
+
+    reason_code: str
+    minutes: int = Field(gt=0)
+
+
+class DowntimeCreate(BaseModel):
+    """One downtime submission for a machine+date+slot.
+
+    An empty `reasons` list is valid and load-bearing — it records "no
+    downtime this slot, 100% availability". Absence of any submission means
+    "nobody has entered this slot yet", and OEE reports N/A for it rather than
+    assuming zero. Same NULL-is-not-zero rule as a standards row of 0.
+    """
+
+    machine_id: str
+    entry_date: date_type
+    time_slot: str
+    reasons: list[DowntimeReasonInput] = Field(default_factory=list)
+    note: str | None = Field(default=None, max_length=500)
+    entered_by: str = Field(min_length=1, max_length=20)
+
+
+class ScheduleCreate(BaseModel):
+    """A scheduling exception for one machine for one whole shift.
+
+    Only exceptions get written — absence of a row means the machine WAS
+    scheduled, so nobody has to fill anything in on a normal day. A machine
+    marked not-scheduled is excluded from that shift's OEE rollup entirely,
+    rather than scoring 0%.
+    """
+
+    machine_id: str
+    entry_date: date_type
+    shift: str
+    scheduled: bool
+    entered_by: str = Field(min_length=1, max_length=20)
