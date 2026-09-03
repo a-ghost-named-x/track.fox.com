@@ -33,31 +33,66 @@ const QUICK_PICK_COUNT = 7;
 // matter more than missing data: a blank cell is visible and someone chases
 // it, whereas a transposed digit produces a plausible wrong number nobody
 // questions.
-// Hard flags: the number itself cannot be right, whatever the machine's rate
-// is. These exclude the slot from OEE.
+/**
+ * Hard flags: the number itself cannot be right, whatever the machine's rate
+ * is, so the slot is excluded from OEE.
+ *
+ * Each has a short `title` naming the problem and a `detail` saying what to do
+ * about it. The banner groups machines UNDER these rather than repeating the
+ * text per machine — six machines with two flags each produced a solid
+ * paragraph of duplicated prose that nobody would read.
+ */
 const FLAG_LABELS = {
-    negative_units: "cumulative units went backwards",
-    negative_scrap: "cumulative scrap went backwards",
-    implausible_units: "over double the machine's theoretical maximum — likely " +
-        "a transposed digit, or a day-cumulative value in a shift-cumulative box",
-    downtime_over_slot: "more downtime than fits in the slot",
-    baseline_suspect: "measured from the previous checkpoint, which is itself " +
-        "wrong — fix that one and this slot resolves too",
-    no_ideal_rate: "no ideal rate seeded — OEE can't be computed",
+    negative_units: {
+        title: "Cumulative units went backwards",
+        detail: "A counter cannot decrease. Check the reading against the one before it.",
+    },
+    negative_scrap: {
+        title: "Cumulative scrap went backwards",
+        detail: "A counter cannot decrease. Check the reading against the one before it.",
+    },
+    implausible_units: {
+        title: "More than double the machine's theoretical maximum",
+        detail: "Usually a transposed digit, or a whole day's total typed into a box that means one shift.",
+    },
+    downtime_over_slot: {
+        title: "More downtime than fits in the slot",
+        detail: "A 2-hour slot holds at most 120 minutes.",
+    },
+    baseline_suspect: {
+        title: "Measured from a checkpoint that is itself wrong",
+        detail: "Fix the earlier checkpoint and these slots resolve on their own.",
+    },
+    no_ideal_rate: {
+        title: "No ideal rate seeded",
+        detail: "OEE cannot be computed. Run docs/sql/08_seed_ideal_rates.sql.",
+    },
 };
 
-// Soft warnings. Unlike the flags above these do NOT invalidate anything — the
-// slot still counts and the value is shown as-is, never clamped. They mean two
-// inputs disagree, and the one that's wrong is usually the machine's configured
-// rate rather than what the floor counted.
+/**
+ * Soft warnings. Unlike the flags above these invalidate nothing: the slot
+ * still counts and the value is shown as-is, never clamped. They mean two
+ * inputs disagree, and the wrong one is usually the machine's configured rate
+ * rather than what the floor counted.
+ */
 const WARNING_LABELS = {
-    over_100: "Above this machine's derived maximum for the time it was " +
-        "scheduled. On a single slot this is usually just a checkpoint read " +
-        "late or early — the units belong to the neighbouring slot and it " +
-        "evens out across the shift. Sustained across a whole shift it means " +
-        "planned downtime was over-reported, or the ideal rate is set too low. " +
-        "Counted either way, never clamped.",
+    over_100: {
+        title: "Beat the maximum derived from its standard, across the whole shift",
+        detail: "Still counted. Either planned downtime was over-reported, or the " +
+            "ideal rate is set too low. docs/sql/10_diagnose_over_ceiling.sql works out which.",
+        tooltip: "Above this machine's derived maximum for the time it was scheduled. " +
+            "On a single slot that is usually just a checkpoint read late or early, " +
+            "so the units belong to the neighbouring slot and it evens out across " +
+            "the shift. Counted either way, never clamped.",
+    },
 };
+
+/** Short one-line form, for tooltips on an individual cell. */
+function describeCode(code, table) {
+    const entry = table[code];
+    if (!entry) return code;
+    return entry.tooltip || `${entry.title}. ${entry.detail}`;
+}
 
 const dateInput = document.getElementById("review-date");
 const quickPicksEl = document.getElementById("quick-picks");
@@ -161,7 +196,7 @@ function missingReason(slot) {
     if (!slot.has_downtime) missing.push("downtime");
     if (missing.length) return `Not entered: ${missing.join(", ")}`;
     if (slot.flags && slot.flags.length) {
-        return slot.flags.map((f) => FLAG_LABELS[f] || f).join("; ");
+        return slot.flags.map((f) => describeCode(f, FLAG_LABELS)).join("\n");
     }
     if (slot.ppt_minutes === 0) return "Entire slot was planned downtime";
     return "";
@@ -174,7 +209,7 @@ function slotTitle(slot) {
     // zero. Saying so distinguishes an inferred zero from a typed one — the
     // maths treats them identically, but a reader shouldn't have to guess.
     if (slot.has_units && !slot.units_reported) {
-        lines.push("No checkpoint entered — carried forward, so nothing was produced.");
+        lines.push("No checkpoint entered, so the number had not moved: this slot produced zero.");
     }
     lines.push(`Good: ${count(slot.good)}`);
     lines.push(`Scrap: ${count(slot.scrap)}`
@@ -194,7 +229,7 @@ function slotTitle(slot) {
     const reason = missingReason(slot);
     if (reason) lines.push(reason);
     for (const warning of slot.warnings || []) {
-        lines.push(WARNING_LABELS[warning] || warning);
+        lines.push(describeCode(warning, WARNING_LABELS));
     }
     return lines.join("\n");
 }
@@ -232,7 +267,7 @@ function fillMachineRow(row, machine, slots) {
         row.setAttribute("data-unscheduled", "");
         const oeeCell = row.querySelector('[data-field="oee"]');
         oeeCell.textContent = "not scheduled";
-        oeeCell.title = "Marked as not scheduled to run this shift, so it's left out of the zone rollup.";
+        oeeCell.title = "Marked as not scheduled to run this shift, so it is left out of the zone rollup.";
         return;
     }
 
@@ -263,7 +298,7 @@ function fillMachineRow(row, machine, slots) {
     if (!shift) {
         const oeeCell = row.querySelector('[data-field="oee"]');
         oeeCell.title = machine.flags && machine.flags.length
-            ? machine.flags.map((f) => FLAG_LABELS[f] || f).join("; ")
+            ? machine.flags.map((f) => describeCode(f, FLAG_LABELS)).join("\n")
             : "No slot in this shift has both units and downtime entered.";
         return;
     }
@@ -300,7 +335,7 @@ function fillMachineRow(row, machine, slots) {
 
     const slotsCell = set("slots", `${machine.slots_counted}/${machine.slots_elapsed}`,
         machine.slots_counted < machine.slots_elapsed
-            ? "Some elapsed slots are missing data or were excluded for an impossible value — OEE covers only the counted ones."
+            ? "Some elapsed slots are missing data, or were excluded for an impossible value. OEE covers only the counted ones."
             : "");
     if (slotsCell && machine.slots_counted < machine.slots_elapsed) {
         slotsCell.setAttribute("data-band", "fair");
@@ -324,7 +359,7 @@ function fillZoneRollup(section, shiftData) {
 
     const rollup = (shiftData.zones || {})[section.dataset.zone];
     if (!rollup) {
-        target.textContent = "no OEE — nothing counted this shift";
+        target.textContent = "no OEE: nothing counted this shift";
         return;
     }
 
@@ -359,16 +394,16 @@ function renderCompleteness(shiftData) {
     const explain = {
         units: "machines whose production is known across the shift. A blank " +
             "checkpoint counts as unchanged, so one reading is enough to " +
-            "determine the whole shift — only a machine with NO reading at " +
+            "determine the whole shift. Only a machine with NO reading at " +
             "all is missing.",
         downtime: `machines with a downtime entry for all ${slotWord}. ` +
-            "Downtime does NOT carry forward the way units do — it isn't " +
+            "Downtime does NOT carry forward the way units do. It is not " +
             "cumulative, so a blank is genuinely unentered. A machine that ran " +
             "clean still needs one: tick \"none\" on /console. Without it OEE " +
             "stays blank rather than assuming zero downtime.",
         scrap: "machines whose scrap is known across the shift. Cumulative " +
             "like units, so a blank counts as unchanged. Scrap only affects " +
-            "the Performance/Quality split — OEE and Availability are " +
+            "the Performance/Quality split. OEE and Availability are " +
             "computed without it.",
     };
 
@@ -394,45 +429,76 @@ function renderCompleteness(shiftData) {
     }
 }
 
-function renderFlags(shiftData) {
-    const offenders = [];
-    const warned = [];
-    for (const [machineId, machine] of Object.entries(shiftData.machines)) {
-        if (machine.flags && machine.flags.length) {
-            offenders.push(
-                `${machineId} (${machine.flags.map((f) => FLAG_LABELS[f] || f).join(", ")})`
-            );
-        }
-        if (machine.warnings && machine.warnings.length) {
-            warned.push(machineId);
+/**
+ * Groups machines BY PROBLEM rather than listing problems per machine.
+ *
+ * The obvious way round produced a wall of text: six machines carrying two
+ * flags each repeated the same two explanations six times, in one run-on
+ * paragraph. Inverted, the same information is two lines with a machine list
+ * on each, and the shared cause is visible at a glance.
+ */
+function groupByCode(machines, field) {
+    const groups = new Map();
+    for (const [machineId, machine] of Object.entries(machines)) {
+        for (const code of machine[field] || []) {
+            if (!groups.has(code)) groups.set(code, []);
+            groups.get(code).push(machineId);
         }
     }
-    if (!offenders.length && !warned.length) {
+    return groups;
+}
+
+function appendFlagGroup(parent, groups, table) {
+    for (const [code, machineIds] of groups) {
+        const entry = table[code] || { title: code, detail: "" };
+        const row = document.createElement("div");
+        row.className = "flag-row";
+
+        const heading = document.createElement("span");
+        heading.className = "flag-title";
+        heading.textContent = `${entry.title}:`;
+
+        const list = document.createElement("span");
+        list.className = "flag-machines";
+        list.textContent = machineIds.join(", ");
+
+        const detail = document.createElement("span");
+        detail.className = "flag-detail";
+        detail.textContent = entry.detail;
+
+        row.appendChild(heading);
+        row.appendChild(list);
+        if (entry.detail) row.appendChild(detail);
+        parent.appendChild(row);
+    }
+}
+
+function renderFlags(shiftData) {
+    const flagGroups = groupByCode(shiftData.machines, "flags");
+    const warningGroups = groupByCode(shiftData.machines, "warnings");
+
+    flagsBanner.textContent = "";
+    if (!flagGroups.size && !warningGroups.size) {
         flagsBanner.hidden = true;
         return;
     }
     flagsBanner.hidden = false;
 
-    const messages = [];
-    if (offenders.length) {
-        messages.push(
-            "Impossible values found and excluded from OEE — file a correction at " +
-            `/console: ${offenders.join("; ")}`
-        );
+    if (flagGroups.size) {
+        const lead = document.createElement("div");
+        lead.className = "flag-lead";
+        lead.textContent = "Excluded from OEE. File corrections at /console.";
+        flagsBanner.appendChild(lead);
+        appendFlagGroup(flagsBanner, flagGroups, FLAG_LABELS);
     }
-    if (warned.length) {
-        // Only fires on a WHOLE SHIFT over the ceiling, never on a single slot
-        // — a slot delta is the gap between two hand-taken readings, and a
-        // late one borrows from its neighbour. See _machine_warnings() in
-        // app/db/oee.py. Counted and shown at real value, never clamped.
-        messages.push(
-            `${warned.join(", ")} beat the maximum derived from their standard ` +
-            "across the whole shift — still counted. Either planned downtime was " +
-            "over-reported, or the ideal rate is set too low for these machines. " +
-            "docs/sql/10_diagnose_over_ceiling.sql works out which."
-        );
+
+    if (warningGroups.size) {
+        const lead = document.createElement("div");
+        lead.className = "flag-lead flag-lead-warning";
+        lead.textContent = "Worth a look, but still counted.";
+        flagsBanner.appendChild(lead);
+        appendFlagGroup(flagsBanner, warningGroups, WARNING_LABELS);
     }
-    flagsBanner.textContent = messages.join("  •  ");
 }
 
 function renderPareto(shiftData) {
@@ -565,7 +631,7 @@ async function load(isoDate) {
             showEmpty("No production entries have been recorded yet.");
         } else if (!anyMachine) {
             showEmpty(
-                `No OEE can be computed for ${formatDate(payload.date)} — ` +
+                `No OEE can be computed for ${formatDate(payload.date)}. ` +
                 "OEE needs both production units and a downtime entry for a slot, " +
                 "and at least one of those is missing for every machine that day."
             );
@@ -576,7 +642,7 @@ async function load(isoDate) {
         render();
         loadedAt.textContent = `Loaded at ${new Date().toLocaleTimeString()}`;
     } catch (err) {
-        loadedAt.textContent = "Could not load data — check the connection and reload.";
+        loadedAt.textContent = "Could not load data. Check the connection and reload.";
         console.error("OEE load failed:", err);
     }
 }

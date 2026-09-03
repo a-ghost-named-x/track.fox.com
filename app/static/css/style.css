@@ -782,6 +782,54 @@ button.shift-option {
     text-decoration: underline;
 }
 
+/* Data-quality banner. One row per PROBLEM with the affected machines listed
+   on it, rather than one entry per machine repeating the same explanation —
+   six machines carrying two flags each used to render as a solid paragraph. */
+.flag-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    line-height: 1.45;
+}
+
+.flag-lead {
+    font-weight: 700;
+}
+
+.flag-lead-warning {
+    margin-top: 0.5rem;
+    /* Not an error: these values are still counted. Reusing the error banner's
+       red for them would overstate what they mean. */
+    color: #e3b341;
+}
+
+.flag-row {
+    padding-left: 0.9rem;
+    text-indent: -0.9rem;
+}
+
+.flag-row::before {
+    content: "· ";
+    font-weight: 700;
+}
+
+.flag-title {
+    font-weight: 600;
+}
+
+/* The machine list is what the reader is actually scanning for, so it gets the
+   emphasis rather than the prose around it. */
+.flag-machines {
+    margin-left: 0.35rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.flag-detail {
+    margin-left: 0.35rem;
+    opacity: 0.75;
+}
+
 /* Per-column completeness, deliberately three separate counts rather than one
    overall percentage: three different people enter units, scrap and downtime,
    so knowing WHICH one is behind is the actionable part. */

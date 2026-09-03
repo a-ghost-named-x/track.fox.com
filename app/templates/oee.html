@@ -57,7 +57,9 @@
         <span class="completeness-note" id="completeness-note"></span>
     </div>
 
-    <p class="banner banner-error" id="quality-flags" hidden></p>
+    {# A div, not a p: renderFlags() builds one block row per problem with the
+       affected machines listed on it, and a p can't legally contain them. #}
+    <div class="banner banner-error flag-banner" id="quality-flags" hidden></div>
     <p class="supervisor-empty" id="oee-empty" hidden></p>
 
     <div class="zone-sections" id="zone-sections">
