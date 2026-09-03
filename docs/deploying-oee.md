@@ -368,6 +368,14 @@ Worth knowing so you can rule things out if something looks off:
   form deliberately does *not* pre-fill the downtime boxes — they show what's on
   record as a grey hint instead, so only someone who actually types something
   can change it.
+- **A blank production checkpoint counts as zero, not as missing.** The floor
+  leaves a cell empty when the number hasn't moved, so a shift's production is
+  the last reading in it and interior gaps don't change the total. One reading
+  per shift is therefore enough for units and scrap — but **downtime still
+  needs one entry per slot**, since it isn't cumulative and a blank there is
+  genuinely unentered. Two guards apply: a shift with no readings at all stays
+  unknown (that's the not-scheduled checkbox's job), and slots that haven't
+  elapsed yet stay unknown rather than counting as zero.
 - **Scrap must be entered for every counted slot** before Performance and
   Quality can be separated for that machine. OEE and Availability appear
   without it, because scrap cancels out of `A × P × Q`. Partial scrap gives you

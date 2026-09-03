@@ -149,14 +149,27 @@ check("pct_of_standard", M["C1"]["shift"]["pct_of_standard"], 1.0)
 check("slots counted", M["C1"]["slots_counted"], 4)
 check("good", M["C1"]["shift"]["good"], 46800)
 
-print("\n== C2: missing 10AM -> only contiguous slots count ==")
-check("slots counted (8AM + 2PM only)", M["C2"]["slots_counted"], 2)
-check("slots elapsed", M["C2"]["slots_elapsed"], 4)
-check("10AM has no units", M["C2"]["slots"]["10AM"]["has_units"], False)
-check("12PM delta uncomputable", M["C2"]["slots"]["12PM"]["good"], None)
-check("2PM delta fine", M["C2"]["slots"]["2PM"]["good"], 11700)
-check("oee covers counted slots only",
-      M["C2"]["shift"]["oee"], (11700 + 11700) / (7800 / 60 * 240))
+print("\n== C2: a blank 10AM is absorbed, the shift total is unaffected ==")
+# Readings 11700 / blank / 35100 / 46800. A blank means unchanged, so 10AM
+# produced nothing and 12PM's delta spans back to the 8AM reading. The shift
+# total is the last reading either way, which is the point: an interior gap
+# can no longer move a machine's shift OEE.
+check("all four slots countable", M["C2"]["slots_counted"], 4)
+check("10AM production is KNOWN (zero), not unknown",
+      M["C2"]["slots"]["10AM"]["has_units"], True)
+check("10AM produced nothing", M["C2"]["slots"]["10AM"]["good"], 0)
+check("10AM is marked as not actually keyed in",
+      M["C2"]["slots"]["10AM"]["units_reported"], False)
+check("12PM absorbs the gap", M["C2"]["slots"]["12PM"]["good"], 23400)
+check("2PM unaffected", M["C2"]["slots"]["2PM"]["good"], 11700)
+check("shift total equals the last reading", M["C2"]["shift"]["good"], 46800)
+check("so C2 scores exactly what C1 does", M["C2"]["shift"]["oee"], 0.75)
+
+# The absorbed slot is lumpy (23400 against a 15600 ceiling) and says so on the
+# cell, but the shift is sound so nothing is raised to the banner.
+check("the lumpy slot warns", "over_100" in M["C2"]["slots"]["12PM"]["warnings"], True)
+check("but it still counts", M["C2"]["slots"]["12PM"]["counted"], True)
+check("and no machine-level alarm", M["C2"]["warnings"], [])
 
 print("\n== C3: backwards cumulative counter poisons exactly two deltas ==")
 # The 12PM checkpoint was typed as 20000 when 10AM already read 23400.
@@ -207,7 +220,17 @@ print("\n== rollup excludes the unscheduled machine ==")
 rollup = shift["rollup"]
 expected_machines = 4  # C1, C2, C3, AS1 (P1 unscheduled, AS6 nothing counted)
 check("machines counted", rollup["machines"], expected_machines)
-check("P1 good not in rollup", rollup["good"] < 46800 + 57600, True)
+# Summed straight from the machines the rollup claims to cover, so the
+# assertion can't drift when the fixture changes.
+check("rollup good is exactly its member machines",
+      rollup["good"],
+      sum(m["shift"]["good"] for mid, m in M.items()
+          if m["scheduled"] and m["shift"] is not None))
+check("and P1's 57,600 is not in there",
+      M["P1"]["shift"]["good"] not in (rollup["good"],)
+      and rollup["good"] < sum(
+          m["shift"]["good"] for m in M.values() if m["shift"] is not None),
+      True)
 check("rollup availability differs from uptime (mixed rates)",
       abs(rollup["availability"] - rollup["uptime"]) > 1e-6, True)
 
@@ -247,9 +270,12 @@ print("\n== completeness is per column ==")
 c = shift["completeness"]
 check("slots expected", c["slots_expected"], 4)
 check("scheduled machines", c["machines"], 33)  # 34 minus unscheduled P1
-check("units complete for 4 machines", c["units"], 4)  # C1 C3 AS1 AS6 (C2 has a gap)
-check("scrap complete for 3", c["scrap"], 3)  # C1 AS1 AS6
-check("downtime complete for 4", c["downtime"], 4)  # C1 C2 C3 AS1
+# C2's blank 10AM no longer disqualifies it — one reading determines the shift.
+check("units known for 5 machines", c["units"], 5)  # C1 C2 C3 AS1 AS6
+check("scrap known for 3", c["scrap"], 3)  # C1 AS1 AS6
+# Downtime does NOT carry forward (not cumulative), so this still needs an
+# entry per slot.
+check("downtime entered for 4", c["downtime"], 4)  # C1 C2 C3 AS1
 
 print("\n== uneven checkpoints must NOT raise a machine-level warning ==")
 # Real rows from the first day of production use. Checkpoints are read by hand
@@ -296,11 +322,9 @@ for machine_id, (checkpoints, increment) in uneven.items():
           machine["flags"], [])
     check(f"{machine_id}: all four slots counted", machine["slots_counted"], 4)
 
-# AS4's real row: 8AM and 12PM reported, 10AM missing. 12PM's delta can't be
-# computed without its baseline, so ONE slot counts — and a one-slot aggregate
-# is just a slot delta again, with all the timing noise the shift-level test
-# exists to see past. 3670 against a 3360 ceiling is 109%, which would have
-# raised the warning on the strength of a single reading.
+# AS4's real row: 8AM = 3670 and 12PM = 8040, with 10AM and 2PM blank. Under
+# carry-forward this is a COMPLETE shift, not a sparse one — the blanks say the
+# number didn't move. Before the rule it yielded a single countable slot.
 entries[:] = [e for e in entries if e["machine_id"] != "AS4"]
 for slot, value in (("8AM", 3670), ("12PM", 8040)):
     entries.append({
@@ -314,11 +338,44 @@ for slot in S1:
     }
 
 sparse = oee.compute_oee_report(DAY, now=NOW)["shifts"]["1st Shift"]["machines"]["AS4"]
-check("AS4: only one slot countable", sparse["slots_counted"], 1)
-check("AS4: its single slot IS over the ceiling",
-      sparse["shift"]["oee"] > 1.0, True)
-check("AS4: but one slot can't speak for a shift, so no warning",
-      sparse["warnings"], [])
+check("AS4: two readings determine all four slots", sparse["slots_counted"], 4)
+check("AS4: shift total is the last reading", sparse["shift"]["good"], 8040)
+check("AS4: blank 10AM produced nothing", sparse["slots"]["10AM"]["good"], 0)
+check("AS4: blank 2PM produced nothing", sparse["slots"]["2PM"]["good"], 0)
+# 8040 over a full 480 minutes at 28 units/min = 13,440 ceiling.
+check("AS4: OEE spans the whole shift", sparse["shift"]["oee"], 8040 / 13440)
+check("AS4: individual slots do exceed the per-slot ceiling",
+      any("over_100" in sparse["slots"][s]["warnings"] for s in S1), True)
+check("AS4: but the shift does not, so no alarm", sparse["warnings"], [])
+
+print("\n== mid-shift, one elapsed slot cannot raise a capacity alarm ==")
+# The majority-of-slots guard still matters, just for a different reason now
+# that carry-forward fills completed shifts: viewed at 9AM only 8AM has closed,
+# so a single hot reading is once again a lone slot delta with all its timing
+# noise. 16,000 against C4's 15,600 slot ceiling is 103%.
+MID = datetime(2026, 9, 2, 9, 0)   # same day as the data, one slot elapsed
+entries[:] = [e for e in entries if e["machine_id"] != "C4"]
+entries.append({
+    "machine_id": "C4", "operator": "Okafor", "time_slot": "8AM",
+    "units_produced": 16000, "status": ":)", "issue": None,
+    "entered_by": "4471", "entry_date": DAY, "created_at": MID,
+})
+for slot in S1:
+    downtime[("C4", slot)] = {
+        "note": None, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0,
+    }
+
+mid = oee.compute_oee_report(DAY, now=MID)["shifts"]["1st Shift"]["machines"]["C4"]
+check("only 8AM has elapsed", mid["slots_elapsed"], 1)
+check("only 8AM counts", mid["slots_counted"], 1)
+check("un-elapsed slots are unknown, NOT carried forward as zero",
+      mid["slots"]["2PM"]["good"], None)
+check("its one slot is over the ceiling", mid["shift"]["oee"] > 1.0, True)
+check("but one slot of four cannot speak for the shift", mid["warnings"], [])
+
+entries[:] = [e for e in entries if e["machine_id"] != "C4"]
+for slot in S1:
+    downtime.pop(("C4", slot), None)
 
 # Restore the fixture for the checks that follow.
 entries[:] = [e for e in entries if e["machine_id"] not in set(uneven) | {"AS4"}]

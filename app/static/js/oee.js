@@ -170,8 +170,15 @@ function missingReason(slot) {
 /** Tooltip detail for one slot cell — the numbers behind the percentage. */
 function slotTitle(slot) {
     const lines = [];
+    // A blank checkpoint means the number hadn't moved, so the slot produced
+    // zero. Saying so distinguishes an inferred zero from a typed one — the
+    // maths treats them identically, but a reader shouldn't have to guess.
+    if (slot.has_units && !slot.units_reported) {
+        lines.push("No checkpoint entered — carried forward, so nothing was produced.");
+    }
     lines.push(`Good: ${count(slot.good)}`);
-    lines.push(`Scrap: ${count(slot.scrap)}`);
+    lines.push(`Scrap: ${count(slot.scrap)}`
+        + (slot.has_scrap && !slot.scrap_reported ? " (carried forward)" : ""));
     lines.push(`Total: ${count(slot.total)}`);
     if (slot.standard !== null && slot.standard !== undefined) {
         lines.push(`Standard: ${count(slot.standard)}`);
@@ -344,14 +351,47 @@ function renderCompleteness(shiftData) {
         return;
     }
     completenessEl.hidden = false;
+
+    // Spelled out because the counts are stricter than they look: a machine
+    // has to have data for EVERY elapsed slot to be counted, so three of four
+    // checkpoints contributes 0, not 0.75.
+    const slotWord = `${c.slots_expected} elapsed slot${c.slots_expected === 1 ? "" : "s"}`;
+    const explain = {
+        units: "machines whose production is known across the shift. A blank " +
+            "checkpoint counts as unchanged, so one reading is enough to " +
+            "determine the whole shift — only a machine with NO reading at " +
+            "all is missing.",
+        downtime: `machines with a downtime entry for all ${slotWord}. ` +
+            "Downtime does NOT carry forward the way units do — it isn't " +
+            "cumulative, so a blank is genuinely unentered. A machine that ran " +
+            "clean still needs one: tick \"none\" on /console. Without it OEE " +
+            "stays blank rather than assuming zero downtime.",
+        scrap: "machines whose scrap is known across the shift. Cumulative " +
+            "like units, so a blank counts as unchanged. Scrap only affects " +
+            "the Performance/Quality split — OEE and Availability are " +
+            "computed without it.",
+    };
+
     for (const field of ["units", "downtime", "scrap"]) {
         const item = completenessEl.querySelector(`[data-field="${field}"] b`);
         if (!item) continue;
         item.textContent = `${c[field]}/${c.machines}`;
         item.parentElement.classList.toggle("is-short", c[field] < c.machines);
+        item.parentElement.title = explain[field];
     }
-    completenessNote.textContent =
-        `across ${c.slots_expected} elapsed slot${c.slots_expected === 1 ? "" : "s"}`;
+
+    completenessNote.textContent = `across ${slotWord}. A blank checkpoint ` +
+        "means unchanged, so units and scrap need only one reading per shift; " +
+        "downtime needs one per slot.";
+
+    // The state that stops the page dead, called out rather than left for
+    // someone to infer from a grid full of dashes.
+    if (!c.downtime && c.units) {
+        completenessNote.textContent =
+            `across ${slotWord}. No OEE can be shown yet: it needs a downtime ` +
+            'entry as well as units. Tick "none" on /console for machines that ' +
+            "ran clean and the numbers appear.";
+    }
 }
 
 function renderFlags(shiftData) {

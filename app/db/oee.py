@@ -414,30 +414,72 @@ def get_schedule_for_date(entry_date: date_type) -> dict[tuple[str, str], bool]:
 # ---------------------------------------------------------------------------
 
 def _cumulative_deltas(
-    cumulative: dict[str, int | None], slots: list[str]
+    cumulative: dict[str, int | None],
+    slots: list[str],
+    *,
+    elapsed: set[str] | None = None,
 ) -> dict[str, int | None]:
     """Turns a shift's cumulative checkpoints into per-slot amounts.
 
     Both units_produced and scrap_cumulative reset at the start of each shift,
-    so slot 1's amount is its own value and slot n's is the difference from
-    slot n-1.
+    so a slot's amount is the difference from the last reading before it.
 
-    A slot whose own value OR whose predecessor's value is missing yields
-    None, not a guess. That matters: with a gap at slot 2, slot 3's naive
-    delta would silently span four hours and read as a record-breaking slot.
-    Refusing to compute it is the whole reason /oee can say "3 of 4 slots"
-    instead of quietly reporting a wrong number.
+    A BLANK CHECKPOINT MEANS UNCHANGED, NOT UNKNOWN
+    -----------------------------------------------
+    Per the floor, a checkpoint is left empty when the number hasn't moved
+    since the last one. A machine waiting on a delivery, or whose operator got
+    pulled to another line, has nothing new to write down. So a blank slot
+    produced zero, and a blank FIRST slot means the counter was still sitting
+    at zero when the shift started.
+
+    That is real information and discarding it is actively harmful, because the
+    blanks are a machine's WORST slots. Dropping them as "unknown" removes
+    precisely the bad hours from the calculation and flatters the result. Real
+    example — C2 on 2026-09-03 read 10500 / 15750 / 15750 / blank, with
+    "operator moved to WS" logged at 12PM:
+
+        blank treated as unknown  ->  15750 / (130 x 360 min) = 33.7%
+        blank treated as zero     ->  15750 / (130 x 480 min) = 25.2%
+
+    25.2% is the truth. The earlier reading was 8.5 points too kind, and too
+    kind *because* the machine had a bad shift.
+
+    It also rescues data that was previously unusable altogether: a shift
+    reading blank / 15750 / blank / blank used to yield nothing at all, since
+    the 10AM delta had no baseline. Now it is a complete shift: 0, 15750, 0, 0.
+
+    TWO GUARDS
+    ----------
+    1. A shift with NO readings at all stays entirely unknown. Silence across a
+       whole shift means nobody logged it — not that the machine made nothing
+       for eight hours. A machine that genuinely didn't run is recorded with
+       the not-scheduled checkbox. Without this guard the rule would default
+       missing data to a value, which is the `standard_units = 0` mistake
+       pointed the other way.
+
+    2. Slots that have not ELAPSED yet are unknown, never zero. "Unchanged"
+       is meaningless for two hours that haven't happened, and without this a
+       machine viewed mid-shift would be charged for the rest of its day.
+       Callers pass `elapsed` for live data; `standards` omits it, since a
+       target exists whether or not the clock has reached it.
     """
+    countable = [s for s in slots if elapsed is None or s in elapsed]
+    if all(cumulative.get(slot) is None for slot in countable):
+        return {slot: None for slot in slots}
+
     deltas: dict[str, int | None] = {}
-    for index, slot in enumerate(slots):
+    last_known = 0
+    for slot in slots:
+        if elapsed is not None and slot not in elapsed:
+            deltas[slot] = None
+            continue
         current = cumulative.get(slot)
         if current is None:
-            deltas[slot] = None
-        elif index == 0:
-            deltas[slot] = current
+            # Carried forward: nothing was reported, so nothing was produced.
+            deltas[slot] = 0
         else:
-            previous = cumulative.get(slots[index - 1])
-            deltas[slot] = None if previous is None else current - previous
+            deltas[slot] = current - last_known
+            last_known = current
     return deltas
 
 
@@ -462,6 +504,8 @@ def _compute_slot(
     downtime: dict | None,
     ideal_per_minute: float,
     is_elapsed: bool,
+    units_reported: bool = True,
+    scrap_reported: bool = True,
 ) -> dict:
     """Everything derivable about one machine-slot.
 
@@ -544,6 +588,10 @@ def _compute_slot(
         "has_units": has_units,
         "has_scrap": has_scrap,
         "has_downtime": has_downtime,
+        # False when the value is known only by carry-forward — nobody typed a
+        # number for this slot because it hadn't moved. Display-only.
+        "units_reported": units_reported,
+        "scrap_reported": scrap_reported,
         "is_elapsed": is_elapsed,
         "counted": counted,
         "flags": flags,
@@ -798,12 +846,14 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
 
             ideal_per_minute = ideal_per_hour / 60
 
-            unit_deltas = _cumulative_deltas(
-                {slot: units_map.get((machine_id, slot)) for slot in slots}, slots
-            )
-            scrap_deltas = _cumulative_deltas(
-                {slot: scrap_map.get((machine_id, slot)) for slot in slots}, slots
-            )
+            raw_units = {slot: units_map.get((machine_id, slot)) for slot in slots}
+            raw_scrap = {slot: scrap_map.get((machine_id, slot)) for slot in slots}
+
+            unit_deltas = _cumulative_deltas(raw_units, slots, elapsed=elapsed)
+            scrap_deltas = _cumulative_deltas(raw_scrap, slots, elapsed=elapsed)
+            # Standards are fully seeded for all 12 slots, so carry-forward
+            # never fires here; `elapsed` is omitted because a target exists
+            # whether or not the clock has reached that slot yet.
             standard_deltas = _cumulative_deltas(
                 {slot: standards.get((machine_id, slot)) for slot in slots}, slots
             )
@@ -817,6 +867,13 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
                     downtime=downtime_map.get((machine_id, slot)),
                     ideal_per_minute=ideal_per_minute,
                     is_elapsed=slot in elapsed,
+                    # Whether a number was actually keyed in for this slot, as
+                    # opposed to its value being known by carry-forward. The
+                    # maths doesn't care — both are equally known — but the
+                    # tooltip should say which, so nobody mistakes an inferred
+                    # zero for a typed one.
+                    units_reported=raw_units[slot] is not None,
+                    scrap_reported=raw_scrap[slot] is not None,
                 )
 
             # A slot whose BASELINE is known-bad is measuring from a wrong

@@ -81,28 +81,72 @@ check("None numerator", _safe_divide(None, 5), None)
 check("None denominator", _safe_divide(5, None), None)
 check("normal", _safe_divide(3, 4), 0.75)
 
-print("\n== _cumulative_deltas ==")
+print("\n== _cumulative_deltas: a blank checkpoint means UNCHANGED ==")
 slots = SHIFT_SLOTS["1st Shift"]
+ALL = set(slots)
+
 check_eq(
     "clean ramp",
-    _cumulative_deltas(dict(zip(slots, [11700, 23400, 35100, 46800])), slots),
+    _cumulative_deltas(dict(zip(slots, [11700, 23400, 35100, 46800])), slots, elapsed=ALL),
     {"8AM": 11700, "10AM": 11700, "12PM": 11700, "2PM": 11700},
 )
+
+# C2, 2026-09-03. Operator was moved to WS at 12PM, so 2PM was left blank
+# because the number hadn't moved. The shift produced 15,750, not "15,750 over
+# an unknown span" — treating that blank as unknown scored the machine 33.7%
+# when the truth is 25.2%, and flattered it precisely because it had a bad day.
 check_eq(
-    "gap at slot 2 poisons slots 2 and 3 only",
-    _cumulative_deltas({"8AM": 11700, "10AM": None, "12PM": 35100, "2PM": 46800}, slots),
-    {"8AM": 11700, "10AM": None, "12PM": None, "2PM": 11700},
+    "trailing blank produces zero, not unknown",
+    _cumulative_deltas({"8AM": 10500, "10AM": 15750, "12PM": 15750, "2PM": None},
+                       slots, elapsed=ALL),
+    {"8AM": 10500, "10AM": 5250, "12PM": 0, "2PM": 0},
+)
+
+# Mechanical issues all shift: nothing to write at 8AM, one reading at 10AM,
+# then nothing again. This used to yield NOTHING computable at all, because
+# 10AM's delta had no baseline.
+check_eq(
+    "blank first slot means the counter was still at zero",
+    _cumulative_deltas({"8AM": None, "10AM": 15750, "12PM": None, "2PM": None},
+                       slots, elapsed=ALL),
+    {"8AM": 0, "10AM": 15750, "12PM": 0, "2PM": 0},
 )
 check_eq(
-    "missing first slot",
-    _cumulative_deltas({"8AM": None, "10AM": 23400, "12PM": 35100, "2PM": 46800}, slots),
-    {"8AM": None, "10AM": None, "12PM": 11700, "2PM": 11700},
+    "interior blank is absorbed, later reading still correct",
+    _cumulative_deltas({"8AM": 11700, "10AM": None, "12PM": 35100, "2PM": 46800},
+                       slots, elapsed=ALL),
+    {"8AM": 11700, "10AM": 0, "12PM": 23400, "2PM": 11700},
 )
+
+# GUARD 1: total silence is not a claim of zero production.
 check_eq(
-    "nothing entered",
-    _cumulative_deltas({}, slots),
+    "a shift with no readings at all stays unknown",
+    _cumulative_deltas({}, slots, elapsed=ALL),
     {"8AM": None, "10AM": None, "12PM": None, "2PM": None},
 )
+
+# GUARD 2: "unchanged" is meaningless for hours that haven't happened.
+check_eq(
+    "mid-shift, un-elapsed slots stay unknown rather than zero",
+    _cumulative_deltas({"8AM": 11700, "10AM": 23400, "12PM": None, "2PM": None},
+                       slots, elapsed={"8AM", "10AM"}),
+    {"8AM": 11700, "10AM": 11700, "12PM": None, "2PM": None},
+)
+check_eq(
+    "and a shift whose elapsed slots are all blank is still unknown",
+    _cumulative_deltas({"12PM": 35100}, slots, elapsed={"8AM", "10AM"}),
+    {"8AM": None, "10AM": None, "12PM": None, "2PM": None},
+)
+
+# Totals must survive every shape: the shift's production is the last reading.
+for label, readings in (
+    ("all four", [10500, 15750, 15750, 15750]),
+    ("trailing blank", [10500, 15750, 15750, None]),
+    ("leading blank", [None, 15750, None, None]),
+    ("one reading only", [15750, None, None, None]),
+):
+    d = _cumulative_deltas(dict(zip(slots, readings)), slots, elapsed=ALL)
+    check(f"total is preserved with a {label}", sum(d.values()), 15750)
 
 print("\n== worked example: C1, good 9000, scrap 200, 20 min unplanned ==")
 s = _compute_slot(
