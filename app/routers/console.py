@@ -55,17 +55,6 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from app.db.entries import StandardNotFoundError, create_entry, get_shift_activity
-from app.db.oee import (
-    DowntimeExceedsSlotError,
-    UnknownReasonCodeError,
-    create_downtime,
-    create_schedule_exception,
-    create_scrap,
-    get_downtime_reasons,
-    get_latest_downtime_for_date,
-    get_latest_scrap_for_date,
-    get_schedule_for_date,
-)
 from app.models import (
     DASHBOARD_ZONE_LABELS,
     DASHBOARD_ZONES,
@@ -73,31 +62,13 @@ from app.models import (
     SHIFT_ORDER,
     SHIFT_SLOTS,
     TIME_SLOTS,
-    DowntimeCreate,
-    DowntimeReasonInput,
     EntryCreate,
-    ScheduleCreate,
-    ScrapCreate,
     get_current_shift,
     resolve_shift,
 )
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
-
-# How many (reason, minutes) pairs the batch form offers per machine per slot.
-#
-# Two, not one, and the reason is the schema rather than the UI: a downtime
-# submission REPLACES that slot's whole set of reasons (see
-# get_latest_downtime_for_date). With only one pair on the form, recording a
-# second cause would mean submitting twice, and the second submission would
-# silently delete the first — so the form has to be able to say "material wait
-# 15, mechanical 10" in a single save.
-#
-# Two covers the realistic cases without making the row unreadable. A slot with
-# three genuinely distinct causes has to fold the smallest into the largest for
-# now; raise this number if that turns out to be common.
-MAX_DOWNTIME_REASONS: int = 2
 
 
 def _parse_entry_date(raw: str | None) -> date | None:
@@ -114,45 +85,6 @@ def _parse_entry_date(raw: str | None) -> date | None:
         return date.fromisoformat(raw.strip())
     except ValueError:
         return None
-
-
-def _scrap_hint(machine_id: str, shift: str, existing: dict) -> str:
-    """One-line summary of the scrap already recorded for a machine this shift.
-
-    Rendered next to the (blank) scrap box so whoever is entering can see what
-    they'd be superseding. Covers every slot in the shift rather than just the
-    selected one, since the slot picker is a shared control and this is built
-    server-side on page load.
-    """
-    parts = [
-        f"{slot} {existing[(machine_id, slot)]:,}"
-        for slot in SHIFT_SLOTS[shift]
-        if (machine_id, slot) in existing
-    ]
-    return " · ".join(parts)
-
-
-def _downtime_hint(machine_id: str, shift: str, existing: dict) -> str:
-    """One-line summary of the downtime already recorded for a machine.
-
-    "8AM clean · 10AM MATL 15, MECH 10" — the word "clean" matters, because a
-    submission with no reasons is a real statement ("ran the whole slot") and
-    has to look different from a slot nobody has entered, which simply doesn't
-    appear in this string at all.
-    """
-    parts = []
-    for slot in SHIFT_SLOTS[shift]:
-        record = existing.get((machine_id, slot))
-        if record is None:
-            continue
-        if not record["reasons"]:
-            parts.append(f"{slot} clean")
-            continue
-        detail = ", ".join(
-            f"{reason['code']} {reason['minutes']}" for reason in record["reasons"]
-        )
-        parts.append(f"{slot} {detail}")
-    return " · ".join(parts)
 
 
 def _zone_links() -> list[dict]:
@@ -283,10 +215,6 @@ def _batch_context(
         "entered_by": entered_by,
         "time_slot": time_slot,
         "top_error": top_error,
-        # Reason codes for the downtime dropdowns. Ordered by sort_order in
-        # get_downtime_reasons(), so the template iterates without re-sorting.
-        "downtime_reasons": list(get_downtime_reasons().values()),
-        "max_downtime_reasons": MAX_DOWNTIME_REASONS,
     }
 
 
@@ -322,41 +250,13 @@ def console_batch_page(request: Request, zone: str, shift: str | None = None, en
     selected_shift = resolve_shift(shift, datetime.now())
     selected_date = _parse_entry_date(entry_date) or date.today()
     activity = get_shift_activity(selected_date, SHIFT_SLOTS[selected_shift])
-
-    # What's already on record for the OEE fields. Shown as read-only hints
-    # beside the inputs rather than loaded INTO them, which is the safe
-    # direction given how each field resolves on save:
-    #
-    #   - A downtime submission replaces that slot's whole reason set. If the
-    #     inputs came pre-filled, every save by anyone (including the
-    #     production person, who has no business touching downtime) would
-    #     rewrite it. Blank inputs mean "no change", so only someone who
-    #     actually types something can alter it.
-    #   - Same for scrap: blank means don't write, so the production person
-    #     saving units can't blank out the scrap person's number.
-    #
-    # Operator is the one field that IS pre-filled into its input, and that
-    # predates this change — see the module docstring for why it carries.
-    existing_scrap = get_latest_scrap_for_date(selected_date)
-    existing_downtime = get_latest_downtime_for_date(selected_date)
-    schedule = get_schedule_for_date(selected_date)
-
     prefill_rows = {
         machine_id: {
             "operator": activity.get(machine_id, {}).get("operator") or "",
             "units": "",
             "issue": "",
-            "scrap": "",
-            # Only meaningful once a time slot is picked, which happens
-            # client-side, so the hints cover every slot in the shift and the
-            # template labels each with its slot.
-            "scrap_hint": _scrap_hint(machine_id, selected_shift, existing_scrap),
-            "downtime_hint": _downtime_hint(machine_id, selected_shift, existing_downtime),
-            # Absence of a row means scheduled, so default True.
-            "scheduled": schedule.get((machine_id, selected_shift), True),
             "status": None,
             "error": None,
-            "saved_parts": [],
         }
         for machine_id in machine_ids
     }
@@ -411,30 +311,11 @@ async def console_batch_submit(request: Request, zone: str):
     # shift would file real production numbers under a slot nobody looks at
     # on that shift's grid. The dropdown only ever offers the selected
     # shift's slots, so this only trips on a stale form or a hand-built POST.
-    # Does this submission carry any per-SLOT data at all (units, scrap or
-    # downtime)? The scheduled checkbox is the one field that belongs to the
-    # whole SHIFT rather than a slot, so a submission that only marks a machine
-    # as not-scheduled has no business being blocked for not picking a time
-    # slot it wouldn't use.
-    has_slot_data = any(
-        (form.get(f"units_{machine_id}") or "").strip()
-        or (form.get(f"scrap_{machine_id}") or "").strip()
-        or form.get(f"dt_none_{machine_id}") is not None
-        or any(
-            (form.get(f"dt_reason{index}_{machine_id}") or "").strip()
-            or (form.get(f"dt_min{index}_{machine_id}") or "").strip()
-            for index in range(1, MAX_DOWNTIME_REASONS + 1)
-        )
-        for machine_id in machine_ids
-    )
-
     if selected_date is None:
         top_error = "Enter a valid date before saving."
-    elif not entered_by:
-        top_error = "Fill in your employee number before saving."
-    elif has_slot_data and not time_slot:
-        top_error = "Pick a time slot before saving production, scrap or downtime."
-    elif time_slot and time_slot not in SHIFT_SLOTS[selected_shift]:
+    elif not entered_by or not time_slot:
+        top_error = "Fill in employee number and time slot before saving."
+    elif time_slot not in SHIFT_SLOTS[selected_shift]:
         top_error = f"{time_slot} isn't a {selected_shift} time slot — pick the shift you're logging, then the slot."
     else:
         top_error = None
@@ -451,14 +332,6 @@ async def console_batch_submit(request: Request, zone: str):
             status_code=400,
         )
 
-    # Read before writing, for the one field whose save depends on its current
-    # value: the scheduled checkbox only writes when the submitted state
-    # DIFFERS from what's on record. Absence of a row already means scheduled,
-    # so writing unconditionally would append a redundant row on every save,
-    # and — worse — a checkbox left ticked could never undo an earlier
-    # not-scheduled mark if we only wrote when it was unticked.
-    schedule = get_schedule_for_date(selected_date)
-
     rows: dict[str, dict] = {}
     any_submitted = False
 
@@ -466,200 +339,47 @@ async def console_batch_submit(request: Request, zone: str):
         raw_operator = (form.get(f"operator_{machine_id}") or "").strip()
         raw_units = (form.get(f"units_{machine_id}") or "").strip()
         raw_issue = (form.get(f"issue_{machine_id}") or "").strip()
-        raw_scrap = (form.get(f"scrap_{machine_id}") or "").strip()
-        ran_clean = form.get(f"dt_none_{machine_id}") is not None
-
-        # An UNTICKED checkbox and an ABSENT one are indistinguishable in a
-        # form POST — neither appears in the body. For most fields that
-        # ambiguity is harmless, but not for this one: reading "absent" as
-        # "unticked" would mark every machine the submitter never saw as NOT
-        # SCHEDULED, which removes them from the OEE denominator and inflates
-        # the numbers. That makes it the most consequential field on the page.
-        #
-        # sched_present_<machine> is a hidden input the browser always posts,
-        # so its presence is what proves the control was really on the
-        # submitted form. Without it, this machine's scheduling is left alone.
-        sched_present = form.get(f"sched_present_{machine_id}") is not None
-        submitted_scheduled = form.get(f"scheduled_{machine_id}") is not None
-        was_scheduled = schedule.get((machine_id, selected_shift), True)
-
-        raw_reasons = []
-        for index in range(1, MAX_DOWNTIME_REASONS + 1):
-            code = (form.get(f"dt_reason{index}_{machine_id}") or "").strip()
-            minutes = (form.get(f"dt_min{index}_{machine_id}") or "").strip()
-            if code or minutes:
-                raw_reasons.append((code, minutes))
-
-        row = {
-            "operator": raw_operator,
-            "units": raw_units,
-            "issue": raw_issue,
-            "scrap": raw_scrap,
-            "scrap_hint": "",
-            "downtime_hint": "",
-            "scheduled": submitted_scheduled,
-            "status": None,
-            "error": None,
-            "saved_parts": [],
-        }
+        row = {"operator": raw_operator, "units": raw_units, "issue": raw_issue, "status": None, "error": None}
         rows[machine_id] = row
 
-        # Four INDEPENDENT write paths, each gated on its own fields being
-        # filled in. This is the whole reason the OEE tables are separate from
-        # `entries`: production, scrap and downtime are entered by different
-        # people at different times, and a blank field has to mean "I'm not
-        # touching this" rather than "set this to nothing". If the scrap person
-        # saves with the units box empty, the units must survive untouched —
-        # and vice versa.
-        errors: list[str] = []
-
-        # --- scheduling (per shift, not per slot) ---------------------------
-        # Only writes on an actual CHANGE. Absence of a row already means
-        # scheduled, so writing unconditionally would append a redundant row
-        # on every save.
-        if sched_present and submitted_scheduled != was_scheduled:
-            any_submitted = True
-            try:
-                create_schedule_exception(
-                    ScheduleCreate(
-                        machine_id=machine_id,
-                        entry_date=selected_date,
-                        shift=selected_shift,
-                        scheduled=submitted_scheduled,
-                        entered_by=entered_by,
-                    )
-                )
-                row["saved_parts"].append("scheduled" if submitted_scheduled else "not scheduled")
-            except ValidationError:
-                errors.append("Couldn't save the scheduled flag.")
-
-        # --- production units ------------------------------------------------
-        if raw_units:
-            any_submitted = True
-            if not raw_operator:
-                errors.append("Operator is required to log units.")
-            else:
-                try:
-                    create_entry(
-                        EntryCreate(
-                            machine_id=machine_id,
-                            operator=raw_operator,
-                            time_slot=time_slot,
-                            units_produced=int(raw_units),
-                            issue=raw_issue or None,
-                            entered_by=entered_by,
-                            entry_date=selected_date,
-                        )
-                    )
-                    row["saved_parts"].append("units")
-                # ORDER MATTERS in every except chain below: pydantic's
-                # ValidationError is a SUBCLASS of ValueError, so a bare
-                # `except ValueError` placed first would swallow validation
-                # failures and mislabel them as bad number formatting. The
-                # specific cases go above the general one.
-                except (StandardNotFoundError, ValidationError) as exc:
-                    errors.append(
-                        str(exc) if isinstance(exc, StandardNotFoundError)
-                        else "Couldn't save units — check the value and try again."
-                    )
-                except ValueError:
-                    errors.append("Units must be a whole number.")
-
-        # --- scrap -----------------------------------------------------------
-        if raw_scrap:
-            any_submitted = True
-            try:
-                create_scrap(
-                    ScrapCreate(
-                        machine_id=machine_id,
-                        entry_date=selected_date,
-                        time_slot=time_slot,
-                        scrap_cumulative=int(raw_scrap),
-                        entered_by=entered_by,
-                    )
-                )
-                row["saved_parts"].append("scrap")
-            except ValidationError:
-                errors.append("Scrap can't be negative.")
-            except ValueError:
-                errors.append("Scrap must be a whole number.")
-
-        # --- downtime --------------------------------------------------------
-        # "Ran clean" and a list of reasons are mutually exclusive statements,
-        # so submitting both is a contradiction rather than something to
-        # silently resolve one way.
-        if ran_clean or raw_reasons:
-            any_submitted = True
-            if ran_clean and raw_reasons:
-                errors.append(
-                    'Untick "no downtime" or clear the reasons — a slot can\'t be both.'
-                )
-            else:
-                reasons: list[DowntimeReasonInput] = []
-                for code, minutes in raw_reasons:
-                    if not code:
-                        errors.append("Pick a downtime reason for every minutes value.")
-                        break
-                    if not minutes:
-                        errors.append(f"Enter minutes for the {code} downtime.")
-                        break
-                    try:
-                        reasons.append(
-                            DowntimeReasonInput(reason_code=code, minutes=int(minutes))
-                        )
-                    except ValidationError:
-                        errors.append("Downtime minutes must be greater than zero.")
-                        break
-                    except ValueError:
-                        errors.append("Downtime minutes must be a whole number.")
-                        break
-                else:
-                    try:
-                        create_downtime(
-                            DowntimeCreate(
-                                machine_id=machine_id,
-                                entry_date=selected_date,
-                                time_slot=time_slot,
-                                reasons=reasons,
-                                note=raw_issue or None,
-                                entered_by=entered_by,
-                            )
-                        )
-                        row["saved_parts"].append(
-                            "no downtime" if not reasons else "downtime"
-                        )
-                    except (
-                        UnknownReasonCodeError,
-                        DowntimeExceedsSlotError,
-                    ) as exc:
-                        # Both carry human-readable messages by design — see
-                        # their docstrings in app/db/oee.py.
-                        errors.append(str(exc))
-                    except ValidationError:
-                        errors.append("Couldn't save downtime — check the values.")
-
-        if errors:
-            row["status"] = "failed"
-            # Several paths can fail independently for one machine, so the
-            # messages are joined rather than only the first being shown.
-            row["error"] = " ".join(errors)
-        elif row["saved_parts"]:
-            row["status"] = "saved"
-        else:
+        if not raw_units:
             row["status"] = "skipped"
+            continue
 
-    # Re-read the OEE fields so the response shows what's on record AFTER this
-    # save, including anything this submission just wrote.
-    saved_scrap = get_latest_scrap_for_date(selected_date)
-    saved_downtime = get_latest_downtime_for_date(selected_date)
-    for machine_id, row in rows.items():
-        row["scrap_hint"] = _scrap_hint(machine_id, selected_shift, saved_scrap)
-        row["downtime_hint"] = _downtime_hint(machine_id, selected_shift, saved_downtime)
+        any_submitted = True
 
-    top_error = (
-        None if any_submitted
-        else "Nothing to save — enter units, scrap or downtime for at least one machine."
-    )
+        if not raw_operator:
+            row["status"] = "failed"
+            row["error"] = "Operator is required."
+            continue
+
+        try:
+            units_produced = int(raw_units)
+        except ValueError:
+            row["status"] = "failed"
+            row["error"] = "Units must be a whole number."
+            continue
+
+        try:
+            payload = EntryCreate(
+                machine_id=machine_id,
+                operator=raw_operator,
+                time_slot=time_slot,
+                units_produced=units_produced,
+                issue=raw_issue or None,
+                entered_by=entered_by,
+                entry_date=selected_date,
+            )
+            create_entry(payload)
+            row["status"] = "saved"
+        except (StandardNotFoundError, ValidationError) as exc:
+            row["status"] = "failed"
+            row["error"] = (
+                str(exc) if isinstance(exc, StandardNotFoundError)
+                else "Couldn't save — check the value and try again."
+            )
+
+    top_error = None if any_submitted else "Nothing to save — enter units for at least one machine."
     return templates.TemplateResponse(
         request=request,
         name="console_batch.html",

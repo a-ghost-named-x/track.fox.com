@@ -76,31 +76,13 @@
 
         <input type="hidden" name="shift" value="{{ shift }}">
 
-        {# Every column group saves INDEPENDENTLY. A blank box means "I'm not
-           touching this", never "set this to nothing" — so the scrap person can
-           save without disturbing the units the production person entered, and
-           vice versa. That's also why the Scrap and Downtime boxes are never
-           pre-filled with what's already on record: they show it as a grey hint
-           underneath instead, and only someone who actually types something can
-           change it. #}
-        <table class="batch-grid batch-grid-oee">
+        <table class="batch-grid">
             <thead>
                 <tr>
                     <th class="machine-col">Machine</th>
                     <th>Operator</th>
-                    <th>Units produced <span class="optional">(cumulative)</span></th>
-                    <th>Scrap <span class="optional">(cumulative)</span></th>
-                    <th class="dt-col">
-                        Downtime
-                        {# Ticking "no downtime" is a real statement — it records
-                           100% availability for the slot — and it has to be
-                           possible to say it, because a slot nobody entered and a
-                           slot that ran clean must not look the same to OEE. This
-                           button just saves 14 individual clicks. #}
-                        <button type="button" class="link-button" id="mark-all-clean">tick all “none”</button>
-                    </th>
+                    <th>Units produced (cumulative)</th>
                     <th>Issue <span class="optional">(optional)</span></th>
-                    <th class="sched-col">Scheduled<span class="optional">this shift</span></th>
                 </tr>
             </thead>
             <tbody>
@@ -109,9 +91,7 @@
                 <tr class="batch-row{% if row and row.status %} batch-row-{{ row.status }}{% endif %}">
                     <td class="machine-col">
                         {{ machine }}
-                        {% if row and row.status == 'saved' %}
-                        <span class="batch-status batch-status-saved">{{ row.saved_parts | join(', ') }}</span>
-                        {% endif %}
+                        {% if row and row.status == 'saved' %}<span class="batch-status batch-status-saved">saved</span>{% endif %}
                         {% if row and row.status == 'failed' %}<span class="batch-status batch-status-failed">failed</span>{% endif %}
                     </td>
                     <td>
@@ -121,50 +101,7 @@
                         <input type="number" name="units_{{ machine }}" min="0" value="{{ row.units if row else '' }}">
                     </td>
                     <td>
-                        <input type="number" name="scrap_{{ machine }}" min="0" value="{{ row.scrap if row else '' }}">
-                        {% if row and row.scrap_hint %}
-                        <span class="field-hint">on record: {{ row.scrap_hint }}</span>
-                        {% endif %}
-                    </td>
-                    <td class="dt-cell">
-                        <label class="dt-none">
-                            <input type="checkbox" class="dt-none-box" name="dt_none_{{ machine }}" value="1">
-                            none
-                        </label>
-                        {% for index in range(1, max_downtime_reasons + 1) %}
-                        <span class="dt-pair">
-                            <select name="dt_reason{{ index }}_{{ machine }}" class="dt-reason">
-                                <option value="">reason…</option>
-                                {% for reason in downtime_reasons %}
-                                <option value="{{ reason.code }}">{{ reason.label }}{% if reason.is_planned %} (planned){% endif %}</option>
-                                {% endfor %}
-                            </select>
-                            <input type="number" class="dt-min" name="dt_min{{ index }}_{{ machine }}" min="1" max="120" placeholder="min">
-                        </span>
-                        {% endfor %}
-                        {% if row and row.downtime_hint %}
-                        <span class="field-hint">on record: {{ row.downtime_hint }}</span>
-                        {% endif %}
-                    </td>
-                    <td>
                         <input type="text" name="issue_{{ machine }}" maxlength="500" value="{{ row.issue if row else '' }}">
-                    </td>
-                    <td class="sched-col">
-                        {# Absence of a machine_schedule row already means
-                           scheduled, so this box starts ticked and only an
-                           actual CHANGE writes anything. Unticking excludes the
-                           machine from this shift's OEE rollup entirely — not
-                           0%, absent.
-
-                           The hidden field matters: an unticked checkbox and an
-                           absent one look identical in a POST, and treating
-                           absence as "unticked" would mark every machine not on
-                           the submitted form as not-scheduled, quietly removing
-                           them from the OEE denominator. This is always posted,
-                           so the handler can tell the two apart. #}
-                        <input type="hidden" name="sched_present_{{ machine }}" value="1">
-                        <input type="checkbox" name="scheduled_{{ machine }}" value="1"
-                               {% if row is none or row.scheduled %}checked{% endif %}>
                     </td>
                 </tr>
                 {% endfor %}
@@ -196,58 +133,6 @@
                 link.href = url.toString();
             });
         });
-    })();
-
-    // Downtime cell conveniences. Both are convenience only — the server
-    // validates the same rules and rejects a contradictory submission with a
-    // per-row message, so the form still behaves correctly with JS disabled.
-    (function () {
-        // "No downtime" and a list of reasons are contradictory statements
-        // about the same slot, so ticking one clears the other rather than
-        // leaving the server to reject the pair.
-        document.querySelectorAll(".dt-cell").forEach(function (cell) {
-            var noneBox = cell.querySelector(".dt-none-box");
-            var inputs = cell.querySelectorAll(".dt-reason, .dt-min");
-            if (!noneBox) {
-                return;
-            }
-
-            noneBox.addEventListener("change", function () {
-                if (!noneBox.checked) {
-                    return;
-                }
-                inputs.forEach(function (input) {
-                    input.value = "";
-                });
-            });
-
-            inputs.forEach(function (input) {
-                input.addEventListener("input", function () {
-                    if (input.value) {
-                        noneBox.checked = false;
-                    }
-                });
-            });
-        });
-
-        // Ticks every "none" box that hasn't already got downtime typed into
-        // its row. Deliberately skips rows with reasons filled in, so it can't
-        // wipe work someone has already done in the same sitting.
-        var markAll = document.getElementById("mark-all-clean");
-        if (markAll) {
-            markAll.addEventListener("click", function () {
-                document.querySelectorAll(".dt-cell").forEach(function (cell) {
-                    var noneBox = cell.querySelector(".dt-none-box");
-                    var filled = Array.prototype.some.call(
-                        cell.querySelectorAll(".dt-reason, .dt-min"),
-                        function (input) { return Boolean(input.value); }
-                    );
-                    if (noneBox && !filled) {
-                        noneBox.checked = true;
-                    }
-                });
-            });
-        }
     })();
 </script>
 {% endblock %}
