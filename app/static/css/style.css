@@ -942,53 +942,8 @@ button.shift-option {
     font-weight: 700;
 }
 
-/* Band colours, derived from the 75%-of-theoretical standard: "good" starts at
-   standard, "excellent" at the 85% world-class mark, "fair" bottoms out around
-   the 60% industry-typical figure.
 
-   Slot cells get a tint with coloured text — 12 saturated columns would be
-   unreadable — while the single OEE summary column gets a solid fill, since
-   that is the number the page is actually for. */
-.oee-grid .cell[data-band="excellent"] { background: rgba(46, 160, 67, 0.28); color: #56d364; }
-.oee-grid .cell[data-band="good"]      { background: rgba(46, 160, 67, 0.15); color: #56d364; }
-.oee-grid .cell[data-band="fair"]      { background: rgba(210, 153, 34, 0.18); color: #e3b341; }
-.oee-grid .cell[data-band="poor"]      { background: rgba(218, 54, 51, 0.20); color: #ff7b72; }
 
-.oee-grid .sum-oee[data-band="excellent"] { background: #238636; color: #ffffff; }
-.oee-grid .sum-oee[data-band="good"]      { background: #2ea043; color: #ffffff; }
-.oee-grid .sum-oee[data-band="fair"]      { background: #9e6a03; color: #ffffff; }
-.oee-grid .sum-oee[data-band="poor"]      { background: var(--bad); color: #ffffff; }
-
-.oee-grid .sum-slots[data-band="fair"] {
-    color: #e3b341;
-    font-weight: 700;
-}
-
-/* An impossible value — a backwards cumulative counter, or more units than the
-   machine can physically make in two hours. Marked, and excluded from OEE,
-   because a plausible wrong number is more dangerous than a blank one. */
-.oee-grid .cell[data-flagged] {
-    background: repeating-linear-gradient(
-        45deg,
-        rgba(218, 54, 51, 0.25),
-        rgba(218, 54, 51, 0.25) 4px,
-        transparent 4px,
-        transparent 8px
-    );
-    color: #ff7b72;
-    font-weight: 700;
-    cursor: help;
-}
-
-/* A soft warning: the value is real and still counted, but two inputs
-   disagree (most often an OEE over 100%, meaning planned downtime was
-   over-reported). Outlined rather than recoloured, because the band colour is
-   still the truth about the number — nothing is clamped. */
-.oee-grid .cell[data-warned] {
-    outline: 2px dashed #e3b341;
-    outline-offset: -2px;
-    cursor: help;
-}
 
 /* Not scheduled is ABSENT from the rollup, not a zero — so the row is dimmed
    rather than coloured, which would imply it scored badly. */
@@ -1075,74 +1030,6 @@ button.shift-option {
     color: var(--text-dim);
 }
 
-/* ---------- Console batch: OEE fields ---------- */
-
-.batch-grid-oee input[type="number"] {
-    width: 7rem;
-}
-
-/* What is already on record for scrap and downtime, shown BESIDE the input
-   rather than loaded into it. Loading it in would mean every save by anyone
-   rewrote it — including the production person, who has no business touching
-   downtime. A blank input means "no change". */
-.field-hint {
-    display: block;
-    margin-top: 0.2rem;
-    font-size: 0.72rem;
-    color: var(--text-dim);
-    white-space: normal;
-}
-
-.batch-grid .dt-col,
-.batch-grid .dt-cell {
-    min-width: 19rem;
-}
-
-.dt-cell {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.35rem;
-}
-
-.dt-none {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-size: 0.78rem;
-    color: var(--text-dim);
-    white-space: nowrap;
-}
-
-.dt-pair {
-    display: inline-flex;
-    gap: 0.25rem;
-}
-
-.dt-cell .dt-reason {
-    max-width: 9rem;
-}
-
-.batch-grid-oee .dt-cell .dt-min {
-    width: 4.2rem;
-}
-
-.batch-grid .sched-col {
-    text-align: center;
-    min-width: 5.5rem;
-}
-
-.batch-grid .sched-col .optional {
-    display: block;
-}
-
-/* A text button for the "tick all none" shortcut — it is an action inside a
-   table header, where a real button would dominate the row.
-
-   Scoped under .entry-form deliberately: `.entry-form button` further up
-   styles the big blue submit button, and at specificity (0,1,1) it outranks a
-   bare `.link-button` (0,1,0) — which rendered this shortcut as a full-size
-   primary button inside the table header. */
 .entry-form .link-button {
     display: block;
     margin-top: 0.2rem;
@@ -1155,4 +1042,233 @@ button.shift-option {
     font-weight: 400;
     text-decoration: underline;
     cursor: pointer;
+}
+
+/* ---------- Dashboard index: the site menu ---------- */
+
+/* Everything on this page used to be word-of-mouth. Grouped into three
+   sections — what the boards show, where data goes in, where it gets reviewed
+   — because a flat list of eleven links makes someone read all eleven to find
+   the one they want. Renders inside .dashboard, so it inherits that page's
+   LIGHT palette rather than the dark :root one. */
+
+.index-section {
+    margin-bottom: 2.5rem;
+}
+
+.index-heading {
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin: 0 0 0.25rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid var(--border);
+}
+
+.index-note {
+    margin: 0.5rem 0 1rem;
+    font-size: 0.95rem;
+    color: var(--text-dim);
+}
+
+.link-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 0.75rem;
+}
+
+.index-link {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.9rem 1.1rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    text-decoration: none;
+    color: var(--text);
+    transition: border-color 0.15s ease;
+}
+
+.index-link:hover {
+    border-color: var(--accent);
+}
+
+.index-link-label {
+    font-size: 1.05rem;
+    font-weight: 700;
+}
+
+.index-link-note {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+}
+
+/* The one link on this page that is a new habit rather than an existing one,
+   so it gets a nudge. */
+.index-link-accent {
+    border-color: var(--accent);
+}
+
+/* ---------- /console/oee — end of shift entry ---------- */
+
+/* Wider than .console's 480px: this form carries the whole floor rather than
+   one zone, and its downtime cell holds eleven reasons. */
+.console-oee {
+    max-width: 1400px;
+}
+
+.oee-entry-hint {
+    margin: 0 0 1.25rem;
+    padding: 0.7rem 0.9rem;
+    background: rgba(88, 166, 255, 0.08);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 4px 4px 0;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+}
+
+.oee-entry-zone {
+    margin-bottom: 2rem;
+    overflow-x: auto;
+}
+
+.oee-entry-grid {
+    width: 100%;
+}
+
+.oee-entry-grid input[type="number"] {
+    width: 6rem;
+}
+
+.oee-entry-grid .dt-col,
+.oee-entry-grid .dt-cell {
+    min-width: 22rem;
+}
+
+/* A native <details> rather than a custom multi-select: eleven reasons across
+   34 machines is 374 controls, and collapsing them is what keeps the page
+   scannable. Native also means it works with JS disabled, which a bespoke
+   dropdown would not. */
+.dt-details {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+}
+
+.dt-summary {
+    padding: 0.45rem 0.6rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    user-select: none;
+}
+
+.dt-details[open] .dt-summary {
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* Past a full shift's worth of minutes. The server rejects it too; flagging it
+   here saves hunting through 34 machines for the one that's wrong. */
+.dt-summary.is-over {
+    color: #ff7b72;
+    font-weight: 700;
+}
+
+/* Scoped under .entry-form on purpose: `.entry-form label` further up sets
+   flex-direction: column for the stacked shared fields, and at specificity
+   (0,1,1) it outranks a bare class here — which stacked every checkbox above
+   its own label. */
+.entry-form .dt-none {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.dt-reason-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.6rem;
+}
+
+.dt-reason-row:nth-child(odd) {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.entry-form .dt-reason-label {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.4rem;
+    flex: 1;
+    font-size: 0.85rem;
+    /* The label reads as one target with its checkbox — these get clicked a
+       lot, by someone working down a paper sheet. */
+    cursor: pointer;
+}
+
+.oee-entry-grid .dt-reason-row .dt-min {
+    width: 5rem;
+    flex: none;
+}
+
+/* Lost when the old slot-grain console styles were removed; the Scheduled
+   header stacks its qualifier under the word rather than running the two
+   together as "Scheduledthis shift". */
+.batch-grid .sched-col {
+    text-align: center;
+    min-width: 6rem;
+}
+
+.batch-grid .sched-col .optional {
+    display: block;
+}
+
+/* A machine left exactly as it was found. Not an error and not a save, so it
+   gets neither colour — just enough to make the saved rows stand out. */
+.batch-row-unchanged {
+    opacity: 0.75;
+}
+
+/* ---------- /oee: shift-grain columns ---------- */
+
+/* Replaces the per-slot OEE columns, which went away with slot-grain capture.
+   Left-aligned and allowed to wrap: it holds reason names, not numbers. */
+.oee-grid .reason-head,
+.oee-grid .reason-cell {
+    text-align: left;
+    white-space: normal;
+    min-width: 14rem;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+
+/* The OEE column is the one the page exists for, so it keeps the divider that
+   used to separate it from the slot block. */
+.oee-grid .sum-oee {
+    border-left: 2px solid var(--text-dim);
+}
+
+/* A machine whose numbers are excluded — see FLAG_LABELS in oee.js. Shown as
+   "!" rather than blank so it reads as a problem rather than as missing data. */
+.oee-grid .sum-oee[data-band="poor"]:not([data-warned]) {
+    cursor: help;
+}
+
+.oee-grid .sum[data-warned] {
+    outline: 2px dashed #e3b341;
+    outline-offset: -2px;
+    cursor: help;
 }

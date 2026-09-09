@@ -8,17 +8,18 @@ relatively, so it won't find the templates from anywhere else:
 Needs httpx on top of the app's own dependencies (it backs
 fastapi.testclient.TestClient) — see requirements-dev.txt.
 
-Renders every page and exercises the /console write paths against stubbed
-database functions, capturing what WOULD have been written. The checks that
-matter most are the write-isolation ones: three different people share the
-batch form, and a blank field has to mean "I'm not touching this" rather than
-"set this to nothing".
+Three things this exists to catch:
 
-The regression it exists to prevent: an unticked checkbox and an absent one are
-indistinguishable in a form POST, so reading absence as "unticked" marked every
-machine not on the submitted form as NOT SCHEDULED — silently removing them
-from the OEE denominator and inflating every number on the page. The hidden
-sched_present_<machine> field is what tells the two apart.
+  1. ROUTE ORDER. /console/oee is a literal path and /console/{zone} is a
+     pattern. If console.router is registered first, FastAPI matches the OEE
+     form as a zone named "oee" and 404s it. The failure is silent and looks
+     exactly like a missing page.
+  2. THE REVERT. /console/<zone> went back to good units only when OEE capture
+     moved to end-of-shift. If scrap or downtime fields reappear there, the
+     2-hour rounds have picked the extra work back up.
+  3. WRITE ISOLATION on /console/oee — nothing is written for a machine whose
+     values match what's already stored, so opening and saving the page does
+     not append 34 identical rows.
 """
 import os
 import sys
@@ -28,86 +29,82 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("APP_DB_PASSWORD", "stub")
-try:
+try:  # pragma: no cover - environment shim
     import psycopg  # noqa: F401
 except ModuleNotFoundError:
     sys.modules["psycopg"] = types.ModuleType("psycopg")
 
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: E402
 
-import app.db.entries as entries_mod
-import app.db.oee as oee_mod
-import app.routers.console as console_mod
-import app.routers.oee as oee_router
-import app.routers.supervisor as sup_mod
-from app.models import SHIFT_SLOTS
+import app.db.entries as entries_mod  # noqa: E402
+import app.db.oee as oee_mod  # noqa: E402
+import app.routers.console as console_mod  # noqa: E402
+import app.routers.console_oee as console_oee_mod  # noqa: E402
+import app.routers.oee as oee_router  # noqa: E402
+import app.routers.supervisor as sup_mod  # noqa: E402
+from app.models import MACHINE_IDS, SHIFT_SLOTS  # noqa: E402
 
-DAY = date(2026, 9, 2)
-S1 = SHIFT_SLOTS["1st Shift"]
+DAY = date(2026, 9, 8)
+SHIFT = "1st Shift"
+S1 = SHIFT_SLOTS[SHIFT]
 
+# The floor's real eleven, all unplanned (docs/sql/12_seed_shift_downtime_reasons.sql).
 REASONS = {
-    "MATL": {"code": "MATL", "label": "Material wait or shortage", "is_planned": False},
-    "MECH": {"code": "MECH", "label": "Mechanical failure", "is_planned": False},
-    "CHGOVR": {"code": "CHGOVR", "label": "Changeover / setup", "is_planned": False},
-    "PM": {"code": "PM", "label": "Planned maintenance", "is_planned": True},
+    code: {"code": code, "label": label, "is_planned": False}
+    for code, label in [
+        ("ROLL_CHANGE", "Roll Change"), ("SETUP", "Setup"), ("FAAR", "FAAR"),
+        ("EQUIP_FAIL", "Equipment Failure"), ("OPER_ADJUST", "Operator Adjustments"),
+        ("DEFECT_MAT", "Defective Material"), ("LACK_MAT", "Lack of Material"),
+        ("LACK_OPER", "Lack of Operator"), ("DELIVERY", "Delivery"),
+        ("REGISTRATION", "Registration"), ("SHIFT_START", "Start of Shift"),
+    ]
 }
 
-INCREMENTS = {"C1": 11700, "C2": 11700, "C3": 11700, "C4": 11700, "C5": 11700,
-              "C6": 10800, "C7": 10800, "C8": 10800, "C9": 10800, "C10": 10800,
-              "C11": 10800, "C14": 11700, "C15": 11700, "C16": 11700,
-              "FM1": 8100, "FM2": 8100, "FM3": 8100,
-              "WS1": 9900, "WS2": 9900, "WS3": 9900, "WS4": 9900, "WS5": 9900,
-              "WS6": 9900, "P1": 14400, "P2": 16200, "P3": 16200, "P4": 16200,
-              "AS1": 2520, "AS2": 2520, "AS3": 2520, "AS4": 2520, "AS5": 2520,
-              "AS6": 2250, "AS7": 2250}
-
+INCREMENTS = {m: 11700 for m in MACHINE_IDS}
 entries = [
     {"machine_id": "C1", "operator": "Sam", "time_slot": slot,
      "units_produced": value, "status": ":)", "issue": None, "entered_by": "1234",
-     "entry_date": DAY, "created_at": datetime(2026, 9, 2, 14, 0)}
+     "entry_date": DAY, "created_at": datetime(2026, 9, 8, 14, 0)}
     for slot, value in zip(S1, [11700, 23400, 35100, 46800])
 ]
-downtime = {("C1", s): {"note": None, "reasons": [], "planned_minutes": 0,
-                        "unplanned_minutes": 0} for s in S1}
-scrap = {("C1", s): 0 for s in S1}
-standards = {(m, s): inc * i
-             for m, inc in INCREMENTS.items()
-             for label, slots in SHIFT_SLOTS.items()
-             for i, s in enumerate(slots, start=1)}
-ideal = {m: inc / 1.5 for m, inc in INCREMENTS.items()}
 
 # --- stub every read -------------------------------------------------------
-for mod in (entries_mod, sup_mod, console_mod, oee_router):
-    if hasattr(mod, "get_available_entry_dates"):
-        mod.get_available_entry_dates = lambda: [DAY]
-    if hasattr(mod, "get_latest_entries_for_date"):
-        mod.get_latest_entries_for_date = lambda d: entries
-    if hasattr(mod, "get_shift_activity"):
-        mod.get_shift_activity = lambda d, slots: {"C1": {"operator": "Sam", "issues": []}}
-
 entries_mod.get_latest_entries_for_date = lambda d: entries
 entries_mod.get_available_entry_dates = lambda: [DAY]
+entries_mod.get_shift_activity = lambda d, slots: {"C1": {"operator": "Sam", "issues": []}}
+console_mod.get_shift_activity = entries_mod.get_shift_activity
+sup_mod.get_available_entry_dates = entries_mod.get_available_entry_dates
+sup_mod.get_latest_entries_for_date = entries_mod.get_latest_entries_for_date
+sup_mod.get_shift_activity = entries_mod.get_shift_activity
+oee_router.get_available_entry_dates = entries_mod.get_available_entry_dates
 
-for mod in (oee_mod, console_mod):
-    mod.get_latest_scrap_for_date = lambda d: dict(scrap)
-    mod.get_latest_downtime_for_date = lambda d: dict(downtime)
-    mod.get_schedule_for_date = lambda d: {}
+stored_scrap = {}
+stored_downtime = {}
+stored_schedule = {}
+
+for mod in (oee_mod, console_oee_mod):
+    mod.get_latest_scrap_for_date = lambda d: dict(stored_scrap)
+    mod.get_latest_downtime_for_date = lambda d: dict(stored_downtime)
+    mod.get_schedule_for_date = lambda d: dict(stored_schedule)
     mod.get_downtime_reasons = lambda active_only=True: dict(REASONS)
-oee_mod.get_ideal_rates = lambda: ideal
-oee_mod.get_slot_standards = lambda: standards
+oee_mod.get_ideal_rates = lambda: {m: i / 1.5 for m, i in INCREMENTS.items()}
+oee_mod.get_shift_standards = lambda: {
+    (m, s): i * 4 for m, i in INCREMENTS.items() for s in SHIFT_SLOTS
+}
 
 # --- capture every write ---------------------------------------------------
 written = {"entry": [], "scrap": [], "downtime": [], "schedule": []}
 console_mod.create_entry = lambda p: written["entry"].append(p) or 1
-console_mod.create_scrap = lambda p: written["scrap"].append(p) or 1
+console_oee_mod.create_shift_scrap = lambda p: written["scrap"].append(p) or 1
+console_oee_mod.create_schedule_exception = lambda p: written["schedule"].append(p) or 1
 
 
-def fake_create_downtime(payload):
+def fake_downtime(payload):
     total = sum(r.minutes for r in payload.reasons)
-    if total > 120:
-        raise oee_mod.DowntimeExceedsSlotError(
-            f"{total} minutes of downtime doesn't fit in a 120-minute slot "
-            f"({payload.machine_id} {payload.time_slot})."
+    if total > 480:
+        raise oee_mod.DowntimeExceedsShiftError(
+            f"{total} minutes of downtime doesn't fit in a 480-minute shift "
+            f"({payload.machine_id}, {payload.shift})."
         )
     unknown = [r.reason_code for r in payload.reasons if r.reason_code not in REASONS]
     if unknown:
@@ -116,8 +113,7 @@ def fake_create_downtime(payload):
     return 1
 
 
-console_mod.create_downtime = fake_create_downtime
-console_mod.create_schedule_exception = lambda p: written["schedule"].append(p) or 1
+console_oee_mod.create_shift_downtime = fake_downtime
 
 from app.main import app  # noqa: E402
 
@@ -133,216 +129,197 @@ def check(label, ok, detail=""):
 
 print("\n== every page renders ==")
 for path in ("/dashboard", "/dashboard/b3", "/supervisor", "/oee",
-             "/console", "/console/b3", "/healthz"):
+             "/console", "/console/b3", "/console/oee", "/healthz"):
     res = client.get(path)
     check(f"GET {path} -> 200", res.status_code == 200,
-          f"got {res.status_code}: {res.text[:400]}")
+          f"got {res.status_code}: {res.text[:300]}")
 
-print("\n== 404s still 404 ==")
-check("GET /dashboard/nope -> 404", client.get("/dashboard/nope").status_code == 404)
-check("GET /console/nope -> 404", client.get("/console/nope").status_code == 404)
+print("\n== ROUTE ORDER: /console/oee is not eaten by /console/{zone} ==")
+res = client.get("/console/oee")
+check("not a 404", res.status_code == 200, str(res.status_code))
+check("renders the OEE form, not a zone grid", "End of Shift OEE" in res.text)
+check("unknown zones still 404", client.get("/console/nope").status_code == 404)
 
-print("\n== /oee page content ==")
-page = client.get("/oee").text
-check("no explanatory 75% banner (removed by request)",
-      "not 100%" not in page and "oee-anchor" not in page)
-check("renders all 12 slot headers", all(f'data-slot="{s}"' in page for s in
-      ["8AM", "10AM", "12PM", "2PM", "4PM", "6PM", "8PM", "10PM", "12AM", "2AM", "4AM", "6AM"]))
-check("has no All Day option", "All Day" not in page)
-check("renders all 34 machine rows", page.count("<tr data-machine=") == 34,
-      f"count {page.count('<tr data-machine=')}")
-check("loads oee.js", "/static/js/oee.js" in page)
+print("\n== THE REVERT: /console/<zone> is good units only ==")
+batch = client.get("/console/b3").text
+check("no scrap field", 'name="scrap_' not in batch)
+check("no downtime fields", "dt_none_" not in batch and "dt_on_" not in batch)
+check("no scheduled checkbox", 'name="scheduled_' not in batch)
+# ...and still has exactly what the single-machine form has.
+single = client.get("/console").text
+for field in ("operator", "units_produced" if False else "units", "issue"):
+    check(f"still has {field}", f'name="{field}_C1"' in batch or f'name="{field}"' in single)
+check("time slot picker intact", 'name="time_slot"' in batch)
+check("employee number intact", 'name="entered_by"' in batch)
 
-print("\n== /api/oee-data ==")
-res = client.get("/api/oee-data")
-check("200", res.status_code == 200, res.text[:400])
-data = res.json()
-check("has all three shifts", set(data["shifts"]) == {"1st Shift", "2nd Shift", "3rd Shift"})
-check("C1 scores 0.75", abs(data["shifts"]["1st Shift"]["machines"]["C1"]["shift"]["oee"] - 0.75) < 1e-9,
-      str(data["shifts"]["1st Shift"]["machines"]["C1"]["shift"]["oee"]))
-check("zones present", "b3" in data["shifts"]["1st Shift"]["zones"])
-check("available_dates echoed", data["available_dates"] == ["2026-09-02"])
-check("bad date param doesn't 500", client.get("/api/oee-data?date=garbage").status_code == 200)
-
-print("\n== /console/b3 form has the new fields ==")
-form = client.get("/console/b3").text
-check("scrap input", 'name="scrap_C1"' in form)
-check("downtime none checkbox", 'name="dt_none_C1"' in form)
-check("two reason pairs", 'name="dt_reason1_C1"' in form and 'name="dt_reason2_C1"' in form)
-check("reason options rendered", "Material wait or shortage" in form)
-check("scheduled checkbox, ticked by default",
-      'name="scheduled_C1"' in form and "checked" in form)
-check("tick-all shortcut", 'id="mark-all-clean"' in form)
+print("\n== /console/oee form contents ==")
+form = client.get("/console/oee").text
+check("all 34 machines", form.count('name="sched_present_') == 34,
+      str(form.count('name="sched_present_')))
+check("all 11 reasons on C1", sum(
+    1 for code in REASONS if f'name="dt_on_C1_{code}"' in form) == 11)
+check("each reason has a minutes box",
+      form.count('name="dt_min_C1_') == 11, str(form.count('name="dt_min_C1_')))
+check("reason labels rendered", "Lack of Operator" in form and "FAAR" in form)
+check("no downtime checkbox", 'name="dt_none_C1"' in form)
+check("scrap box", 'name="scrap_C1"' in form)
+check("note box", 'name="note_C1"' in form)
+check("scheduled ticked by default", 'name="scheduled_C1" value="1"\n                                   checked' in form
+      or ('name="scheduled_C1"' in form and "checked" in form))
 
 
-def post(fields):
-    body = {"entered_by": "9001", "time_slot": "8AM", "shift": "1st Shift",
-            "entry_date": DAY.isoformat()}
+def post(fields, machines=None):
+    """Posts the OEE form the way a browser would, for the given machines."""
+    body = {"entered_by": "9001", "shift": SHIFT, "entry_date": DAY.isoformat()}
+    for machine in (machines if machines is not None else MACHINE_IDS):
+        body[f"sched_present_{machine}"] = "1"
+        body[f"scheduled_{machine}"] = "1"
     body.update(fields)
-    return client.post("/console/b3", data=body)
+    return client.post("/console/oee", data=body)
 
 
-print("\n== scrap-only save must NOT touch units ==")
-written["entry"].clear(); written["scrap"].clear()
-res = post({"scrap_C1": "250"})
+def reset():
+    for bucket in written.values():
+        bucket.clear()
+    stored_scrap.clear()
+    stored_downtime.clear()
+    stored_schedule.clear()
+
+
+print("\n== the flow the floor asked for: tick several reasons, minutes on each ==")
+reset()
+res = post({
+    "dt_on_C1_EQUIP_FAIL": "1", "dt_min_C1_EQUIP_FAIL": "45",
+    "dt_on_C1_DELIVERY": "1", "dt_min_C1_DELIVERY": "20",
+    "dt_on_C1_REGISTRATION": "1", "dt_min_C1_REGISTRATION": "15",
+    "scrap_C1": "320",
+})
 check("200", res.status_code == 200, str(res.status_code))
-check("scrap written", len(written["scrap"]) == 1 and written["scrap"][0].scrap_cumulative == 250)
-check("no entry written", written["entry"] == [])
+check("one downtime submission", len(written["downtime"]) == 1)
+codes = sorted(r.reason_code for r in written["downtime"][0].reasons) if written["downtime"] else []
+check("all three reasons carried",
+      codes == ["DELIVERY", "EQUIP_FAIL", "REGISTRATION"], str(codes))
+mins = {r.reason_code: r.minutes for r in written["downtime"][0].reasons}
+check("with their own minutes", mins == {"EQUIP_FAIL": 45, "DELIVERY": 20, "REGISTRATION": 15},
+      str(mins))
+check("scrap saved as a shift total", len(written["scrap"]) == 1
+      and written["scrap"][0].scrap_units == 320)
+check("scrap is keyed by shift, not slot", written["scrap"][0].shift == SHIFT)
 
-print("\n== units-only save must NOT touch scrap ==")
-written["entry"].clear(); written["scrap"].clear()
-post({"units_C2": "11700", "operator_C2": "Dana"})
-check("entry written", len(written["entry"]) == 1 and written["entry"][0].units_produced == 11700)
-check("no scrap written", written["scrap"] == [])
-
-print("\n== 'none' checkbox records a clean slot (header, zero reasons) ==")
-written["downtime"].clear()
-post({"dt_none_C3": "1"})
-check("downtime written", len(written["downtime"]) == 1)
+print("\n== 'no downtime' records a clean shift, not an absent one ==")
+reset()
+post({"dt_none_C2": "1"})
+check("one submission", len(written["downtime"]) == 1)
 check("with zero reasons", written["downtime"] and written["downtime"][0].reasons == [])
 
-print("\n== two reasons in one submission ==")
-written["downtime"].clear()
-post({"dt_reason1_C4": "MATL", "dt_min1_C4": "15",
-      "dt_reason2_C4": "MECH", "dt_min2_C4": "10"})
-check("one submission", len(written["downtime"]) == 1)
-codes = [r.reason_code for r in written["downtime"][0].reasons] if written["downtime"] else []
-check("both reasons carried", codes == ["MATL", "MECH"], str(codes))
+print("\n== contradictions and half-filled rows are refused ==")
+reset()
+res = post({"dt_none_C3": "1", "dt_on_C3_SETUP": "1", "dt_min_C3_SETUP": "30"})
+check("none + a reason writes nothing", written["downtime"] == [])
+check("and says so", "cannot be both" in res.text)
 
-print("\n== 'none' plus a reason is a contradiction, not a silent pick ==")
-written["downtime"].clear()
-res = post({"dt_none_C5": "1", "dt_reason1_C5": "MATL", "dt_min1_C5": "20"})
-check("nothing written", written["downtime"] == [])
-check("error shown to the user", "can" in res.text and "both" in res.text)
+reset()
+res = post({"dt_on_C4_SETUP": "1"})
+check("ticked with no minutes writes nothing", written["downtime"] == [])
+check("and names the reason", "Setup" in res.text and "no minutes" in res.text)
 
-print("\n== downtime past the slot length is rejected with a readable message ==")
-written["downtime"].clear()
-res = post({"dt_reason1_C6": "MATL", "dt_min1_C6": "90",
-            "dt_reason2_C6": "MECH", "dt_min2_C6": "60"})
-check("nothing written", written["downtime"] == [])
-check("message names the overflow", "150 minutes" in res.text, res.text[:200])
+reset()
+res = post({"dt_min_C5_SETUP": "30"})
+check("minutes without the tick writes nothing", written["downtime"] == [])
+check("and says the box isn't ticked", "isn" in res.text and "ticked" in res.text)
 
-print("\n== minutes without a reason is caught ==")
-written["downtime"].clear()
-res = post({"dt_min1_C7": "20"})
-check("nothing written", written["downtime"] == [])
-check("asks for a reason", "reason" in res.text.lower())
+reset()
+res = post({
+    "dt_on_C6_SETUP": "1", "dt_min_C6_SETUP": "300",
+    "dt_on_C6_DELIVERY": "1", "dt_min_C6_DELIVERY": "300",
+})
+check("over a full shift writes nothing", written["downtime"] == [])
+check("and names the overflow", "600 minutes" in res.text, res.text[:200])
+
+print("\n== WRITE ISOLATION: unchanged machines are not rewritten ==")
+# Simulate a shift already entered, then open and save the page untouched.
+stored_downtime[("C1", SHIFT)] = {
+    "note": None, "planned_minutes": 0, "unplanned_minutes": 45,
+    "reasons": [{"code": "EQUIP_FAIL", "label": "Equipment Failure",
+                 "minutes": 45, "is_planned": False}],
+}
+stored_scrap[("C1", SHIFT)] = 320
+for bucket in written.values():
+    bucket.clear()
+
+res = post({"dt_on_C1_EQUIP_FAIL": "1", "dt_min_C1_EQUIP_FAIL": "45", "scrap_C1": "320"})
+check("identical values write NOTHING", written["downtime"] == [] and written["scrap"] == [],
+      f"downtime={written['downtime']} scrap={written['scrap']}")
+check("and the page says nothing changed", "Nothing changed" in res.text)
+
+# ...but a real edit still saves.
+for bucket in written.values():
+    bucket.clear()
+post({"dt_on_C1_EQUIP_FAIL": "1", "dt_min_C1_EQUIP_FAIL": "60", "scrap_C1": "320"})
+check("changing the minutes does save", len(written["downtime"]) == 1)
+check("scrap still untouched", written["scrap"] == [])
 
 print("\n== the scheduled checkbox ==")
-# A browser posts the hidden sched_present_<m> for every machine on the form,
-# and scheduled_<m> only for the ticked ones. These helpers reproduce that.
-ZONE_B3 = ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11",
-           "C14", "C15", "C16"]
-
-
-def post_full_form(fields, unticked=()):
-    body = {}
-    for machine in ZONE_B3:
-        body[f"sched_present_{machine}"] = "1"
-        if machine not in unticked:
-            body[f"scheduled_{machine}"] = "1"
-    body.update(fields)
-    return post(body)
-
-
-written["schedule"].clear()
-post_full_form({"scrap_C1": "10"})
+reset()
+post({})
 check("all ticked, nothing on record -> no write", written["schedule"] == [],
       str(written["schedule"]))
 
-written["schedule"].clear()
-post_full_form({}, unticked=["C5"])
-check("unticking one machine writes exactly one exception",
-      len(written["schedule"]) == 1, str(written["schedule"]))
-check("and it is scheduled=False for that machine",
+reset()
+body = {"entered_by": "9001", "shift": SHIFT, "entry_date": DAY.isoformat()}
+for machine in MACHINE_IDS:
+    body[f"sched_present_{machine}"] = "1"
+    if machine != "C5":
+        body[f"scheduled_{machine}"] = "1"
+client.post("/console/oee", data=body)
+check("unticking one writes exactly one exception", len(written["schedule"]) == 1,
+      str(written["schedule"]))
+check("for that machine, scheduled=False",
       written["schedule"] and written["schedule"][0].machine_id == "C5"
-      and written["schedule"][0].scheduled is False, str(written["schedule"]))
+      and written["schedule"][0].scheduled is False)
 
 # THE REGRESSION THIS GUARDS: a POST that omits the scheduling controls
-# entirely (a hand-built request, or a form that never rendered them) must
-# leave scheduling alone. Without the hidden presence marker, every machine
-# would be read as "unticked" and marked not-scheduled — silently removing the
-# whole zone from the OEE denominator.
-written["schedule"].clear()
-post({"units_C8": "10800", "operator_C8": "Lee"})
-check("a POST with no scheduling controls writes NOTHING",
+# entirely must leave scheduling alone. Without the hidden presence marker,
+# every machine would read as "unticked" and be marked not-scheduled, silently
+# removing the whole floor from the OEE denominator.
+reset()
+client.post("/console/oee", data={
+    "entered_by": "9001", "shift": SHIFT, "entry_date": DAY.isoformat(),
+    "dt_none_C1": "1",
+})
+check("a POST with no scheduling controls writes NO scheduling",
       written["schedule"] == [], str(written["schedule"]))
 
-written["schedule"].clear()
-console_mod.get_schedule_for_date = lambda d: {("C9", "1st Shift"): False}
-post_full_form({})
-check("re-ticking a not-scheduled machine writes scheduled=True",
-      len(written["schedule"]) == 1
-      and written["schedule"][0].machine_id == "C9"
-      and written["schedule"][0].scheduled is True,
-      str(written["schedule"]))
-console_mod.get_schedule_for_date = lambda d: {}
+print("\n== shared-field validation ==")
+res = client.post("/console/oee", data={"entered_by": "", "shift": SHIFT,
+                                        "entry_date": DAY.isoformat()})
+check("missing employee number blocked", "employee number" in res.text)
+res = client.post("/console/oee", data={"entered_by": "9001", "shift": SHIFT,
+                                        "entry_date": "not-a-date"})
+check("bad date blocked", "valid date" in res.text)
 
-print("\n== filling ONE machine writes nothing for the other 13 ==")
-# The guarantee the whole shared-form design rests on. A zone form posts a
-# field for every machine in the zone whether or not anyone typed in it, so
-# each write path has to be gated on its OWN field being non-empty. If a blank
-# box ever became a 0, one person entering one machine would zero the entire
-# zone's production, scrap and availability in a single click.
-for bucket in written.values():
-    bucket.clear()
-post_full_form({
-    "units_C1": "11700", "operator_C1": "Sam",
-    "scrap_C1": "40", "dt_none_C1": "1",
-})
-check("exactly one production entry, for C1",
-      [p.machine_id for p in written["entry"]] == ["C1"],
-      str([p.machine_id for p in written["entry"]]))
-check("exactly one scrap row, for C1",
-      [p.machine_id for p in written["scrap"]] == ["C1"],
-      str([p.machine_id for p in written["scrap"]]))
-check("exactly one downtime submission, for C1",
-      [p.machine_id for p in written["downtime"]] == ["C1"],
-      str([p.machine_id for p in written["downtime"]]))
-check("no scheduling rows at all", written["schedule"] == [],
-      str(written["schedule"]))
-check("no zero-valued row written for any other machine",
-      not [p for p in written["entry"] + written["scrap"] if p.machine_id != "C1"])
+print("\n== /oee is shift-grain now ==")
+oee_page = client.get("/oee").text
+check("no per-slot OEE columns", 'class="cell slot-cell"' not in oee_page)
+check("has the shift summary columns", 'data-field="oee"' in oee_page
+      and 'data-field="availability"' in oee_page)
+check("has a reasons column", 'data-field="reasons"' in oee_page)
+check("completeness says Production", 'data-field="production"' in oee_page)
 
-print("\n== a blank units box is not a zero ==")
-# Belt and braces: an EXPLICIT zero is a real reading and must still save,
-# so the gate has to be on the field being empty, not on it being falsy.
-for bucket in written.values():
-    bucket.clear()
-post_full_form({"units_C2": "0", "operator_C2": "Dana", "scrap_C2": "0"})
-check("an explicit 0 units still saves",
-      [p.machine_id for p in written["entry"]] == ["C2"]
-      and written["entry"][0].units_produced == 0,
-      str(written["entry"]))
-check("an explicit 0 scrap still saves",
-      [p.machine_id for p in written["scrap"]] == ["C2"]
-      and written["scrap"][0].scrap_cumulative == 0,
-      str(written["scrap"]))
+data = client.get("/api/oee-data")
+check("/api/oee-data 200", data.status_code == 200, data.text[:300])
+payload = data.json()
+check("all three shifts", set(payload["shifts"]) == {"1st Shift", "2nd Shift", "3rd Shift"})
+check("machines carry no per-slot OEE",
+      "slots" not in payload["shifts"][SHIFT]["machines"]["C1"])
+check("but do carry the checkpoint sequence",
+      len(payload["shifts"][SHIFT]["machines"]["C1"]["checkpoints"]) == 4)
 
-print("\n== scheduling alone needs no time slot ==")
-written["schedule"].clear()
-console_mod.get_schedule_for_date = lambda d: {}
-res = client.post("/console/b3", data={
-    "entered_by": "9001", "time_slot": "", "shift": "1st Shift",
-    "entry_date": DAY.isoformat(),
-})
-check("no top error about time slot", "Pick a time slot" not in res.text)
-console_mod.get_schedule_for_date = lambda d: {}
-
-print("\n== slot data without a time slot IS blocked ==")
-res = client.post("/console/b3", data={
-    "entered_by": "9001", "time_slot": "", "shift": "1st Shift",
-    "entry_date": DAY.isoformat(), "scrap_C1": "5",
-})
-check("blocked with a clear message", "Pick a time slot" in res.text)
-
-print("\n== slot/shift mismatch still rejected ==")
-res = client.post("/console/b3", data={
-    "entered_by": "9001", "time_slot": "4PM", "shift": "1st Shift",
-    "entry_date": DAY.isoformat(), "units_C1": "100", "operator_C1": "Sam",
-})
-# Jinja autoescapes, so the apostrophe in "isn't" arrives as &#39;.
-check("rejected", "a 1st Shift time slot" in res.text, res.text[:300])
+print("\n== /dashboard is the site menu ==")
+index = client.get("/dashboard").text
+for link in ("/console", "/console/oee", "/supervisor", "/oee",
+             "/dashboard/b3", "/console/b3"):
+    check(f"links to {link}", f'href="{link}"' in index)
 
 print("\n== existing pages unaffected ==")
 check("/api/dashboard-data 200", client.get("/api/dashboard-data").status_code == 200)

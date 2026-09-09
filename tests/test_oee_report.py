@@ -1,21 +1,22 @@
 """Integration check for compute_oee_report(), with the DB reads stubbed out.
 
-Run it directly — there's no test framework in this project:
+Run it from anywhere:
 
     python tests/test_oee_report.py
 
-Exercises the whole report builder against a synthetic day built around the
-cases that actually bite:
+Exercises the whole report builder at SHIFT grain against the cases that
+actually bite:
 
-    C1   hits standard exactly, ran clean, zero scrap  -> must score 0.75
-    C2   missing its 10AM checkpoint                   -> two slots uncountable
-    C3   a checkpoint typed lower than the one before  -> flagged, excluded
-    P1   ran, but marked not scheduled                 -> absent from rollups
-    AS1  real losses incl. planned maintenance         -> feeds the Pareto
-    AS6  units and scrap but NO downtime entry         -> OEE N/A, not 100%
+    C1   hits standard, ran clean, zero scrap        -> must score 0.75
+    C2   real row: blank tail + 240 min no operator  -> 25.2%, availability 50%
+    C3   mid-shift typo the counter recovers from    -> warns, still counts
+    C4   LAST reading below an earlier one           -> hard flag, excluded
+    C5   production but no downtime record           -> OEE N/A, not 100%
+    C6   downtime record but no production           -> no OEE, still in Pareto
+    P3   ran, but marked not scheduled               -> absent from rollups
 
 See tests/test_oee_math.py for the unit-level arithmetic. The rule this file
-guards is the aggregation: percentages are never averaged, and A x P x Q must
+guards is aggregation: percentages are never averaged, and A x P x Q must
 reconstruct OEE whenever the three factors describe the same machines.
 """
 import os
@@ -26,18 +27,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("APP_DB_PASSWORD", "stub")
-try:
+try:  # pragma: no cover - environment shim
     import psycopg  # noqa: F401
 except ModuleNotFoundError:
     sys.modules["psycopg"] = types.ModuleType("psycopg")
 
-import app.db.entries as entries_mod
-import app.db.oee as oee
-from app.models import SHIFT_SLOTS
+import app.db.entries as entries_mod  # noqa: E402
+import app.db.oee as oee  # noqa: E402
+from app.models import MACHINE_IDS, SHIFT_SLOTS  # noqa: E402
 
-DAY = date(2026, 9, 2)
-NOW = datetime(2026, 9, 3, 9, 0)  # the day after, so all slots are elapsed
-S1 = SHIFT_SLOTS["1st Shift"]  # 8AM 10AM 12PM 2PM
+DAY = date(2026, 9, 8)
+NOW = datetime(2026, 9, 9, 9, 0)  # the day after, so every slot has elapsed
+SHIFT = "1st Shift"
+S1 = SHIFT_SLOTS[SHIFT]
 
 INCREMENTS = {
     "C1": 11700, "C2": 11700, "C3": 11700, "C4": 11700, "C5": 11700,
@@ -50,358 +52,149 @@ INCREMENTS = {
     "AS6": 2250, "AS7": 2250,
 }
 
-# --- synthetic day ---------------------------------------------------------
 entries = []
-def add_units(machine, cumulative_by_slot, operator="Sam"):
-    for slot, value in cumulative_by_slot.items():
+
+
+def add(machine, values):
+    for slot, value in zip(S1, values):
+        if value is None:
+            continue  # a blank checkpoint is an absent row, not a null one
         entries.append({
-            "machine_id": machine, "operator": operator, "time_slot": slot,
+            "machine_id": machine, "operator": "Okafor", "time_slot": slot,
             "units_produced": value, "status": ":)", "issue": None,
-            "entered_by": "1234", "entry_date": DAY, "created_at": NOW,
+            "entered_by": "4471", "entry_date": DAY, "created_at": NOW,
         })
 
-# C1 — textbook: hits standard exactly, clean, no scrap. Must score 0.75.
-add_units("C1", dict(zip(S1, [11700, 23400, 35100, 46800])))
-# C2 — missing the 10AM checkpoint entirely.
-add_units("C2", {"8AM": 11700, "12PM": 35100, "2PM": 46800})
-# C3 — 12PM checkpoint typed lower than 10AM: impossible on a cumulative counter.
-add_units("C3", dict(zip(S1, [11700, 23400, 20000, 46800])))
-# P1 — ran, but marked not scheduled; must be excluded from the rollup.
-add_units("P1", dict(zip(S1, [14400, 28800, 43200, 57600])))
-# AS1 — real losses, two reasons in one slot, for the Pareto.
-add_units("AS1", dict(zip(S1, [2000, 4000, 6000, 8000])))
-# AS6 — units and scrap but NO downtime entry: OEE must be N/A, not 100%.
-add_units("AS6", dict(zip(S1, [2250, 4500, 6750, 9000])))
 
-scrap = {}
-for slot, value in zip(S1, [0, 0, 0, 0]):
-    scrap[("C1", slot)] = value
-for slot, value in zip(S1, [50, 100, 150, 200]):
-    scrap[("AS1", slot)] = value
-for slot, value in zip(S1, [10, 20, 30, 40]):
-    scrap[("AS6", slot)] = value
+add("C1", [11700, 23400, 35100, 46800])       # textbook
+add("C2", [10500, 15750, 15750, None])        # the real C2 row
+add("C3", [11700, 23400, 20000, 46800])       # typo that recovers
+add("C4", [11700, 23400, 35100, 20000])       # final reading low
+add("C5", [11700, 23400, 35100, 46800])       # no downtime record below
+add("P3", [16200, 32400, 48600, 64800])       # unscheduled below
 
-def clean(slot_list, machine):
-    return {(machine, s): {"note": None, "reasons": [], "planned_minutes": 0,
-                           "unplanned_minutes": 0} for s in slot_list}
-
-downtime = {}
-downtime.update(clean(S1, "C1"))
-downtime.update(clean(S1, "C2"))
-downtime.update(clean(S1, "C3"))
-downtime.update(clean(S1, "P1"))
-# AS1: 8AM has two unplanned causes; 10AM has planned maintenance.
-downtime[("AS1", "8AM")] = {
-    "note": "belt", "planned_minutes": 0, "unplanned_minutes": 25,
-    "reasons": [
-        {"code": "MATL", "label": "Material wait or shortage", "minutes": 15, "is_planned": False},
-        {"code": "MECH", "label": "Mechanical failure", "minutes": 10, "is_planned": False},
-    ],
+clean = {"note": None, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0}
+downtime = {
+    ("C1", SHIFT): dict(clean),
+    ("C2", SHIFT): {
+        "note": "operator moved to WS", "planned_minutes": 0, "unplanned_minutes": 240,
+        "reasons": [{"code": "LACK_OPER", "label": "Lack of Operator",
+                     "minutes": 240, "is_planned": False}],
+    },
+    ("C3", SHIFT): dict(clean),
+    ("C4", SHIFT): dict(clean),
+    # C6 has downtime but no production at all.
+    ("C6", SHIFT): {
+        "note": None, "planned_minutes": 0, "unplanned_minutes": 75,
+        "reasons": [{"code": "EQUIP_FAIL", "label": "Equipment Failure",
+                     "minutes": 75, "is_planned": False}],
+    },
+    ("P3", SHIFT): dict(clean),
 }
-downtime[("AS1", "10AM")] = {
-    "note": None, "planned_minutes": 30, "unplanned_minutes": 0,
-    "reasons": [{"code": "PM", "label": "Planned maintenance", "minutes": 30, "is_planned": True}],
-}
-downtime[("AS1", "12PM")] = {"note": None, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0}
-downtime[("AS1", "2PM")] = {
-    "note": None, "planned_minutes": 0, "unplanned_minutes": 40,
-    "reasons": [{"code": "MATL", "label": "Material wait or shortage", "minutes": 40, "is_planned": False}],
-}
+scrap = {("C1", SHIFT): 0, ("C2", SHIFT): 250, ("C4", SHIFT): 100}
 
-standards = {}
-for machine, inc in INCREMENTS.items():
-    for label, slots in SHIFT_SLOTS.items():
-        for position, slot in enumerate(slots, start=1):
-            standards[(machine, slot)] = inc * position
-
-ideal = {m: inc / 1.5 for m, inc in INCREMENTS.items()}
-
-# --- stub the reads --------------------------------------------------------
 entries_mod.get_latest_entries_for_date = lambda d: entries if d == DAY else []
-oee.get_latest_scrap_for_date = lambda d: scrap if d == DAY else {}
-oee.get_latest_downtime_for_date = lambda d: downtime if d == DAY else {}
-oee.get_schedule_for_date = lambda d: {("P1", "1st Shift"): False}
-oee.get_ideal_rates = lambda: ideal
-oee.get_slot_standards = lambda: standards
+oee.get_latest_scrap_for_date = lambda d: dict(scrap) if d == DAY else {}
+oee.get_latest_downtime_for_date = lambda d: dict(downtime) if d == DAY else {}
+oee.get_schedule_for_date = lambda d: {("P3", SHIFT): False}
+oee.get_ideal_rates = lambda: {m: inc / 1.5 for m, inc in INCREMENTS.items()}
+oee.get_shift_standards = lambda: {
+    (m, s): inc * 4 for m, inc in INCREMENTS.items() for s in SHIFT_SLOTS
+}
 
 report = oee.compute_oee_report(DAY, now=NOW)
+shift = report["shifts"][SHIFT]
+M = shift["machines"]
 
 failures = []
+
+
 def check(label, got, want, tol=1e-9):
     ok = (got is None and want is None) or (
         isinstance(got, (int, float)) and isinstance(want, (int, float))
-        and abs(got - want) <= tol
+        and not isinstance(got, bool) and abs(got - want) <= tol
     ) or got == want
     print(f"  {'PASS' if ok else 'FAIL'}  {label}: got {got!r}, want {want!r}")
     if not ok:
         failures.append(label)
 
-shift = report["shifts"]["1st Shift"]
-M = shift["machines"]
 
-print("\n== C1: at standard, clean, no scrap ==")
-check("oee", M["C1"]["shift"]["oee"], 0.75)
-check("availability", M["C1"]["shift"]["availability"], 1.0)
-check("quality", M["C1"]["shift"]["quality"], 1.0)
-check("performance", M["C1"]["shift"]["performance"], 0.75)
-check("A x P x Q == oee", M["C1"]["shift"]["oee_from_factors"], 0.75)
-check("pct_of_standard", M["C1"]["shift"]["pct_of_standard"], 1.0)
-check("slots counted", M["C1"]["slots_counted"], 4)
-check("good", M["C1"]["shift"]["good"], 46800)
+print("\n== C1: at standard, ran clean, zero scrap ==")
+c1 = M["C1"]["shift"]
+check("oee", c1["oee"], 0.75)
+check("availability", c1["availability"], 1.0)
+check("quality", c1["quality"], 1.0)
+check("A x P x Q == oee", c1["oee_from_factors"], 0.75)
+check("good is the last reading", c1["good"], 46800)
+check("ppt is the whole shift", c1["ppt_minutes"], 480)
+check("no flags", M["C1"]["flags"], [])
 
-print("\n== C2: a blank 10AM is absorbed, the shift total is unaffected ==")
-# Readings 11700 / blank / 35100 / 46800. A blank means unchanged, so 10AM
-# produced nothing and 12PM's delta spans back to the 8AM reading. The shift
-# total is the last reading either way, which is the point: an interior gap
-# can no longer move a machine's shift OEE.
-check("all four slots countable", M["C2"]["slots_counted"], 4)
-check("10AM production is KNOWN (zero), not unknown",
-      M["C2"]["slots"]["10AM"]["has_units"], True)
-check("10AM produced nothing", M["C2"]["slots"]["10AM"]["good"], 0)
-check("10AM is marked as not actually keyed in",
-      M["C2"]["slots"]["10AM"]["units_reported"], False)
-check("12PM absorbs the gap", M["C2"]["slots"]["12PM"]["good"], 23400)
-check("2PM unaffected", M["C2"]["slots"]["2PM"]["good"], 11700)
-check("shift total equals the last reading", M["C2"]["shift"]["good"], 46800)
-check("so C2 scores exactly what C1 does", M["C2"]["shift"]["oee"], 0.75)
+print("\n== C2: the real row — blank tail, 240 min no operator ==")
+c2 = M["C2"]["shift"]
+check("good is the last READING, not the last entry", c2["good"], 15750)
+check("oee", c2["oee"], 15750 / (130 * 480))
+check("availability is 240 of 480", c2["availability"], 0.5)
+check("quality", c2["quality"], 15750 / 16000)
+check("A x P x Q == oee", c2["oee_from_factors"], c2["oee"])
+check("the blank tail did not shorten the shift", c2["ppt_minutes"], 480)
 
-# The absorbed slot is lumpy (23400 against a 15600 ceiling) and says so on the
-# cell, but the shift is sound so nothing is raised to the banner.
-check("the lumpy slot warns", "over_100" in M["C2"]["slots"]["12PM"]["warnings"], True)
-check("but it still counts", M["C2"]["slots"]["12PM"]["counted"], True)
-check("and no machine-level alarm", M["C2"]["warnings"], [])
+print("\n== C3: mid-shift typo the counter recovers from ==")
+check("warns", M["C3"]["warnings"], ["units_went_backwards"])
+check("but is NOT excluded", M["C3"]["shift"] is not None, True)
+check("shift total is still correct", M["C3"]["shift"]["good"], 46800)
 
-print("\n== C3: backwards cumulative counter poisons exactly two deltas ==")
-# The 12PM checkpoint was typed as 20000 when 10AM already read 23400.
-check("12PM flagged", M["C3"]["slots"]["12PM"]["flags"], ["negative_units"])
-check("12PM not counted", M["C3"]["slots"]["12PM"]["counted"], False)
+print("\n== C4: last reading below an earlier one ==")
+check("hard flag", M["C4"]["flags"], ["final_reading_low"])
+check("excluded from OEE", M["C4"]["shift"], None)
+check("scrap is still shown", M["C4"]["scrap"], 100)
 
-# 2PM's delta (46800 - 20000 = 26800) looks fine in isolation, but it is the
-# counter recovering the ground the typo lost, not production. Counting it
-# would inflate the shift, so a known-bad baseline disqualifies it the same way
-# a missing one would.
-check("2PM disqualified by its baseline",
-      "baseline_suspect" in M["C3"]["slots"]["2PM"]["flags"], True)
-check("2PM not counted", M["C3"]["slots"]["2PM"]["counted"], False)
-check("both problems surfaced on the machine",
-      M["C3"]["flags"], ["baseline_suspect", "negative_units"])
-check("only the two clean slots counted", M["C3"]["slots_counted"], 2)
+print("\n== C5: production but nobody entered downtime ==")
+check("no OEE rather than a flattering 100% availability", M["C5"]["shift"], None)
+check("has_production", M["C5"]["has_production"], True)
+check("has_downtime", M["C5"]["has_downtime"], False)
+check("no flags — this is missing data, not bad data", M["C5"]["flags"], [])
 
-# ...but the damage stops there. One bad checkpoint must not write off the
-# whole shift.
-check("8AM survives", M["C3"]["slots"]["8AM"]["counted"], True)
-check("10AM survives", M["C3"]["slots"]["10AM"]["counted"], True)
+print("\n== C6: downtime recorded but no production ==")
+check("no OEE", M["C6"]["shift"], None)
+check("downtime is still carried", M["C6"]["has_downtime"], True)
+check("and its reasons survive for the Pareto", len(M["C6"]["reasons"]), 1)
 
-print("\n== P1: not scheduled ==")
-check("scheduled false", M["P1"]["scheduled"], False)
-check("still computed per-slot", M["P1"]["slots"]["8AM"]["oee"] is not None, True)
+print("\n== P3: not scheduled ==")
+check("scheduled false", M["P3"]["scheduled"], False)
+check("still computed individually", M["P3"]["shift"] is not None, True)
 
-print("\n== AS6: units + scrap but no downtime entry ==")
-check("oee is None, not 100%", M["AS6"]["shift"], None)
-check("8AM has_downtime false", M["AS6"]["slots"]["8AM"]["has_downtime"], False)
-check("8AM availability None", M["AS6"]["slots"]["8AM"]["availability"], None)
-check("nothing counted", M["AS6"]["slots_counted"], 0)
-
-print("\n== AS1: real losses, planned downtime out of the denominator ==")
-as1 = M["AS1"]["shift"]
-ideal_min = 1680 / 60  # 28 units/min
-check("ppt = 480 - 30 planned", as1["ppt_minutes"], 450)
-check("run = ppt - 65 unplanned", as1["run_minutes"], 385)
-check("planned minutes", as1["planned_minutes"], 30)
-check("unplanned minutes", as1["unplanned_minutes"], 65)
-check("good", as1["good"], 8000)
-check("scrap", as1["scrap"], 200)
-check("oee", as1["oee"], 8000 / (ideal_min * 450))
-check("availability", as1["availability"], 385 / 450)
-check("quality", as1["quality"], 8000 / 8200)
-check("A x P x Q == oee", as1["oee_from_factors"], as1["oee"])
-
-print("\n== rollup excludes the unscheduled machine ==")
+print("\n== rollup ==")
 rollup = shift["rollup"]
-expected_machines = 4  # C1, C2, C3, AS1 (P1 unscheduled, AS6 nothing counted)
-check("machines counted", rollup["machines"], expected_machines)
-# Summed straight from the machines the rollup claims to cover, so the
-# assertion can't drift when the fixture changes.
-check("rollup good is exactly its member machines",
-      rollup["good"],
-      sum(m["shift"]["good"] for mid, m in M.items()
-          if m["scheduled"] and m["shift"] is not None))
-check("and P1's 57,600 is not in there",
-      M["P1"]["shift"]["good"] not in (rollup["good"],)
-      and rollup["good"] < sum(
-          m["shift"]["good"] for m in M.values() if m["shift"] is not None),
-      True)
-check("rollup availability differs from uptime (mixed rates)",
-      abs(rollup["availability"] - rollup["uptime"]) > 1e-6, True)
-
-# C2 and C3 have no scrap, so the scrap-complete subset (C1, AS1) is NARROWER
-# than the OEE population (C1, C2, C3, AS1). A x P x Q would then mix two
-# populations, so it must be withheld rather than reported as a number that
-# fails its own identity.
-check("subset is narrower", rollup["split_machines"], 2)
+# C1, C2, C3 countable and scheduled. C4 flagged, C5/C6 incomplete, P3 excluded.
+check("machines counted", rollup["machines"], 3)
+check("P3's 64,800 is not in the rollup", rollup["good"], 46800 + 15750 + 46800)
+check("scrap subset is narrower (C3 has none)", rollup["split_machines"], 2)
 check("identity withheld on mixed populations", rollup["oee_from_factors"], None)
-check("subset still reports its own consistent oee",
-      rollup["split_oee"] is not None, True)
 
-print("== same day, but with scrap filled in for every machine ==")
-# Once the populations match, A x P x Q must reconstruct the rollup OEE exactly.
-for _m in ("C2", "C3"):
-    for _slot, _value in zip(S1, [25, 50, 75, 100]):
-        scrap[(_m, _slot)] = _value
-
-report2 = oee.compute_oee_report(DAY, now=NOW)
-rollup2 = report2["shifts"]["1st Shift"]["rollup"]
-check("populations now match", rollup2["split_machines"], rollup2["machines"])
-check("rollup A x P x Q == oee", rollup2["oee_from_factors"], rollup2["oee"])
-check("rollup oee unchanged by scrap (scrap cancels out)",
-      rollup2["oee"], rollup["oee"])
+print("\n== per-zone rollups come from the server ==")
+zones = shift["zones"]
+check("b3 holds the C machines", zones["b3"]["machines"], 3)
+check("b3 oee is component-summed, not averaged",
+      zones["b3"]["oee"], (46800 + 15750 + 46800) / (130 * 480 * 3))
+check("b4 is None — its only machine is unscheduled", zones["b4"], None)
+check("ws is None — no data at all", zones["ws"], None)
 
 print("\n== pareto ==")
 pareto = shift["pareto"]
-codes = [p["code"] for p in pareto]
-check("ranked by minutes", codes, ["MATL", "PM", "MECH"])
-check("MATL total minutes", pareto[0]["minutes"], 55)
-check("MATL occurrences", pareto[0]["occurrences"], 2)
-check("MATL share of unplanned", pareto[0]["pct_of_unplanned"], 55 / 65)
-check("PM is planned", pareto[1]["is_planned"], True)
-check("PM has no unplanned share", pareto[1]["pct_of_unplanned"], None)
+check("ranked by minutes", [p["code"] for p in pareto], ["LACK_OPER", "EQUIP_FAIL"])
+check("LACK_OPER minutes", pareto[0]["minutes"], 240)
+check("C6 contributes despite having no OEE", pareto[1]["minutes"], 75)
+check("share of unplanned", pareto[0]["pct_of_unplanned"], 240 / 315)
 
-print("\n== completeness is per column ==")
+print("\n== completeness is per column, counted in machines ==")
 c = shift["completeness"]
-check("slots expected", c["slots_expected"], 4)
-check("scheduled machines", c["machines"], 33)  # 34 minus unscheduled P1
-# C2's blank 10AM no longer disqualifies it — one reading determines the shift.
-check("units known for 5 machines", c["units"], 5)  # C1 C2 C3 AS1 AS6
-check("scrap known for 3", c["scrap"], 3)  # C1 AS1 AS6
-# Downtime does NOT carry forward (not cumulative), so this still needs an
-# entry per slot.
-check("downtime entered for 4", c["downtime"], 4)  # C1 C2 C3 AS1
-
-print("\n== uneven checkpoints must NOT raise a machine-level warning ==")
-# Real rows from the first day of production use. Checkpoints are read by hand
-# and not exactly on the slot boundary, so a late reading borrows units from
-# its neighbour: the per-slot deltas swing wildly while the SHIFT total stays
-# ordinary. WS1 finished at 90% of its ceiling and C8 at 45%, yet a per-slot
-# ceiling test flagged both — along with five other machines, six of the seven
-# on the 8AM slot — and put an alarming banner on a completely normal day.
-#
-# The warning is judged on the shift aggregate for exactly this reason.
-uneven = {
-    # machine: (cumulative checkpoints, per-slot increment)
-    "WS1": ([14225, 21763, 35201, 47643], 9900),   # deltas 14225/7538/13438/12442
-    "C8":  ([19500, 19500, 25500, 26100], 10800),  # deltas 19500/0/6000/600
-}
-for machine_id, (checkpoints, increment) in uneven.items():
-    entries[:] = [e for e in entries if e["machine_id"] != machine_id]
-    for slot, value in zip(S1, checkpoints):
-        entries.append({
-            "machine_id": machine_id, "operator": "Okafor", "time_slot": slot,
-            "units_produced": value, "status": ":)", "issue": None,
-            "entered_by": "4471", "entry_date": DAY, "created_at": NOW,
-        })
-        downtime[(machine_id, slot)] = {
-            "note": None, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0,
-        }
-
-uneven_report = oee.compute_oee_report(DAY, now=NOW)
-UM = uneven_report["shifts"]["1st Shift"]["machines"]
-
-for machine_id, (checkpoints, increment) in uneven.items():
-    machine = UM[machine_id]
-    ceiling_per_slot = increment / 0.75
-    over = [
-        slot for i, slot in enumerate(S1)
-        if (machine["slots"][slot]["good"] or 0) > ceiling_per_slot
-    ]
-    check(f"{machine_id}: at least one slot IS over the ceiling", bool(over), True)
-    check(f"{machine_id}: but the shift total is not",
-          machine["shift"]["oee"] < 1.0, True)
-    check(f"{machine_id}: no machine-level warning raised",
-          machine["warnings"], [])
-    check(f"{machine_id}: nothing flagged, every slot counted",
-          machine["flags"], [])
-    check(f"{machine_id}: all four slots counted", machine["slots_counted"], 4)
-
-# AS4's real row: 8AM = 3670 and 12PM = 8040, with 10AM and 2PM blank. Under
-# carry-forward this is a COMPLETE shift, not a sparse one — the blanks say the
-# number didn't move. Before the rule it yielded a single countable slot.
-entries[:] = [e for e in entries if e["machine_id"] != "AS4"]
-for slot, value in (("8AM", 3670), ("12PM", 8040)):
-    entries.append({
-        "machine_id": "AS4", "operator": "Okafor", "time_slot": slot,
-        "units_produced": value, "status": ":)", "issue": None,
-        "entered_by": "4471", "entry_date": DAY, "created_at": NOW,
-    })
-for slot in S1:
-    downtime[("AS4", slot)] = {
-        "note": None, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0,
-    }
-
-sparse = oee.compute_oee_report(DAY, now=NOW)["shifts"]["1st Shift"]["machines"]["AS4"]
-check("AS4: two readings determine all four slots", sparse["slots_counted"], 4)
-check("AS4: shift total is the last reading", sparse["shift"]["good"], 8040)
-check("AS4: blank 10AM produced nothing", sparse["slots"]["10AM"]["good"], 0)
-check("AS4: blank 2PM produced nothing", sparse["slots"]["2PM"]["good"], 0)
-# 8040 over a full 480 minutes at 28 units/min = 13,440 ceiling.
-check("AS4: OEE spans the whole shift", sparse["shift"]["oee"], 8040 / 13440)
-check("AS4: individual slots do exceed the per-slot ceiling",
-      any("over_100" in sparse["slots"][s]["warnings"] for s in S1), True)
-check("AS4: but the shift does not, so no alarm", sparse["warnings"], [])
-
-print("\n== mid-shift, one elapsed slot cannot raise a capacity alarm ==")
-# The majority-of-slots guard still matters, just for a different reason now
-# that carry-forward fills completed shifts: viewed at 9AM only 8AM has closed,
-# so a single hot reading is once again a lone slot delta with all its timing
-# noise. 16,000 against C4's 15,600 slot ceiling is 103%.
-MID = datetime(2026, 9, 2, 9, 0)   # same day as the data, one slot elapsed
-entries[:] = [e for e in entries if e["machine_id"] != "C4"]
-entries.append({
-    "machine_id": "C4", "operator": "Okafor", "time_slot": "8AM",
-    "units_produced": 16000, "status": ":)", "issue": None,
-    "entered_by": "4471", "entry_date": DAY, "created_at": MID,
-})
-for slot in S1:
-    downtime[("C4", slot)] = {
-        "note": None, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0,
-    }
-
-mid = oee.compute_oee_report(DAY, now=MID)["shifts"]["1st Shift"]["machines"]["C4"]
-check("only 8AM has elapsed", mid["slots_elapsed"], 1)
-check("only 8AM counts", mid["slots_counted"], 1)
-check("un-elapsed slots are unknown, NOT carried forward as zero",
-      mid["slots"]["2PM"]["good"], None)
-check("its one slot is over the ceiling", mid["shift"]["oee"] > 1.0, True)
-check("but one slot of four cannot speak for the shift", mid["warnings"], [])
-
-entries[:] = [e for e in entries if e["machine_id"] != "C4"]
-for slot in S1:
-    downtime.pop(("C4", slot), None)
-
-# Restore the fixture for the checks that follow.
-entries[:] = [e for e in entries if e["machine_id"] not in set(uneven) | {"AS4"}]
-for machine_id in set(uneven) | {"AS4"}:
-    for slot in S1:
-        downtime.pop((machine_id, slot), None)
-
-print("\n== per-zone rollups come from the server, not the browser ==")
-zones = shift["zones"]
-# b3 (Combo/FMW) holds C1-C11 and C14-C16, so its rollup covers exactly the
-# three C machines with countable data in this fixture.
-b3 = zones["b3"]
-check("b3 machine count", b3["machines"], 3)
-check("b3 oee is component-summed, not an average of the three",
-      b3["oee"],
-      (46800 + 23400 + 23400) / (7800 / 60 * (480 + 240 + 240)))
-# b4 is Poly, and its only machine with data is the unscheduled P1 — so the
-# zone has no rollup at all rather than a zero.
-check("b4 rollup is None (only machine is unscheduled)", zones["b4"], None)
-# ws has no data whatsoever in this fixture.
-check("ws rollup is None (no data)", zones["ws"], None)
-check("leno rollup exists (AS1)", zones["leno"]["machines"], 1)
-check("leno oee matches AS1's own", zones["leno"]["oee"], M["AS1"]["shift"]["oee"])
+check("scheduled machines", c["machines"], 33)          # 34 minus unscheduled P3
+check("production entered", c["production"], 5)         # C1-C5 (P3 excluded)
+check("downtime entered", c["downtime"], 5)             # C1-C4 + C6 (P3 excluded)
+check("scrap entered", c["scrap"], 3)                   # C1, C2, C4
 
 print("\n== payload is JSON-serialisable (the API returns it directly) ==")
-import json
+import json  # noqa: E402
 try:
     json.dumps(report)
     print("  PASS  json.dumps succeeded")
@@ -409,8 +202,17 @@ except TypeError as exc:
     print(f"  FAIL  json.dumps: {exc}")
     failures.append("json serialisable")
 
+print("\n== an in-progress shift is not charged for hours that haven't happened ==")
+mid = oee.compute_oee_report(DAY, now=datetime(2026, 9, 8, 11, 30))
+mid_c1 = mid["shifts"][SHIFT]["machines"]["C1"]
+check("only two slots elapsed", mid["shifts"][SHIFT]["completeness"]["slots_expected"], 2)
+check("ppt covers the elapsed part only", mid_c1["shift"]["ppt_minutes"], 240)
+check("good is the last ELAPSED reading", mid_c1["shift"]["good"], 23400)
+
 print("\n" + "=" * 60)
 if failures:
-    print(f"{len(failures)} FAILURE(S): {failures}")
+    print(f"{len(failures)} FAILURE(S):")
+    for f in failures:
+        print(f"  - {f}")
     sys.exit(1)
 print("ALL CHECKS PASSED")

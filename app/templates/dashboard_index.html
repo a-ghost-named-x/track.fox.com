@@ -1,34 +1,83 @@
 {% extends "base.html" %}
-{% block title %}Dashboards{% endblock %}
+{% block title %}Production Tracking{% endblock %}
 {% block content %}
 <div class="dashboard dashboard-index">
     <header class="dashboard-header">
         <h1>Production Tracking</h1>
     </header>
 
-    <p class="dashboard-index-sub">Choose a floor section:</p>
+    {# The whole site's map, in one place.
+       Everything on this page used to be word-of-mouth: /console was known to
+       two people because it had been mentioned to them verbally, which is a
+       bad way to run a tool the floor depends on.
 
-    <ul class="zone-list">
-        {% for zone in zones %}
-        <li>
-            <a class="zone-link" href="/dashboard/{{ zone.slug }}">
-                <span class="zone-link-label">{{ zone.label }}</span>
-                <span class="zone-link-count">{{ zone.machine_count }} machine{{ 's' if zone.machine_count != 1 else '' }}</span>
-            </a>
-        </li>
-        {% endfor %}
-    </ul>
+       Worth being clear-eyed that this trades away some obscurity. There is no
+       authentication anywhere in this app by design, and the entry forms were
+       previously protected only by nobody knowing the URL. They are now one
+       click from the board index. That index is only ever opened by a person
+       browsing on a computer — BrightSign points at /dashboard/<zone>
+       directly, and those pages still carry no navigation chrome at all — so
+       the exposure is small, but it is not zero. #}
 
-    {# Deliberately only on this index page, never on /dashboard/<zone> — those
-       are the BrightSign boards and shouldn't carry navigation chrome. This
-       page is only ever seen by a person on a computer looking for a link. #}
-    <p class="dashboard-index-extra">
-        Reviewing a past shift?
-        <a class="review-link" href="/supervisor">Shift Review &rarr;</a>
-    </p>
-    <p class="dashboard-index-extra">
-        Looking at equipment effectiveness?
-        <a class="review-link" href="/oee">OEE &rarr;</a>
-    </p>
+    <section class="index-section">
+        <h2 class="index-heading">Floor displays</h2>
+        <p class="index-note">Live production boards. These are what the BrightSign screens show.</p>
+        <ul class="zone-list">
+            {% for zone in zones %}
+            <li>
+                <a class="zone-link" href="/dashboard/{{ zone.slug }}">
+                    <span class="zone-link-label">{{ zone.label }}</span>
+                    <span class="zone-link-count">{{ zone.machine_count }} machine{{ 's' if zone.machine_count != 1 else '' }}</span>
+                </a>
+            </li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section class="index-section">
+        <h2 class="index-heading">Entering data</h2>
+        <p class="index-note">Production every 2 hours; OEE once at the end of the shift.</p>
+        <ul class="link-list">
+            {% for zone in zones %}
+            <li>
+                <a class="index-link" href="/console/{{ zone.slug }}">
+                    <span class="index-link-label">Log Production — {{ zone.label }}</span>
+                    <span class="index-link-note">All {{ zone.machine_count }} machines on one form</span>
+                </a>
+            </li>
+            {% endfor %}
+            <li>
+                <a class="index-link" href="/console">
+                    <span class="index-link-label">Single machine / corrections</span>
+                    <span class="index-link-note">One entry at a time, for fixing a number</span>
+                </a>
+            </li>
+            <li>
+                <a class="index-link index-link-accent" href="/console/oee">
+                    <span class="index-link-label">End of Shift OEE</span>
+                    <span class="index-link-note">Downtime and scrap for the whole floor, once per shift</span>
+                </a>
+            </li>
+        </ul>
+    </section>
+
+    <section class="index-section">
+        <h2 class="index-heading">Reviewing</h2>
+        <p class="index-note">Read-only. Nothing here can change a number.</p>
+        <ul class="link-list">
+            <li>
+                <a class="index-link" href="/supervisor">
+                    <span class="index-link-label">Shift Review</span>
+                    <span class="index-link-note">What a past shift produced, by machine and slot</span>
+                </a>
+            </li>
+            <li>
+                <a class="index-link" href="/oee">
+                    <span class="index-link-label">OEE</span>
+                    <span class="index-link-note">Availability × Performance × Quality, plus downtime by reason</span>
+                </a>
+            </li>
+        </ul>
+    </section>
 </div>
 {% endblock %}

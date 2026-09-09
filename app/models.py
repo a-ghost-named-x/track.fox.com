@@ -194,6 +194,14 @@ class Entry(EntryCreate):
 # to this constant.
 SLOT_MINUTES: int = 120
 
+# One whole shift, which is the grain OEE is now captured and reported at.
+# Derived from the slot geometry rather than written as 480, so the two can't
+# drift if a shift ever gains or loses a checkpoint.
+#
+# Every shift has the same number of slots, so any of them will do for the
+# count; SHIFT_SLOTS is validated as four-per-shift by the standards seed.
+SHIFT_MINUTES: int = SLOT_MINUTES * len(SHIFT_SLOTS[SHIFT_ORDER[0]])
+
 # Standards are set at 75% of each machine's theoretical maximum. Recorded here
 # for readers; nothing computes with it. The actual ceiling used by the OEE
 # math lives per-machine in the `machine_ideal_rates` table, seeded by
@@ -257,45 +265,54 @@ def elapsed_slots(shift: str, entry_date: date_type, now: datetime) -> list[str]
     return [slot for slot in slots if now.hour >= SLOT_END_HOURS[slot]]
 
 
-class ScrapCreate(BaseModel):
-    """One scrap submission for a machine+date+slot.
+class ShiftScrapCreate(BaseModel):
+    """Total scrap for one machine for one whole shift.
 
-    CUMULATIVE within the shift, matching entries.units_produced — see
-    docs/sql/06_oee_schema.sql for why both are cumulative rather than
-    per-slot.
+    NOT cumulative. At the old 2-hour grain scrap was a running total so each
+    checkpoint superseded the last; there is only one reading per shift now, so
+    it is simply that shift's total.
+
+    The carry-forward rule (a blank means unchanged) still applies to
+    production units on the 2-hour form, and only there — see
+    _cumulative_deltas() in app/db/oee.py.
     """
 
     machine_id: str
     entry_date: date_type
-    time_slot: str
-    scrap_cumulative: int = Field(ge=0)
+    shift: str
+    scrap_units: int = Field(ge=0)
     entered_by: str = Field(min_length=1, max_length=20)
 
 
 class DowntimeReasonInput(BaseModel):
     """One (reason, minutes) pair inside a downtime submission.
 
-    minutes is PER SLOT, not cumulative, and must be positive: a zero-minute
-    reason says nothing. "Ran clean" is a submission with an empty `reasons`
-    list, which is a materially different statement from no submission at all.
+    Minutes must be positive: a zero-minute reason says nothing. "Ran clean" is
+    a submission with an empty `reasons` list, which is a materially different
+    statement from no submission at all.
+
+    Capped at one whole shift, matching the CHECK on shift_downtime_reason.
     """
 
     reason_code: str
-    minutes: int = Field(gt=0)
+    minutes: int = Field(gt=0, le=SHIFT_MINUTES)
 
 
-class DowntimeCreate(BaseModel):
-    """One downtime submission for a machine+date+slot.
+class ShiftDowntimeCreate(BaseModel):
+    """One downtime submission for a machine for one whole shift.
 
-    An empty `reasons` list is valid and load-bearing — it records "no
-    downtime this slot, 100% availability". Absence of any submission means
-    "nobody has entered this slot yet", and OEE reports N/A for it rather than
-    assuming zero. Same NULL-is-not-zero rule as a standards row of 0.
+    An empty `reasons` list is valid and load-bearing: it records "ran clean,
+    no downtime, 100% availability". Absence of any submission means nobody has
+    entered this shift yet, and OEE reports N/A rather than assuming zero. Same
+    NULL-is-not-zero rule as a standards row of 0.
+
+    A submission REPLACES the shift's whole reason set, which is what makes it
+    possible to remove a reason entered by mistake.
     """
 
     machine_id: str
     entry_date: date_type
-    time_slot: str
+    shift: str
     reasons: list[DowntimeReasonInput] = Field(default_factory=list)
     note: str | None = Field(default=None, max_length=500)
     entered_by: str = Field(min_length=1, max_length=20)

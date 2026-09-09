@@ -40,17 +40,15 @@
         </div>
     </div>
 
-    {# Per-column completeness, not one overall percentage. Three different
-       people enter units, scrap and downtime, so mid-shift the normal state is
-       that one of them is behind — and "scrap 31/34" tells a supervisor who to
-       go ask in a way that "91% complete" does not. #}
+    {# Per-column completeness, not one overall percentage. Production comes from
+       the 2-hour rounds and the OEE columns from one person at end of shift, so
+       mid-shift the normal state is that Downtime and Scrap are empty while
+       Production isn't. Splitting them says who to go ask; a single "68%"
+       doesn't. Every count is a number of MACHINES. #}
     <div class="completeness" id="completeness" hidden>
         <span class="control-label">Data entered</span>
         <div class="completeness-items">
-            {# Label reads "Machines" while the payload key stays "units" —
-               every count in this strip is a number of machines, and "Units
-               32/34" was being misread as a count of units produced. #}
-            <span class="completeness-item" data-field="units">Machines <b>—</b></span>
+            <span class="completeness-item" data-field="production">Production <b>—</b></span>
             <span class="completeness-item" data-field="downtime">Downtime <b>—</b></span>
             <span class="completeness-item" data-field="scrap">Scrap <b>—</b></span>
         </div>
@@ -71,20 +69,19 @@
                 <span class="zone-rollup" data-rollup></span>
             </h2>
 
+            {# One row per machine per SHIFT. The per-slot OEE columns this table
+               used to carry are gone: downtime is captured once per shift on
+               /console/oee now, so a 2-hour OEE has no downtime to divide by.
+               That is the right trade — a slot delta is the gap between two
+               hand-taken readings, and a reading logged late borrows units from
+               its neighbour, which is what produced false alarms on WS1 and C8
+               in the first week. A shift is 480 minutes however the readings
+               fell. The checkpoint sequence is still available on the Good
+               cell's tooltip for diagnosing a flagged machine. #}
             <table class="oee-grid">
                 <thead>
                     <tr>
-                        <th class="machine-col" rowspan="2">Machine</th>
-                        {# All 12 slot columns render; the 8 that don't belong to
-                           the selected shift are hidden with .slot-hidden, the
-                           same mechanism dashboard.js and supervisor.js use. #}
-                        <th class="slot-group" colspan="{{ time_slots|length }}">OEE by slot</th>
-                        <th class="summary-group" colspan="9">Shift</th>
-                    </tr>
-                    <tr>
-                        {% for slot in time_slots %}
-                        <th data-slot="{{ slot }}" class="slot-head">{{ slot }}</th>
-                        {% endfor %}
+                        <th class="machine-col">Machine</th>
                         <th class="sum-head sum-oee">OEE</th>
                         <th class="sum-head">Avail</th>
                         <th class="sum-head">Perf</th>
@@ -92,8 +89,8 @@
                         <th class="sum-head">% of std</th>
                         <th class="sum-head">Good</th>
                         <th class="sum-head">Scrap</th>
-                        <th class="sum-head">Down</th>
-                        <th class="sum-head">Slots</th>
+                        <th class="sum-head">Downtime</th>
+                        <th class="sum-head reason-head">Top reasons</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -106,9 +103,6 @@
                             <span class="machine-name">{{ machine }}</span>
                             <span class="operator"></span>
                         </td>
-                        {% for slot in time_slots %}
-                        <td class="cell slot-cell" data-slot="{{ slot }}"><span class="cell-value">—</span></td>
-                        {% endfor %}
                         <td class="sum sum-oee" data-field="oee">—</td>
                         <td class="sum" data-field="availability">—</td>
                         <td class="sum" data-field="performance">—</td>
@@ -117,7 +111,7 @@
                         <td class="sum" data-field="good">—</td>
                         <td class="sum" data-field="scrap">—</td>
                         <td class="sum" data-field="downtime">—</td>
-                        <td class="sum sum-slots" data-field="slots">—</td>
+                        <td class="sum reason-cell" data-field="reasons">—</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -144,8 +138,6 @@
 </div>
 
 <script>
-    window.TIME_SLOTS = {{ time_slots|tojson }};
-    window.SHIFT_SLOTS = {{ shift_slots|tojson }};
     window.SHIFT_ORDER = {{ shift_order|tojson }};
     window.STANDARD_PCT_OF_IDEAL = {{ standard_pct_of_ideal|tojson }};
     window.INITIAL_DATE = {{ requested_date|tojson }};

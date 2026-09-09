@@ -30,11 +30,23 @@ second is the one that benchmarks against 85%-is-world-class. They differ by
 exactly the 0.75 factor and neither is hiding anything. See
 docs/sql/08_seed_ideal_rates.sql for the derivation.
 
+GRAIN: ONE ROW PER MACHINE PER SHIFT
+------------------------------------
+Downtime and scrap are captured once at the end of a shift on /console/oee, so
+there is no per-slot downtime to divide by and the per-slot OEE columns this
+page used to carry are gone. That is the right trade rather than a loss: a slot
+delta is the gap between two hand-taken readings, and a reading logged late
+borrows units from its neighbour — noise that produced false "impossible value"
+alarms on seven machines in the first week of use. A shift is 480 minutes
+however the readings fell. Per-slot production is still in the payload and
+surfaces on the Good column's tooltip, which is what you need to find a bad
+checkpoint.
+
 Read-only, like /supervisor — every write path for scrap, downtime and
-scheduling lives on /console, which is the surface that already takes writes.
-That matters more here than it looks: the not-scheduled flag REMOVES time from
-the OEE denominator, so it's the one field in this system with an incentive to
-be wrong, and it has no business on an unauthenticated review page.
+scheduling lives on /console/oee. That matters more here than it looks: the
+not-scheduled flag REMOVES time from the OEE denominator, so it's the one field
+in this system with an incentive to be wrong, and it has no business on an
+unauthenticated review page.
 
 Access model matches the rest of the app: no auth, URL obscurity only, per the
 architecture doc.
@@ -53,9 +65,7 @@ from app.models import (
     DASHBOARD_ZONES,
     OEE_ZONE_ORDER,
     SHIFT_ORDER,
-    SHIFT_SLOTS,
     STANDARD_PCT_OF_IDEAL,
-    TIME_SLOTS,
     resolve_shift,
 )
 
@@ -116,9 +126,7 @@ def oee_page(request: Request, date: str | None = None, shift: str | None = None
         name="oee.html",
         context={
             "zones": _oee_zones(),
-            "time_slots": TIME_SLOTS,
             "shift_order": SHIFT_ORDER,
-            "shift_slots": SHIFT_SLOTS,
             # Feeds window.STANDARD_PCT_OF_IDEAL, which oee.js derives its
             # colour bands from — "good" starts at standard, so the bands move
             # if the floor ever revises that figure.

@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}End of Shift OEE{% endblock %}
+{% block content %}
+<div class="console console-batch console-oee">
+    <h1>End of Shift OEE</h1>
+    <p class="console-batch-hint">
+        Downtime and scrap for the whole shift, all machines on one page ·
+        <a href="/console">Production entry</a> ·
+        <a href="/oee">View OEE</a>
+    </p>
+
+    {# Shift toggle. Plain links rather than form controls so it works with no
+       JS at all: each one reloads the page for that shift, carrying the date
+       along. #}
+    <div class="shift-picker">
+        <span class="shift-picker-label">Logging for</span>
+        <div class="shift-toggle" role="group" aria-label="Shift">
+            {% for option in shift_options %}
+            <a class="shift-option{% if option == shift %} is-active{% endif %}"
+               href="/console/oee?shift={{ option | urlencode }}&entry_date={{ entry_date }}"
+               {% if option == shift %}aria-current="true"{% endif %}>{{ option }}</a>
+            {% endfor %}
+        </div>
+    </div>
+
+    {% if shift != current_shift %}
+    <p class="banner banner-notice">
+        You're logging <strong>{{ shift }}</strong> — the shift in progress right now is {{ current_shift }}.
+        Check the date below is the day that shift ran.
+    </p>
+    {% endif %}
+
+    {% if top_error %}
+    <p class="banner banner-error">{{ top_error }}</p>
+    {% endif %}
+
+    {% if saved_count %}
+    <p class="banner banner-success">
+        Saved {{ saved_count }} machine{{ 's' if saved_count != 1 else '' }}.
+        Machines you didn't change were left alone.
+    </p>
+    {% endif %}
+
+    {% if failed_rows %}
+    <p class="banner banner-error">
+        {{ failed_rows | length }} machine{{ 's' if failed_rows | length != 1 else '' }} didn't save:
+        {% for machine_id, row in failed_rows %}{{ machine_id }} ({{ row.error }}){% if not loop.last %}; {% endif %}{% endfor %}
+    </p>
+    {% endif %}
+
+    <form method="post" action="/console/oee" class="entry-form batch-form">
+        <div class="batch-shared-fields">
+            <label>
+                Date
+                {# The date that gets saved is whatever is in this box at submit
+                   time. Matters most for 3rd Shift, whose slots land on the day
+                   AFTER the shift starts. #}
+                <input type="date" name="entry_date" id="entry-date" required value="{{ entry_date }}">
+            </label>
+
+            <label>
+                Your employee number
+                <input type="text" name="entered_by" required maxlength="20" value="{{ entered_by }}">
+            </label>
+        </div>
+
+        <input type="hidden" name="shift" value="{{ shift }}">
+
+        <p class="oee-entry-hint">
+            Every box is pre-filled with what's already recorded for this shift.
+            Change what needs changing and save — machines you don't touch are left alone.
+            <button type="button" class="link-button" id="mark-all-clean">Tick “no downtime” on every untouched machine</button>
+        </p>
+
+        {% for zone in zones %}
+        <section class="oee-entry-zone">
+            <h2 class="zone-section-title">
+                {{ zone.label }}
+                <span class="zone-section-count">{{ zone.machine_ids | length }} machines</span>
+            </h2>
+
+            <table class="batch-grid oee-entry-grid">
+                <thead>
+                    <tr>
+                        <th class="machine-col">Machine</th>
+                        <th class="sched-col">Scheduled<span class="optional">this shift</span></th>
+                        <th class="dt-col">Downtime</th>
+                        <th>Scrap <span class="optional">(shift total)</span></th>
+                        <th>Note <span class="optional">(optional)</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for machine in zone.machine_ids %}
+                    {% set row = rows[machine] %}
+                    <tr class="batch-row{% if row.status %} batch-row-{{ row.status }}{% endif %}">
+                        <td class="machine-col">
+                            {{ machine }}
+                            {% if row.status == 'saved' %}
+                            <span class="batch-status batch-status-saved">{{ row.saved_parts | join(', ') }}</span>
+                            {% endif %}
+                            {% if row.status == 'failed' %}<span class="batch-status batch-status-failed">failed</span>{% endif %}
+                        </td>
+
+                        <td class="sched-col">
+                            {# Absence of a machine_schedule row already means
+                               scheduled, so this starts ticked and only a real
+                               CHANGE writes anything. Unticking excludes the
+                               machine from this shift's OEE rollup entirely —
+                               not 0%, absent.
+
+                               The hidden field matters: an unticked checkbox and
+                               an absent one look identical in a POST, and
+                               treating absence as "unticked" would mark every
+                               machine not on the submitted form as
+                               not-scheduled. #}
+                            <input type="hidden" name="sched_present_{{ machine }}" value="1">
+                            <input type="checkbox" name="scheduled_{{ machine }}" value="1"
+                                   {% if row.scheduled %}checked{% endif %}>
+                        </td>
+
+                        <td class="dt-cell">
+                            {# A native <details> rather than a custom dropdown:
+                               11 reasons x 34 machines is 374 controls, and
+                               collapsing them keeps the page scannable while
+                               still working with JS disabled. #}
+                            <details class="dt-details"{% if row.minutes %} open{% endif %}>
+                                <summary class="dt-summary">
+                                    {%- if row.ran_clean -%}
+                                        No downtime
+                                    {%- elif row.minutes -%}
+                                        {{ row.minutes | length }} reason{{ 's' if row.minutes | length != 1 else '' }}
+                                    {%- else -%}
+                                        Not entered
+                                    {%- endif -%}
+                                </summary>
+
+                                {# Ticking this is a real statement — it records
+                                   100% availability for the shift. A machine
+                                   nobody entered and one that ran clean must not
+                                   look the same to OEE, which is why there is a
+                                   box for it rather than "blank means fine". #}
+                                <label class="dt-none">
+                                    <input type="checkbox" class="dt-none-box"
+                                           name="dt_none_{{ machine }}" value="1"
+                                           {% if row.ran_clean %}checked{% endif %}>
+                                    No downtime this shift
+                                </label>
+
+                                {% for reason in reasons %}
+                                <div class="dt-reason-row">
+                                    <label class="dt-reason-label">
+                                        <input type="checkbox" class="dt-reason-box"
+                                               name="dt_on_{{ machine }}_{{ reason.code }}" value="1"
+                                               {% if reason.code in row.minutes %}checked{% endif %}>
+                                        {{ reason.label }}
+                                    </label>
+                                    <input type="number" class="dt-min"
+                                           name="dt_min_{{ machine }}_{{ reason.code }}"
+                                           min="1" max="{{ shift_minutes }}" placeholder="min"
+                                           value="{{ row.minutes.get(reason.code, '') }}">
+                                </div>
+                                {% endfor %}
+                            </details>
+                        </td>
+
+                        <td>
+                            <input type="number" name="scrap_{{ machine }}" min="0"
+                                   value="{{ row.scrap }}">
+                        </td>
+
+                        <td>
+                            <input type="text" name="note_{{ machine }}" maxlength="500"
+                                   value="{{ row.note }}">
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+        {% endfor %}
+
+        <button type="submit">Save all machines</button>
+    </form>
+</div>
+
+<script>
+    window.SHIFT_MINUTES = {{ shift_minutes|tojson }};
+</script>
+<script src="/static/js/console_oee.js"></script>
+{% endblock %}
