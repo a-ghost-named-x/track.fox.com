@@ -13,6 +13,23 @@
     box-sizing: border-box;
 }
 
+/* The `hidden` attribute only works through the browser's own
+   `[hidden] { display: none }`, which ANY author rule that sets `display`
+   silently beats — there is no specificity contest, the author sheet just wins.
+   Several panels here are toggled with `el.hidden` in JS and also styled with
+   `display: flex`, so `hidden` had no effect on them at all.
+
+   The visible symptom was an empty red error banner sitting on /oee on days
+   with nothing wrong: renderFlags() set `.hidden = true` and `.flag-banner`'s
+   `display: flex` overrode it. `.completeness` had the same bug and only hid it
+   by usually having content.
+
+   Global and !important on purpose. Scoping it per-element means remembering
+   this every time something new gets toggled, and the failure is silent. */
+[hidden] {
+    display: none !important;
+}
+
 body {
     margin: 0;
     background: var(--bg);

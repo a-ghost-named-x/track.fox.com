@@ -321,6 +321,28 @@ for link in ("/console", "/console/oee", "/supervisor", "/oee",
              "/dashboard/b3", "/console/b3"):
     check(f"links to {link}", f'href="{link}"' in index)
 
+print("\n== the [hidden] reset exists ==")
+# Not a route check, but nothing else can catch this and it shipped a visible
+# bug: `el.hidden = true` works only through the browser's own
+# `[hidden] { display: none }`, which ANY author rule setting `display` beats.
+# `.flag-banner` and `.completeness` are both toggled with .hidden AND styled
+# display:flex, so /oee showed an empty red error banner on days with nothing
+# wrong. A global reset is the fix; this asserts nobody removes it.
+css = (Path(__file__).resolve().parents[1] / "app/static/css/style.css").read_text(encoding="utf-8")
+normalised = " ".join(css.split())
+check("style.css has [hidden] { display: none !important }",
+      "[hidden] { display: none !important; }" in normalised)
+
+# And flag every element that would silently break if it were removed, so the
+# list stays visible to whoever reads this next.
+import re  # noqa: E402
+toggled = set()
+for js in (Path(__file__).resolve().parents[1] / "app/static/js").glob("*.js"):
+    for name in re.findall(r"(\w+)\.hidden\s*=", js.read_text(encoding="utf-8")):
+        toggled.add(name)
+check("elements are toggled via .hidden (so the reset matters)", len(toggled) > 0,
+      str(sorted(toggled)))
+
 print("\n== existing pages unaffected ==")
 check("/api/dashboard-data 200", client.get("/api/dashboard-data").status_code == 200)
 check("/api/supervisor-data 200", client.get("/api/supervisor-data").status_code == 200)
