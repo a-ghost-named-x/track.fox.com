@@ -1180,60 +1180,95 @@ button.shift-option {
     font-weight: 700;
 }
 
-/* Scoped under .entry-form on purpose: `.entry-form label` further up sets
-   flex-direction: column for the stacked shared fields, and at specificity
-   (0,1,1) it outranks a bare class here — which stacked every checkbox above
-   its own label. */
+/* CHECKBOX RESET, and it is load-bearing.
+
+   `.entry-form input` sets padding: 0.65rem 0.75rem for the text and number
+   boxes, and that applies to checkboxes too — inflating each one into a padded
+   block that shoves its own label a centimetre to the right. With eleven of
+   them stacked, nothing lines up vertically and the column reads as scattered.
+   Sizing them explicitly is what makes the list a list. */
+.entry-form .dt-cell input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    min-width: 1rem;
+    padding: 0;
+    margin: 0;
+    flex: none;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* One grid, two columns, for the eleven reason rows — so every checkbox sits
+   on one vertical line and every minutes box on another. A flex row can't
+   guarantee that: each row would size its own label independently and the
+   boxes would wander. */
+.dt-reason-row {
+    display: grid;
+    grid-template-columns: 1fr 5rem;
+    align-items: center;
+    column-gap: 0.75rem;
+    padding: 0.2rem 0.6rem;
+    text-align: left;
+}
+
+/* NOT part of that grid: .dt-none is itself the label wrapping its checkbox
+   and text, and has no minutes box, so a two-column grid would drop its words
+   into the minutes column. Flex row, same left padding, so its checkbox still
+   lines up with the eleven below it. */
 .entry-form .dt-none {
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.5rem 0.6rem;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
     border-bottom: 1px solid var(--border);
     font-size: 0.85rem;
     font-weight: 600;
     color: var(--text);
+    cursor: pointer;
 }
 
-.dt-reason-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.25rem 0.6rem;
+/* Zebra striping across eleven near-identical rows, so the eye can track from
+   a label to its own minutes box rather than to the row above it. */
+.dt-reason-row:nth-of-type(even) {
+    background: rgba(255, 255, 255, 0.025);
 }
 
-.dt-reason-row:nth-child(odd) {
-    background: rgba(255, 255, 255, 0.02);
+/* A ticked reason is the thing the reader is looking for when they come back to
+   check their work, so it gets a tint rather than making them re-read every
+   checkbox. Progressive enhancement: :has() is widely supported now, and where
+   it isn't the row simply looks like the others. */
+.dt-reason-row:has(.dt-reason-box:checked) {
+    background: rgba(88, 166, 255, 0.12);
 }
 
 .entry-form .dt-reason-label {
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: 0.4rem;
-    flex: 1;
+    justify-content: flex-start;
+    gap: 0.5rem;
+    /* The labels are short and known; wrapping "Roll Change" onto two lines
+       just makes the rows different heights for no reason. */
+    white-space: nowrap;
     font-size: 0.85rem;
-    /* The label reads as one target with its checkbox — these get clicked a
-       lot, by someone working down a paper sheet. */
+    color: var(--text);
     cursor: pointer;
 }
 
+/* Matches the checkbox column so the minutes boxes align with each other and
+   with the "no downtime" row above them. */
 .oee-entry-grid .dt-reason-row .dt-min {
-    width: 5rem;
-    flex: none;
+    width: 100%;
+    padding: 0.3rem 0.45rem;
+    font-size: 0.85rem;
+    text-align: right;
 }
 
-/* Lost when the old slot-grain console styles were removed; the Scheduled
-   header stacks its qualifier under the word rather than running the two
-   together as "Scheduledthis shift". */
-.batch-grid .sched-col {
-    text-align: center;
-    min-width: 6rem;
-}
-
-.batch-grid .sched-col .optional {
-    display: block;
+/* Until its reason is ticked a minutes box is inert, so it recedes rather than
+   inviting a value that would be rejected on save. */
+.dt-reason-row:not(:has(.dt-reason-box:checked)) .dt-min {
+    opacity: 0.45;
 }
 
 /* A machine left exactly as it was found. Not an error and not a save, so it
