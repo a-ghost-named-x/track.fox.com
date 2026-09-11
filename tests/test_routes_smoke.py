@@ -48,17 +48,29 @@ DAY = date(2026, 9, 8)
 SHIFT = "1st Shift"
 S1 = SHIFT_SLOTS[SHIFT]
 
-# The floor's real eleven, all unplanned (docs/sql/12_seed_shift_downtime_reasons.sql).
+# The floor's fourteen active codes, all unplanned: file 12's eleven with
+# Operator Adjustments split four ways by docs/sql/13_split_operator_adjustments.sql.
 REASONS = {
     code: {"code": code, "label": label, "is_planned": False}
     for code, label in [
         ("ROLL_CHANGE", "Roll Change"), ("SETUP", "Setup"), ("FAAR", "FAAR"),
-        ("EQUIP_FAIL", "Equipment Failure"), ("OPER_ADJUST", "Operator Adjustments"),
+        ("EQUIP_FAIL", "Equipment Failure"),
+        ("OPER_ADJ_TEMP", "Operator Adjustments - Temperature"),
+        ("OPER_ADJ_TIMING", "Operator Adjustments - Timing"),
+        ("OPER_ADJ_PRESSURE", "Operator Adjustments - Pressure"),
+        ("OPER_ADJ_AIRJET", "Operator Adjustments - Air jet"),
         ("DEFECT_MAT", "Defective Material"), ("LACK_MAT", "Lack of Material"),
         ("LACK_OPER", "Lack of Operator"), ("DELIVERY", "Delivery"),
         ("REGISTRATION", "Registration"), ("SHIFT_START", "Start of Shift"),
     ]
 }
+# Retired by file 13. Still in the table so history labels, never offered on
+# an untouched machine, but must carry forward on a shift that already has it.
+RETIRED = {
+    "OPER_ADJUST": {"code": "OPER_ADJUST", "label": "Operator Adjustments",
+                    "is_planned": False},
+}
+ALL_REASONS = {**REASONS, **RETIRED}
 
 INCREMENTS = {m: 11700 for m in MACHINE_IDS}
 entries = [
@@ -86,7 +98,9 @@ for mod in (oee_mod, console_oee_mod):
     mod.get_latest_scrap_for_date = lambda d: dict(stored_scrap)
     mod.get_latest_downtime_for_date = lambda d: dict(stored_downtime)
     mod.get_schedule_for_date = lambda d: dict(stored_schedule)
-    mod.get_downtime_reasons = lambda active_only=True: dict(REASONS)
+    mod.get_downtime_reasons = (
+        lambda active_only=True: dict(REASONS if active_only else ALL_REASONS)
+    )
 oee_mod.get_ideal_rates = lambda: {m: i / 1.5 for m, i in INCREMENTS.items()}
 oee_mod.get_shift_standards = lambda: {
     (m, s): i * 4 for m, i in INCREMENTS.items() for s in SHIFT_SLOTS
@@ -106,7 +120,7 @@ def fake_downtime(payload):
             f"{total} minutes of downtime doesn't fit in a 480-minute shift "
             f"({payload.machine_id}, {payload.shift})."
         )
-    unknown = [r.reason_code for r in payload.reasons if r.reason_code not in REASONS]
+    unknown = [r.reason_code for r in payload.reasons if r.reason_code not in ALL_REASONS]
     if unknown:
         raise oee_mod.UnknownReasonCodeError(f"Unknown code(s): {unknown}")
     written["downtime"].append(payload)
@@ -156,11 +170,16 @@ print("\n== /console/oee form contents ==")
 form = client.get("/console/oee").text
 check("all 34 machines", form.count('name="sched_present_') == 34,
       str(form.count('name="sched_present_')))
-check("all 11 reasons on C1", sum(
-    1 for code in REASONS if f'name="dt_on_C1_{code}"' in form) == 11)
+check("all 14 reasons on C1", sum(
+    1 for code in REASONS if f'name="dt_on_C1_{code}"' in form) == 14)
 check("each reason has a minutes box",
-      form.count('name="dt_min_C1_') == 11, str(form.count('name="dt_min_C1_')))
+      form.count('name="dt_min_C1_') == 14, str(form.count('name="dt_min_C1_')))
 check("reason labels rendered", "Lack of Operator" in form and "FAAR" in form)
+check("the four adjustment sub-reasons are offered",
+      all(f'name="dt_on_C1_{c}"' in form for c in
+          ("OPER_ADJ_TEMP", "OPER_ADJ_TIMING", "OPER_ADJ_PRESSURE", "OPER_ADJ_AIRJET")))
+check("the retired umbrella code is NOT offered on an untouched machine",
+      'name="dt_on_C1_OPER_ADJUST"' not in form)
 check("no downtime checkbox", 'name="dt_none_C1"' in form)
 check("scrap box", 'name="scrap_C1"' in form)
 check("note box", 'name="note_C1"' in form)
@@ -258,6 +277,79 @@ for bucket in written.values():
 post({"dt_on_C1_EQUIP_FAIL": "1", "dt_min_C1_EQUIP_FAIL": "60", "scrap_C1": "320"})
 check("changing the minutes does save", len(written["downtime"]) == 1)
 check("scrap still untouched", written["scrap"] == [])
+
+print("\n== RETIRED CODES CARRY FORWARD on shifts entered before the retirement ==")
+# The trap this guards: a shift entered with Operator Adjustments before file
+# 13 split it. The form only lists active codes, and the newest downtime
+# header wins wholesale — so if the retired code were simply left off the
+# page, re-saving this shift for ANY reason would silently drop its 30 minutes.
+reset()
+stored_downtime[("C1", SHIFT)] = {
+    "note": None, "planned_minutes": 0, "unplanned_minutes": 45,
+    "reasons": [{"code": "SETUP", "label": "Setup", "minutes": 15, "is_planned": False},
+                {"code": "OPER_ADJUST", "label": "Operator Adjustments",
+                 "minutes": 30, "is_planned": False}],
+}
+# Pin the shift: an unqualified GET follows the clock, and the fixture is 1st.
+oee_url = f"/console/oee?shift={SHIFT}&entry_date={DAY.isoformat()}"
+form = client.get(oee_url).text
+check("retired code rendered on the machine that has it",
+      'name="dt_on_C1_OPER_ADJUST"' in form)
+check("ticked, with its minutes",
+      'name="dt_min_C1_OPER_ADJUST"' in form and 'value="30"' in form)
+check("tagged as retired", "dt-retired-tag" in form)
+check("still NOT rendered on a machine that doesn't have it",
+      'name="dt_on_C2_OPER_ADJUST"' not in form)
+check("still 14 offered on that other machine",
+      form.count('name="dt_min_C2_') == 14, str(form.count('name="dt_min_C2_')))
+
+# Re-save exactly as the browser would post the pre-filled page, but with
+# Setup corrected — the retired code's fields come back with it.
+res = post({
+    "dt_on_C1_SETUP": "1", "dt_min_C1_SETUP": "20",
+    "dt_on_C1_OPER_ADJUST": "1", "dt_min_C1_OPER_ADJUST": "30",
+})
+check("200", res.status_code == 200, str(res.status_code))
+check("one submission", len(written["downtime"]) == 1)
+mins = {r.reason_code: r.minutes for r in written["downtime"][0].reasons} if written["downtime"] else {}
+check("the retired code's minutes are on the new header too",
+      mins == {"SETUP": 20, "OPER_ADJUST": 30}, str(mins))
+check("and the re-rendered page still shows the retired row",
+      'name="dt_on_C1_OPER_ADJUST"' in res.text)
+
+# Untouched, nothing is written — the retired code round-trips as "unchanged".
+for bucket in written.values():
+    bucket.clear()
+res = post({
+    "dt_on_C1_SETUP": "1", "dt_min_C1_SETUP": "15",
+    "dt_on_C1_OPER_ADJUST": "1", "dt_min_C1_OPER_ADJUST": "30",
+})
+check("saving it untouched writes nothing", written["downtime"] == [],
+      str(written["downtime"]))
+
+# Deliberately unticking it IS a reclassification, and drops it.
+for bucket in written.values():
+    bucket.clear()
+res = post({
+    "dt_on_C1_SETUP": "1", "dt_min_C1_SETUP": "15",
+    "dt_min_C1_OPER_ADJUST": "",
+    "dt_on_C1_OPER_ADJ_TEMP": "1", "dt_min_C1_OPER_ADJ_TEMP": "30",
+})
+mins = {r.reason_code: r.minutes for r in written["downtime"][0].reasons} if written["downtime"] else {}
+check("unticking the retired code and picking a sub-reason reclassifies it",
+      mins == {"SETUP": 15, "OPER_ADJ_TEMP": 30}, str(mins))
+# The re-render still shows the row (its minutes box came back in the POST),
+# now unticked — so a failed untick has something to fix. A fresh GET against
+# the corrected record no longer has the code and drops the row.
+after = res.text.split('name="dt_on_C1_OPER_ADJUST"')
+check("re-rendered unticked", len(after) == 2 and "checked" not in after[1][:60])
+stored_downtime[("C1", SHIFT)] = {
+    "note": None, "planned_minutes": 0, "unplanned_minutes": 45,
+    "reasons": [{"code": "SETUP", "label": "Setup", "minutes": 15, "is_planned": False},
+                {"code": "OPER_ADJ_TEMP", "label": "Operator Adjustments - Temperature",
+                 "minutes": 30, "is_planned": False}],
+}
+check("gone on the next open", 'name="dt_on_C1_OPER_ADJUST"' not in client.get(oee_url).text)
 
 print("\n== the scheduled checkbox ==")
 reset()

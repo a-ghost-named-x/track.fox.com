@@ -36,6 +36,21 @@ already stored and skips when nothing changed. The tables stay append-only; the
 "saved" badges then mean something, because only genuinely changed machines get
 one.
 
+RETIRED REASON CODES STAY ON THE SHIFTS THAT HAVE THEM
+------------------------------------------------------
+The reason picker lists active codes only — that is what retiring a code
+(`downtime_reasons.active = false`) means. But pre-fill plus newest-header-
+wins is a trap for shifts entered before a retirement: if the form silently
+left a retired code off a machine's row, re-saving that shift for any reason
+(fixing the note, correcting another reason's minutes) would post only the
+codes it could see, and the old minutes would drop out of that shift's record.
+
+So a retired code is rendered on a machine's row when, and only when, that
+shift already has it on record — tagged "retired", with the same checkbox and
+minutes box, so it carries forward untouched by default or can be deliberately
+unticked and reclassified. An untouched machine never shows it, which is what
+keeps new use impossible. First needed by docs/sql/13_split_operator_adjustments.sql.
+
 Access model matches the rest of the app: no auth, URL obscurity only.
 """
 from datetime import date, datetime
@@ -123,10 +138,25 @@ def _blank_row() -> dict:
         "scrap": "",
         "note": "",
         "minutes": {},
+        "retired": [],
         "status": None,
         "error": None,
         "saved_parts": [],
     }
+
+
+def _retired_on_row(codes, active: dict, all_reasons: dict) -> list[dict]:
+    """Which of `codes` the picker no longer offers, with labels.
+
+    These get their own rows on the form so they round-trip — see the module
+    docstring. `codes` is whatever is on the machine's record (GET) or whatever
+    the form carried for it (POST); there is rarely more than one.
+    """
+    return [
+        {"code": code, "label": all_reasons.get(code, {}).get("label", code)}
+        for code in codes
+        if code not in active
+    ]
 
 
 def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
@@ -139,6 +169,7 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
     scrap = get_latest_scrap_for_date(entry_date)
     downtime = get_latest_downtime_for_date(entry_date)
     schedule = get_schedule_for_date(entry_date)
+    active = get_downtime_reasons()
 
     rows: dict[str, dict] = {}
     for machine_id in _all_machines():
@@ -153,6 +184,11 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
         if record is not None:
             row["note"] = record["note"] or ""
             row["minutes"] = {r["code"]: str(r["minutes"]) for r in record["reasons"]}
+            # The record already carries labels from the full code table, so a
+            # retired code resolves to its name without another lookup.
+            row["retired"] = _retired_on_row(
+                row["minutes"], active, {r["code"]: r for r in record["reasons"]}
+            )
             # A submission with no reasons is the "ran clean" statement, which
             # has to round-trip as a ticked box rather than as an empty form
             # indistinguishable from never-entered.
@@ -229,6 +265,11 @@ def _collect_reasons(form, machine_id: str, reasons: dict) -> tuple[list, list[s
     time was lost, and a zero-minute reason says nothing. Minutes typed against
     an unticked reason are also an error, because it means the two controls
     disagree about what the person meant.
+
+    `reasons` is the FULL code table, retired codes included, so a retired
+    code the form rendered for this machine (because the shift already had it)
+    is read back like any other. A retired code that wasn't rendered has no
+    fields in the POST body at all, so it falls through as unticked-and-empty.
     """
     collected: list[DowntimeReasonInput] = []
     errors: list[str] = []
@@ -281,7 +322,10 @@ async def console_oee_submit(request: Request):
     entered_by = (form.get("entered_by") or "").strip()
     selected_shift = resolve_shift((form.get("shift") or "").strip(), datetime.now())
     selected_date = _parse_entry_date(form.get("entry_date"))
-    reasons = get_downtime_reasons()
+    active = get_downtime_reasons()
+    # Reading the form against the full table is what lets a retired code
+    # carry forward — see _collect_reasons.
+    reasons = get_downtime_reasons(active_only=False)
 
     # Validate the shared fields once. If these are wrong every row would fail
     # with the same message, which is noise rather than information.
@@ -341,6 +385,15 @@ async def console_oee_submit(request: Request):
                     if form.get(f"dt_on_{machine_id}_{code}") is not None
                 },
             }
+        )
+        # Re-rendered from the form, not the record. A retired code was on this
+        # machine's row if its minutes box came back (number inputs post even
+        # when empty), and that is the test — not whether it is still ticked,
+        # so an untick that failed validation still has a row to fix.
+        row["retired"] = _retired_on_row(
+            [c for c in reasons if form.get(f"dt_min_{machine_id}_{c}") is not None],
+            active,
+            reasons,
         )
         rows[machine_id] = row
 

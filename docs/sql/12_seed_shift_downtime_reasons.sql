@@ -13,6 +13,11 @@
 --
 -- Idempotent: ON CONFLICT updates in place.
 --
+-- BUT: 13_split_operator_adjustments.sql later retires OPER_ADJUST, and the
+-- ON CONFLICT below would set it back to active = true. If you ever re-run
+-- this file after 13 has been applied, re-run 13 afterwards — otherwise the
+-- form offers both the umbrella code and its four sub-reasons.
+--
 -- ---------------------------------------------------------------------------
 -- THE OLD CODES ARE RETIRED, NOT DELETED
 -- ---------------------------------------------------------------------------

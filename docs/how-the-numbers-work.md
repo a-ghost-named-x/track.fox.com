@@ -144,7 +144,8 @@ That's why hitting standard = 75%: 46,800 ÷ 62,400 = 75%.
 ### The downtime chart (Pareto)
 
 - Every downtime reason entered across the shift, added up by reason, biggest bar first, with each one's share of the total.
-- The eleven reasons are the floor's own list: Roll Change, Setup, FAAR, Equipment Failure, Operator Adjustments, Defective Material, Lack of Material, Lack of Operator, Delivery, Registration, Start of Shift. There's deliberately no "Other".
+- The fourteen reasons are the floor's own list: Roll Change, Setup, FAAR, Equipment Failure, Operator Adjustments (split four ways — Temperature, Timing, Pressure, Air jet), Defective Material, Lack of Material, Lack of Operator, Delivery, Registration, Start of Shift. There's deliberately no "Other".
+- Operator Adjustments was one reason until it was split (September 2026). Shifts entered before that keep the single "Operator Adjustments" bar — there's no way to know after the fact which kind each one was — so a date before the split shows one bar and a date after shows up to four. If you open an older shift on the entry form, that old reason is still listed on the machines that had it, tagged "retired", so a correction doesn't lose its minutes.
 - A machine that has downtime entered but no production numbers still shows up here — 20 minutes waiting on material is a real 20 minutes.
 
 ---

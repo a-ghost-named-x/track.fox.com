@@ -120,7 +120,7 @@
 
                         <td class="dt-cell">
                             {# A native <details> rather than a custom dropdown:
-                               11 reasons x 34 machines is 374 controls, and
+                               14 reasons x 34 machines is 476 controls, and
                                collapsing them keeps the page scannable while
                                still working with JS disabled. #}
                             <details class="dt-details"{% if row.minutes %} open{% endif %}>
@@ -153,6 +153,30 @@
                                                name="dt_on_{{ machine }}_{{ reason.code }}" value="1"
                                                {% if reason.code in row.minutes %}checked{% endif %}>
                                         {{ reason.label }}
+                                    </label>
+                                    <input type="number" class="dt-min"
+                                           name="dt_min_{{ machine }}_{{ reason.code }}"
+                                           min="1" max="{{ shift_minutes }}" placeholder="min"
+                                           value="{{ row.minutes.get(reason.code, '') }}">
+                                </div>
+                                {% endfor %}
+
+                                {# A code that has been retired since this shift
+                                   was entered. Shown only because this shift
+                                   already has it on record — leaving it off
+                                   would make the next save drop its minutes,
+                                   since the newest header wins wholesale. Same
+                                   controls as the rows above, so it either
+                                   carries forward or gets unticked on purpose. #}
+                                {% for reason in row.retired %}
+                                <div class="dt-reason-row dt-reason-retired">
+                                    <label class="dt-reason-label">
+                                        <input type="checkbox" class="dt-reason-box"
+                                               name="dt_on_{{ machine }}_{{ reason.code }}" value="1"
+                                               {% if reason.code in row.minutes %}checked{% endif %}>
+                                        {{ reason.label }}
+                                        <span class="dt-retired-tag"
+                                              title="This reason has been retired from the list. It stays on this shift because it was entered before that; untick it to reclassify.">retired</span>
                                     </label>
                                     <input type="number" class="dt-min"
                                            name="dt_min_{{ machine }}_{{ reason.code }}"

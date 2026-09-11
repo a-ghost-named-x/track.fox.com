@@ -235,13 +235,20 @@ def create_shift_downtime(payload: ShiftDowntimeCreate) -> int:
     Header and children go in one transaction: a header with a missing child
     would understate downtime and overstate availability, which is worse than
     the write failing outright.
+
+    Codes are validated against the FULL table, retired ones included. Retiring
+    a code (docs/sql/13_split_operator_adjustments.sql) is meant to stop NEW
+    use, which the form handles by not offering it — but a correction to a
+    shift entered before the retirement must be able to carry the old code
+    forward, or the newest-header-wins rule would drop those minutes on the
+    next save. Only a code that doesn't exist at all is rejected here.
     """
-    reasons = get_downtime_reasons()
+    reasons = get_downtime_reasons(active_only=False)
 
     unknown = [r.reason_code for r in payload.reasons if r.reason_code not in reasons]
     if unknown:
         raise UnknownReasonCodeError(
-            f"Unknown or retired downtime reason code(s): {', '.join(sorted(set(unknown)))}. "
+            f"Unknown downtime reason code(s): {', '.join(sorted(set(unknown)))}. "
             "Pick one of the codes offered on the form."
         )
 

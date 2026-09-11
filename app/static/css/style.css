@@ -1156,7 +1156,7 @@ button.shift-option {
 /* ---------- /console/oee — end of shift entry ---------- */
 
 /* Wider than .console's 480px: this form carries the whole floor rather than
-   one zone, and its downtime cell holds eleven reasons. */
+   one zone, and its downtime cell holds fourteen reasons. */
 .console-oee {
     max-width: 1400px;
 }
@@ -1185,13 +1185,15 @@ button.shift-option {
     width: 6rem;
 }
 
+/* Wide enough for the longest label ("Operator Adjustments - Temperature")
+   on one line next to its minutes box — the labels are nowrap on purpose. */
 .oee-entry-grid .dt-col,
 .oee-entry-grid .dt-cell {
-    min-width: 22rem;
+    min-width: 25rem;
 }
 
-/* A native <details> rather than a custom multi-select: eleven reasons across
-   34 machines is 374 controls, and collapsing them is what keeps the page
+/* A native <details> rather than a custom multi-select: fourteen reasons across
+   34 machines is 476 controls, and collapsing them is what keeps the page
    scannable. Native also means it works with JS disabled, which a bespoke
    dropdown would not. */
 .dt-details {
@@ -1225,7 +1227,7 @@ button.shift-option {
 
    `.entry-form input` sets padding: 0.65rem 0.75rem for the text and number
    boxes, and that applies to checkboxes too — inflating each one into a padded
-   block that shoves its own label a centimetre to the right. With eleven of
+   block that shoves its own label a centimetre to the right. With fourteen of
    them stacked, nothing lines up vertically and the column reads as scattered.
    Sizing them explicitly is what makes the list a list. */
 .entry-form .dt-cell input[type="checkbox"] {
@@ -1239,7 +1241,7 @@ button.shift-option {
     cursor: pointer;
 }
 
-/* One grid, two columns, for the eleven reason rows — so every checkbox sits
+/* One grid, two columns, for the fourteen reason rows — so every checkbox sits
    on one vertical line and every minutes box on another. A flex row can't
    guarantee that: each row would size its own label independently and the
    boxes would wander. */
@@ -1255,7 +1257,7 @@ button.shift-option {
 /* NOT part of that grid: .dt-none is itself the label wrapping its checkbox
    and text, and has no minutes box, so a two-column grid would drop its words
    into the minutes column. Flex row, same left padding, so its checkbox still
-   lines up with the eleven below it. */
+   lines up with the fourteen below it. */
 .entry-form .dt-none {
     display: flex;
     flex-direction: row;
@@ -1269,7 +1271,7 @@ button.shift-option {
     cursor: pointer;
 }
 
-/* Zebra striping across eleven near-identical rows, so the eye can track from
+/* Zebra striping across fourteen near-identical rows, so the eye can track from
    a label to its own minutes box rather than to the row above it. */
 .dt-reason-row:nth-of-type(even) {
     background: rgba(255, 255, 255, 0.025);
@@ -1310,6 +1312,25 @@ button.shift-option {
    inviting a value that would be rejected on save. */
 .dt-reason-row:not(:has(.dt-reason-box:checked)) .dt-min {
     opacity: 0.45;
+}
+
+/* A reason code retired since this shift was entered. It only appears on a
+   machine that already has it on record, so the tag's job is to explain why
+   this row isn't in the list on the other 33 — not to shout. */
+.dt-reason-retired {
+    border-top: 1px dashed var(--border);
+}
+
+.dt-retired-tag {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0 0.3rem;
+    cursor: help;
 }
 
 /* A machine left exactly as it was found. Not an error and not a save, so it
