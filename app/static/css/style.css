@@ -959,8 +959,32 @@ button.shift-option {
     font-weight: 700;
 }
 
+/* Band colours on the per-machine OEE cell, same hues as .zone-rollup below so
+   a machine's cell and its zone's pill visibly agree. Thresholds come from
+   bandFor() in oee.js: "good" starts at standard, "excellent" at the 85%
+   world-class mark, "fair" bottoms out around the 60% industry-typical figure.
+   A tint with coloured text rather than a solid fill: the dashed amber
+   [data-warned] outline has to stay visible on top of it, and it would
+   disappear on a solid amber cell. */
+.oee-grid .sum-oee[data-band="excellent"] {
+    background: rgba(46, 160, 67, 0.30);
+    color: #56d364;
+}
 
+.oee-grid .sum-oee[data-band="good"] {
+    background: rgba(46, 160, 67, 0.18);
+    color: #56d364;
+}
 
+.oee-grid .sum-oee[data-band="fair"] {
+    background: rgba(210, 153, 34, 0.20);
+    color: #e3b341;
+}
+
+.oee-grid .sum-oee[data-band="poor"] {
+    background: rgba(218, 54, 51, 0.22);
+    color: #ff7b72;
+}
 
 /* Not scheduled is ABSENT from the rollup, not a zero — so the row is dimmed
    rather than coloured, which would imply it scored badly. */
