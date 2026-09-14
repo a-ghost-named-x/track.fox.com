@@ -14,7 +14,7 @@ for the same three reasons spelled out in app/routers/supervisor.py:
   - It opens on the most recent date that has data, not on today. OEE for a
     shift that's two slots old is mostly noise.
 
-And it is NOT for the BrightSign boards. A partial-slot OEE reads terribly at
+And it is NOT for the floor screens. A partial-slot OEE reads terribly at
 8:05AM, and this is a review metric for a person at a desk. Linked from the
 /dashboard zone-picker index alongside /supervisor, never from
 /dashboard/<zone>.

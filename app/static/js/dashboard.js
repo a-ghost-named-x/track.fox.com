@@ -12,7 +12,7 @@ const MAX_ISSUE_LINES = 3;
 
 // Shows only the current shift's 4 time-slot columns (header + cells),
 // hiding the other 8. Runs every poll in case the shift changes (e.g. at
-// 2PM) while the page stays open on BrightSign without a reload.
+// 2PM) while the page stays open on a floor screen without a reload.
 function applyActiveSlots(activeSlots) {
     const activeSet = new Set(activeSlots);
     document.querySelectorAll("[data-slot]").forEach((el) => {

@@ -1,6 +1,6 @@
 """Routes for /supervisor — the historical shift-review page.
 
-Where /dashboard answers "what is the floor doing right now" on a BrightSign
+Where /dashboard answers "what is the floor doing right now" on a floor screen
 screen, this answers "how did a given shift actually do" for a person at a
 desk, after the fact. Same underlying data and the same status rule, with
 three deliberate behavioural differences from the dashboard:

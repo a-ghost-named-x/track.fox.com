@@ -15,13 +15,13 @@
        authentication anywhere in this app by design, and the entry forms were
        previously protected only by nobody knowing the URL. They are now one
        click from the board index. That index is only ever opened by a person
-       browsing on a computer — BrightSign points at /dashboard/<zone>
+       browsing on a computer — the screens point at /dashboard/<zone>
        directly, and those pages still carry no navigation chrome at all — so
        the exposure is small, but it is not zero. #}
 
     <section class="index-section">
         <h2 class="index-heading">Floor displays</h2>
-        <p class="index-note">Live production boards. These are what the BrightSign screens show.</p>
+        <p class="index-note">Live production boards. These are what the screens show.</p>
         <ul class="zone-list">
             {% for zone in zones %}
             <li>

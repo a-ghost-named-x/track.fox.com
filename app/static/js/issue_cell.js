@@ -1,6 +1,6 @@
 /**
  * Shared renderer for the Issue column cell, used by both dashboard.js (the
- * BrightSign boards) and supervisor.js (the review page).
+ * floor screens) and supervisor.js (the review page).
  *
  * One cell per machine row still, but one LINE per reported issue inside it,
  * each prefixed with the time slot it was logged against:

@@ -18,7 +18,7 @@ yet**. If the app deploys before the tables are created:
 | `/console/<zone>` | **500 error.** It loads the downtime reason codes on page load. Nobody can enter production. |
 | `/oee` | **500 error** on its data call. |
 | `/console` (single-machine) | Fine — untouched. |
-| `/dashboard/<zone>` | **Fine.** The BrightSign boards don't touch any new table. |
+| `/dashboard/<zone>` | **Fine.** The floor screens don't touch any new table. |
 | `/supervisor` | Fine — untouched. |
 
 So the boards stay up either way, but the **entry form goes down**, which is

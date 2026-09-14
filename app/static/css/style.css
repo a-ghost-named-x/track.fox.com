@@ -37,7 +37,7 @@ body {
     font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
-/* ---------- Dashboard (BrightSign display) ---------- */
+/* ---------- Dashboard (floor screen display) ---------- */
 
 .dashboard {
     /* Light theme, scoped to just this page — redeclaring the same custom
@@ -532,7 +532,7 @@ body {
 
 /* Deliberately keeps the dark :root palette instead of redeclaring the light
    one the way .dashboard does. /dashboard is a bright board read from across
-   the floor on a BrightSign; this is a desk tool, so it matches /console. */
+   the floor on a floor screen; this is a desk tool, so it matches /console. */
 .supervisor {
     padding: 2rem 2.5rem;
     max-width: 1600px;

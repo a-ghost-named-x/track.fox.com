@@ -12,7 +12,7 @@
 -- created_at DESC — the newest ROW wins wholesale. Put scrap on `entries` and
 -- the scrap person's submission becomes the newest row for that cell, blanking
 -- the units the production person entered ten minutes earlier and taking the
--- BrightSign board down with it. Separate tables mean three people can write
+-- floor screen down with it. Separate tables mean three people can write
 -- the same cell concurrently and never collide.
 --
 -- HOW TO APPLY:

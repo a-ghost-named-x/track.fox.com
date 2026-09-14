@@ -19,7 +19,7 @@ yet** and eleven reason codes that **are not seeded yet**.
 | `/console/oee` | **500.** It loads the reason codes on page load. |
 | `/oee` | **500** on its data call. |
 | `/console` and `/console/<zone>` | **Fine** — reverted to good units only, they touch none of this. |
-| `/dashboard/<zone>` | **Fine.** The BrightSign boards are untouched. |
+| `/dashboard/<zone>` | **Fine.** The floor screens are untouched. |
 | `/supervisor` | Fine. |
 
 So the boards and the 2-hour rounds keep working either way. Apply the SQL first

@@ -1,4 +1,4 @@
-"""Routes for /dashboard — the public, no-auth display BrightSign renders.
+"""Routes for /dashboard — the public, no-auth display the floor screens render.
 
 Example here is a "mixed" dashboard per the architecture doc: it merges a
 read-only MSSQL query with manual-entry data from Postgres into one view.
@@ -27,7 +27,7 @@ templates = Jinja2Templates(directory="app/templates")
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard_index(request: Request):
     """Landing page — lists each floor-section zone as a link rather than
-    rendering a single all-machines grid. Point BrightSign at a specific
+    rendering a single all-machines grid. Point a floor screen at a specific
     /dashboard/<zone> URL directly; this page is for a person browsing on a
     computer to find the right one.
     """
