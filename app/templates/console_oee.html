@@ -69,6 +69,13 @@
         <p class="oee-entry-hint">
             Every box is pre-filled with what's already recorded for this shift.
             Change what needs changing and save — machines you don't touch are left alone.
+            {% if length_editable %}
+            <strong>Shift length</strong> is for the whole day (6AM start, never mixed): pick 10h or 12h
+            here for a machine that ran long, and OEE judges it against 600 or 720 minutes.
+            On a 10h/12h day the 2nd Shift starts unticked — tick it there if a night crew ran.
+            {% else %}
+            <strong>Shift length</strong> is set on the 1st Shift page for the day it started.
+            {% endif %}
             <button type="button" class="link-button" id="mark-all-clean">Tick “no downtime” on every untouched machine</button>
         </p>
 
@@ -83,6 +90,7 @@
                 <thead>
                     <tr>
                         <th class="machine-col">Machine</th>
+                        <th class="hours-col">Shift length<span class="optional">whole day</span></th>
                         <th class="sched-col">Scheduled<span class="optional">this shift</span></th>
                         <th class="dt-col">Downtime</th>
                         <th>Scrap <span class="optional">(shift total)</span></th>
@@ -92,13 +100,47 @@
                 <tbody>
                     {% for machine in zone.machine_ids %}
                     {% set row = rows[machine] %}
-                    <tr class="batch-row{% if row.status %} batch-row-{{ row.status }}{% endif %}">
+                    <tr class="batch-row{% if row.status %} batch-row-{{ row.status }}{% endif %}{% if not row.shift_exists %} batch-row-absent{% endif %}"
+                        data-shift-minutes="{{ row.shift_minutes }}">
                         <td class="machine-col">
                             {{ machine }}
                             {% if row.status == 'saved' %}
                             <span class="batch-status batch-status-saved">{{ row.saved_parts | join(', ') }}</span>
                             {% endif %}
                             {% if row.status == 'failed' %}<span class="batch-status batch-status-failed">failed</span>{% endif %}
+                        </td>
+
+                        {% if not row.shift_exists %}
+                        {# A 10 or 12-hour day has no 3rd Shift: the night was
+                           the 2nd Shift of the day before, filed under that
+                           date. No inputs, so nothing posts for this row. #}
+                        <td class="shift-absent" colspan="5">
+                            No {{ shift.split(' ')[0] }} shift — ran {{ row.shift_hours }}h shifts on
+                            {{ production_day_label }}, so the night belongs to that day's 2nd Shift.
+                        </td>
+                        {% else %}
+
+                        <td class="hours-col">
+                            {% if length_editable %}
+                            {# A radio group: the browser always posts the
+                               checked value, so absence in a POST can only
+                               mean the control wasn't on the page. #}
+                            <div class="hours-toggle" role="group" aria-label="Shift length for {{ machine }}">
+                                {% for hours in shift_length_options %}
+                                <label class="hours-option">
+                                    <input type="radio" name="hours_{{ machine }}" value="{{ hours }}"
+                                           {% if row.shift_hours == hours %}checked{% endif %}>
+                                    <span>{{ hours }}h</span>
+                                </label>
+                                {% endfor %}
+                            </div>
+                            {% else %}
+                            <span class="hours-readonly{% if row.shift_hours != default_shift_hours %} is-long{% endif %}"
+                                  title="Set on the 1st Shift page for {{ production_day_label }}.">
+                                {{ row.shift_hours }}h
+                                {% if row.span %}<span class="hours-span">{{ row.span }}</span>{% endif %}
+                            </span>
+                            {% endif %}
                         </td>
 
                         <td class="sched-col">
@@ -115,7 +157,10 @@
                                not-scheduled. #}
                             <input type="hidden" name="sched_present_{{ machine }}" value="1">
                             <input type="checkbox" name="scheduled_{{ machine }}" value="1"
-                                   {% if row.scheduled %}checked{% endif %}>
+                                   {% if row.scheduled %}checked{% endif %}
+                                   {% if row.shift_hours != default_shift_hours and not is_first_shift %}
+                                   title="On a {{ row.shift_hours }}h day a second crew is the exception, so this starts unticked. Tick it if one ran {{ row.span }}."
+                                   {% endif %}>
                         </td>
 
                         <td class="dt-cell">
@@ -156,7 +201,7 @@
                                     </label>
                                     <input type="number" class="dt-min"
                                            name="dt_min_{{ machine }}_{{ reason.code }}"
-                                           min="1" max="{{ shift_minutes }}" placeholder="min"
+                                           min="1" max="{{ row.shift_minutes }}" placeholder="min"
                                            value="{{ row.minutes.get(reason.code, '') }}">
                                 </div>
                                 {% endfor %}
@@ -180,7 +225,7 @@
                                     </label>
                                     <input type="number" class="dt-min"
                                            name="dt_min_{{ machine }}_{{ reason.code }}"
-                                           min="1" max="{{ shift_minutes }}" placeholder="min"
+                                           min="1" max="{{ row.shift_minutes }}" placeholder="min"
                                            value="{{ row.minutes.get(reason.code, '') }}">
                                 </div>
                                 {% endfor %}
@@ -196,6 +241,7 @@
                             <input type="text" name="note_{{ machine }}" maxlength="500"
                                    value="{{ row.note }}">
                         </td>
+                        {% endif %}
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -208,7 +254,7 @@
 </div>
 
 <script>
-    window.SHIFT_MINUTES = {{ shift_minutes|tojson }};
+    window.MAX_SHIFT_MINUTES = {{ max_shift_minutes|tojson }};
 </script>
 <script src="/static/js/console_oee.js"></script>
 {% endblock %}

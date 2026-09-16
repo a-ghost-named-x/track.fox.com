@@ -82,14 +82,17 @@ Each machine needs three things for one shift:
 2. **Downtime** — how many minutes it was stopped, and why. Entered once at the end of the shift on `/console/oee`. A machine that ran all shift with no stops still needs the "no downtime" box ticked, so the site knows someone actually checked.
 3. **Scrap** — one total for the shift, same form.
 
-Plus one setting: the **Scheduled** checkbox. Untick it for a machine that wasn't supposed to run (planned maintenance, no work for it). That machine is left out of the shift entirely — it doesn't score 0%, it just isn't in the picture.
+Plus two settings:
+
+- The **Scheduled** checkbox. Untick it for a machine that wasn't supposed to run (planned maintenance, no work for it). That machine is left out of the shift entirely — it doesn't score 0%, it just isn't in the picture.
+- The **Shift length** — 8h, 10h or 12h — per machine, per day, on the 1st Shift page. A machine that ran 6AM to 6PM is judged against 720 minutes, not 480, and its shift is the six readings from 8AM to 6PM. The crew keeps writing the running count into the 4PM and 6PM boxes on the rounds exactly as they do now; only OEE reads them differently. Two things follow from a 10h or 12h day: the 2nd Shift starts *unticked* (a night crew is the exception — tick it on if one ran 6PM–6AM), and there is no 3rd Shift, so the next morning's 3rd Shift row for that machine says "no 3rd shift" instead of showing inputs. The floor screens stay on the 8-hour rotation regardless — on a machine running long, the 2nd Shift board's colours don't mean anything, and the floor knows that.
 
 ### The three factors
 
 OEE is three percentages multiplied together:
 
 - **Availability — "how much of the shift was it actually running?"**
-  A shift is 480 minutes. Subtract the downtime minutes. 60 minutes down means it ran 420 of 480 = 87.5%.
+  A shift is 480 minutes (600 or 720 if its length was set to 10h or 12h). Subtract the downtime minutes. 60 minutes down means it ran 420 of 480 = 87.5%.
 
 - **Performance — "while it was running, how close to full speed was it?"**
   Take the machine's top speed (per minute), multiply by the minutes it ran — that's what it *could* have made. Divide what it actually made (good + scrap) by that.
@@ -161,7 +164,7 @@ The site's rule is **never guess.** A missing number is shown as missing, not fi
 - **"!"** in red — the numbers can't be right and the machine is excluded from the totals until fixed. There are four causes, and the banner at the top of the page names the machine and the fix:
   - Last checkpoint is lower than an earlier one (the shift total would be wrong)
   - More than double the machine's top speed (usually a typo — a transposed digit, or a day's total typed into a shift's box)
-  - More than 480 minutes of downtime in a shift
+  - More minutes of downtime than the shift has (480, 600 or 720)
   - No top speed set up for that machine (a setup issue, not a floor issue)
 - **A small warning mark** on a score that still shows — worth a look but the machine still counts:
   - A mid-shift reading is lower than the one before it, but a later reading is higher, so the shift total is still right
@@ -171,7 +174,7 @@ The site's rule is **never guess.** A missing number is shown as missing, not fi
 
 ## Things the site deliberately does not do
 
-- **It doesn't judge a machine on one two-hour slot.** Readings aren't taken at exactly 8:00 and 10:00, so one slot can look like 19,500 and the next 0 just because someone walked the floor late. That's timing noise, not the machine. Everything is scored on the whole shift — 480 minutes no matter when each reading was taken. (The site used to flag individual slots and got it wrong on seven machines on the first real day.)
+- **It doesn't judge a machine on one two-hour slot.** Readings aren't taken at exactly 8:00 and 10:00, so one slot can look like 19,500 and the next 0 just because someone walked the floor late. That's timing noise, not the machine. Everything is scored on the whole shift — 480 minutes (or 600/720) no matter when each reading was taken. (The site used to flag individual slots and got it wrong on seven machines on the first real day.)
 - **It doesn't average percentages.** See the totals section.
 - **It doesn't default anything.** No downtime entered ≠ no downtime. No scrap entered ≠ no scrap. Not entered is not entered.
 - **It doesn't cap at 100%.** If a number comes out over, that's information.

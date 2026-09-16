@@ -48,11 +48,12 @@ const FLAG_LABELS = {
     },
     downtime_over_shift: {
         title: "More downtime than fits in the shift",
-        detail: "An 8-hour shift holds at most 480 minutes. Check the minutes on /console/oee.",
+        detail: "A shift holds at most its own length: 480 minutes on an 8-hour day, " +
+            "600 on a 10-hour one, 720 on a 12-hour one. Check the minutes on /console/oee.",
     },
     no_ideal_rate: {
         title: "No ideal rate seeded",
-        detail: "OEE cannot be computed. Run docs/sql/08_seed_ideal_rates.sql.",
+        detail: "OEE cannot be computed for this machine until IT adds one.",
     },
 };
 
@@ -68,9 +69,8 @@ const WARNING_LABELS = {
     },
     over_100: {
         title: "Beat the maximum derived from its standard",
-        detail: "Still counted. Either the ideal rate is set too low for this " +
-            "machine, or its downtime is over-reported. " +
-            "docs/sql/10_diagnose_over_ceiling.sql works out which.",
+        detail: "Still counted. The machine produced more than an 8-hour shift " +
+            "at its rated speed allows, so its numbers are shown as-is.",
     },
 };
 
@@ -119,6 +119,11 @@ function formatQuickPick(iso) {
     return parseISODate(iso).toLocaleDateString("en-US", {
         weekday: "short", month: "numeric", day: "numeric",
     });
+}
+
+/** The shift currently shown, as the floor says it: "3rd", not "3rd Shift". */
+function shortShift(label) {
+    return (label || "").split(" ")[0];
 }
 
 /** Percentage, or an em dash when the value is genuinely unknown. */
@@ -190,14 +195,23 @@ function missingReason(machine) {
  * cell's tooltip rather than disappearing with them.
  */
 function checkpointTitle(machine) {
-    const lines = ["Production checkpoints — cumulative, blank means unchanged:"];
+    const lines = [
+        `Production checkpoints (${machine.shift_hours}h shift, ${machine.span}) — ` +
+        "cumulative, blank means unchanged:",
+    ];
     for (const point of machine.checkpoints) {
         if (!point.elapsed) continue;
         const reading = point.reported ? count(point.reading) : "(blank)";
         const made = point.produced === null || point.produced === undefined
             ? "unknown"
             : count(point.produced);
-        lines.push(`   ${point.slot}: reading ${reading}, made ${made}`);
+        // A long 2nd Shift runs past midnight, and its last checkpoints
+        // carry the next calendar date. Say so, or "6AM" reads as this
+        // morning rather than tomorrow's.
+        const when = payload && point.date && point.date !== payload.date
+            ? `${point.slot} (${formatQuickPick(point.date)})`
+            : point.slot;
+        lines.push(`   ${when}: reading ${reading}, made ${made}`);
     }
     lines.push("A shift's production is its last reading, so interior blanks can't change it.");
     return lines.join("\n");
@@ -224,15 +238,41 @@ function clearGrid() {
         row.removeAttribute("data-unscheduled");
         const operator = row.querySelector(".operator");
         if (operator) operator.textContent = "";
+        const length = row.querySelector(".shift-length");
+        if (length) {
+            length.textContent = "";
+            length.removeAttribute("title");
+            length.removeAttribute("data-long");
+        }
     });
     document.querySelectorAll("[data-rollup]").forEach((el) => {
         el.textContent = "";
     });
 }
 
+/**
+ * The "10h" / "12h" tag next to a machine's name. Empty on an ordinary
+ * 8-hour day so the common case stays quiet — the tag is there to explain
+ * why this row's minutes, checkpoints and standard differ from its
+ * neighbours', and on an 8-hour day they don't.
+ */
+function fillShiftLength(row, machine) {
+    const tag = row.querySelector(".shift-length");
+    if (!tag) return;
+    const hours = machine.shift_hours;
+    if (!hours || hours === 8) return;
+    tag.textContent = `${hours}h`;
+    tag.setAttribute("data-long", "");
+    tag.title = machine.shift_exists
+        ? `${hours}-hour shifts on ${formatQuickPick(machine.production_day)}: ` +
+          `this one is ${machine.span}, ${machine.shift_minutes} minutes. Set on /console/oee.`
+        : `Ran ${hours}-hour shifts on ${formatQuickPick(machine.production_day)}.`;
+}
+
 function fillMachineRow(row, machine) {
     const operator = row.querySelector(".operator");
     if (operator) operator.textContent = machine.operator || "";
+    fillShiftLength(row, machine);
 
     const set = (field, text, title) => {
         const cell = row.querySelector(`[data-field="${field}"]`);
@@ -242,13 +282,30 @@ function fillMachineRow(row, machine) {
         return cell;
     };
 
+    if (machine.shift_exists === false) {
+        // A 10 or 12-hour day has no 3rd Shift. The overnight shift is filed
+        // under the morning it lands on, so it's THIS date's 3rd Shift row
+        // that yesterday's long day removes — and the night's hours are on
+        // yesterday's 2nd Shift, where they're counted.
+        row.setAttribute("data-unscheduled", "");
+        set("oee", `no ${shortShift(currentShift)} shift`,
+            `Ran ${machine.shift_hours}-hour shifts on ` +
+            `${formatQuickPick(machine.production_day)}, so the night belongs to that ` +
+            "day's 2nd Shift. Left out of the rollup entirely.");
+        return;
+    }
+
     if (!machine.scheduled) {
         // Not scheduled is not a zero. The machine is excluded from the rollup
         // entirely rather than scoring 0% and dragging the zone down with it.
         row.setAttribute("data-unscheduled", "");
         set("oee", "not scheduled",
-            "Marked as not scheduled to run this shift on /console/oee, so it is " +
-            "left out of the zone rollup entirely — not counted as 0%.");
+            machine.shift_hours !== 8 && currentShift !== SHIFT_ORDER[0]
+                ? `On a ${machine.shift_hours}-hour day a second crew is the exception, ` +
+                  `so this shift (${machine.span}) starts as not scheduled. Tick Scheduled ` +
+                  "on /console/oee if one ran. Left out of the rollup entirely — not 0%."
+                : "Marked as not scheduled to run this shift on /console/oee, so it is " +
+                  "left out of the zone rollup entirely — not counted as 0%.");
         return;
     }
 
@@ -381,8 +438,15 @@ function renderCompleteness(shiftData) {
     }
 
     const slotWord = `${c.slots_expected} elapsed slot${c.slots_expected === 1 ? "" : "s"}`;
+    // The slot count is the 8-hour view; a machine on a 10 or 12-hour day has
+    // more, and is judged on its own. Say how many there are so "4 slots"
+    // isn't read as the whole story.
+    const longNote = c.long_shift_machines
+        ? ` (${c.long_shift_machines} machine${c.long_shift_machines === 1 ? "" : "s"} ` +
+          "on 10h/12h shifts, with more)"
+        : "";
     completenessNote.textContent =
-        `across ${slotWord}. Production comes from the 2-hour rounds; ` +
+        `across ${slotWord}${longNote}. Production comes from the 2-hour rounds; ` +
         "downtime and scrap are entered once at end of shift.";
 
     // The state that stops the page dead, called out rather than left for

@@ -41,7 +41,17 @@ from app.db.oee import (  # noqa: E402
     _safe_divide,
     _summarise_production,
 )
-from app.models import SHIFT_MINUTES, SHIFT_SLOTS, elapsed_slots  # noqa: E402
+from app.models import (  # noqa: E402
+    SHIFT_MINUTES,
+    SHIFT_SLOTS,
+    default_scheduled,
+    elapsed_dated_slots,
+    elapsed_slots,
+    production_day_for,
+    shift_plan,
+    shift_slot_dates,
+    shift_span,
+)
 
 failures = []
 
@@ -243,6 +253,53 @@ check_eq("today mid-shift -> only closed windows",
 check_eq("today, 3rd shift already landed this morning",
          elapsed_slots("3rd Shift", date(2026, 9, 3), datetime(2026, 9, 3, 11, 30)),
          ["12AM", "2AM", "4AM", "6AM"])
+
+print("\n== shift length geometry: the day starts at 6AM and never mixes ==")
+check_eq("8h reproduces SHIFT_SLOTS", shift_plan(8), SHIFT_SLOTS)
+check_eq("10h: 1st runs to 4PM",
+         shift_plan(10)["1st Shift"], ["8AM", "10AM", "12PM", "2PM", "4PM"])
+check_eq("10h: 2nd runs 4PM-2AM", shift_plan(10)["2nd Shift"],
+         ["6PM", "8PM", "10PM", "12AM", "2AM"])
+check_eq("10h: no 3rd, and 2AM-6AM is idle", "3rd Shift" in shift_plan(10), False)
+check_eq("12h: 1st runs to 6PM",
+         shift_plan(12)["1st Shift"], ["8AM", "10AM", "12PM", "2PM", "4PM", "6PM"])
+check_eq("12h: 2nd runs 6PM-6AM", shift_plan(12)["2nd Shift"],
+         ["8PM", "10PM", "12AM", "2AM", "4AM", "6AM"])
+check_eq("12h: no 3rd", "3rd Shift" in shift_plan(12), False)
+check_eq("spans", [shift_span(s, 12) for s in ("1st Shift", "2nd Shift", "3rd Shift")],
+         ["6AM-6PM", "6PM-6AM", None])
+check_eq("10h spans", [shift_span(s, 10) for s in ("1st Shift", "2nd Shift")],
+         ["6AM-4PM", "4PM-2AM"])
+
+# The overnight shift is filed under the morning it lands on, so the 3rd Shift
+# row of the 16th belongs to the 15th's production day.
+check_eq("3rd Shift filed 9/16 is production day 9/15",
+         production_day_for("3rd Shift", date(2026, 9, 16)), date(2026, 9, 15))
+check_eq("1st Shift is the identity",
+         production_day_for("1st Shift", date(2026, 9, 16)), date(2026, 9, 16))
+
+# A 12-hour 2nd Shift straddles midnight: 8PM/10PM on the day, the rest the
+# morning after — exactly how the 2-hour rounds already date them.
+check_eq("12h 2nd Shift checkpoints carry two dates",
+         shift_slot_dates("2nd Shift", date(2026, 9, 15), 12),
+         [("8PM", date(2026, 9, 15)), ("10PM", date(2026, 9, 15)),
+          ("12AM", date(2026, 9, 16)), ("2AM", date(2026, 9, 16)),
+          ("4AM", date(2026, 9, 16)), ("6AM", date(2026, 9, 16))])
+check_eq("a shift the pattern lacks is None",
+         shift_slot_dates("3rd Shift", date(2026, 9, 15), 12), None)
+check_eq("8h 3rd Shift of production day 9/15 lands on 9/16",
+         shift_slot_dates("3rd Shift", date(2026, 9, 15)),
+         [(s, date(2026, 9, 16)) for s in ("12AM", "2AM", "4AM", "6AM")])
+check_eq("elapsed follows each slot's own date",
+         elapsed_dated_slots(shift_slot_dates("2nd Shift", date(2026, 9, 15), 12),
+                             datetime(2026, 9, 16, 2, 0)),
+         ["8PM", "10PM", "12AM", "2AM"])
+
+# A night crew on a long day is the exception, so it has to be ticked on.
+check_eq("8h: everything scheduled by default",
+         [default_scheduled(s, 8) for s in SHIFT_SLOTS], [True, True, True])
+check_eq("12h: 1st yes, 2nd no, 3rd doesn't exist",
+         [default_scheduled(s, 12) for s in SHIFT_SLOTS], [True, False, False])
 
 print("\n" + "=" * 60)
 if failures:

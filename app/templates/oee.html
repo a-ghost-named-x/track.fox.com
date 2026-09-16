@@ -76,8 +76,10 @@
                hand-taken readings, and a reading logged late borrows units from
                its neighbour, which is what produced false alarms on WS1 and C8
                in the first week. A shift is 480 minutes however the readings
-               fell. The checkpoint sequence is still available on the Good
-               cell's tooltip for diagnosing a flagged machine. #}
+               fell — or 600 or 720 on a machine whose day was set to 10 or 12
+               hours on /console/oee, which the tag next to its name shows.
+               The checkpoint sequence is still available on the Good cell's
+               tooltip for diagnosing a flagged machine. #}
             <table class="oee-grid">
                 <thead>
                     <tr>
@@ -101,6 +103,11 @@
                     <tr data-machine="{{ machine }}">
                         <td class="machine-col">
                             <span class="machine-name">{{ machine }}</span>
+                            {# "10h" / "12h" when the machine's day was set to
+                               that on /console/oee; empty (and hidden) on an
+                               ordinary 8-hour day so the common case stays
+                               quiet. Filled by fillMachineRow(). #}
+                            <span class="shift-length"></span>
                             <span class="operator"></span>
                         </td>
                         <td class="sum sum-oee" data-field="oee">—</td>

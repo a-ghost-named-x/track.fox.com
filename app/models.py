@@ -1,8 +1,8 @@
 """Models and fixed reference lists for the manual-entry (floor) dashboard."""
 from datetime import date as date_type
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Fixed time-slot list, in display order. Matches the slot values seeded
 # into the `standards` table (sql/03_seed_standards.sql).
@@ -202,6 +202,147 @@ SLOT_MINUTES: int = 120
 # count; SHIFT_SLOTS is validated as four-per-shift by the standards seed.
 SHIFT_MINUTES: int = SLOT_MINUTES * len(SHIFT_SLOTS[SHIFT_ORDER[0]])
 
+# ---------------------------------------------------------------------------
+# Shift LENGTH — for OEE only.
+#
+# With the current staffing a machine is often run for 10 or 12 hours by one
+# crew instead of three 8-hour shifts (production manager, 2026-09-16). The
+# 2-hour rounds and the floor screens stay on the 8-hour rotation regardless:
+# the crew keeps writing the running count into the 4PM and 6PM boxes, and the
+# 2nd Shift board compares those against a standard that assumes a fresh
+# counter, so its colours are meaningless on a machine running long. The floor
+# knows that and lives with it. OEE, though, has to judge the machine against
+# the minutes it actually ran, which is what this section provides.
+#
+# The rules, all from the floor:
+#   - the work day ALWAYS starts at 6AM;
+#   - a day's pattern never mixes — after a 12-hour 1st Shift, the only thing
+#     that can follow is another 12-hour crew (6PM-6AM), and usually nothing
+#     does: the machine is off until 6AM;
+#   - it is decided per machine per day. C1 can run 12 hours today and 8
+#     tomorrow.
+#
+# Stored per (machine, production day) in `machine_shift_length`
+# (docs/sql/14_shift_length.sql); absence means 8. Set on /console/oee.
+# ---------------------------------------------------------------------------
+
+SHIFT_LENGTH_HOURS: list[int] = [8, 10, 12]
+DEFAULT_SHIFT_HOURS: int = 8
+
+# The outer bound on a downtime reason's minutes, matching the CHECK on
+# shift_downtime_reason. The real cap is the machine's own shift length on
+# that day, enforced at write time by create_shift_downtime().
+MAX_SHIFT_MINUTES: int = max(SHIFT_LENGTH_HOURS) * 60
+
+# The hour the production day starts, taken from the 1st Shift's real start
+# rather than written as 6 again. Everything about long shifts hangs off it.
+DAY_START_HOUR: int = SHIFTS[0][0]
+
+
+def shift_plan(shift_hours: int) -> dict[str, list[str]]:
+    """Which of the 12 slots each shift covers on a day of `shift_hours`-hour
+    shifts. A shift that does not exist on that pattern is simply absent.
+
+        8  -> 1st [8AM..2PM]   2nd [4PM..10PM]   3rd [12AM..6AM]
+        10 -> 1st [8AM..4PM]   2nd [6PM..2AM]    (3rd: none; off 2AM-6AM)
+        12 -> 1st [8AM..6PM]   2nd [8PM..6AM]    (3rd: none)
+
+    Derived by chunking TIME_SLOTS, which starts at 8AM because the day starts
+    at 6AM, so the 8-hour plan reproduces SHIFT_SLOTS exactly — the check at
+    the bottom of this file asserts it. A trailing chunk shorter than a shift
+    (10 hours leaves 4AM and 6AM over) is idle time, not a short shift.
+    """
+    per_shift = shift_hours * 60 // SLOT_MINUTES
+    plan: dict[str, list[str]] = {}
+    for index, label in enumerate(SHIFT_ORDER):
+        chunk = TIME_SLOTS[index * per_shift:(index + 1) * per_shift]
+        if len(chunk) == per_shift:
+            plan[label] = chunk
+    return plan
+
+
+def production_day_for(shift: str, entry_date: date_type) -> date_type:
+    """The 6AM-to-6AM day that a shift filed under `entry_date` belongs to.
+
+    Everywhere in this app the overnight shift is filed under the morning it
+    LANDS on: its 12AM-6AM checkpoints carry that calendar date, and so do its
+    scrap, downtime and schedule rows. So "3rd Shift, Wednesday" is the crew
+    that started at 10PM Tuesday, and Tuesday is the production day whose
+    shift length decides whether that crew existed at all.
+
+    1st and 2nd Shift start and are filed on the same date, so for them this
+    is the identity.
+    """
+    if shift == SHIFT_ORDER[-1]:
+        return entry_date - timedelta(days=1)
+    return entry_date
+
+
+def _slot_day_offset(slot: str) -> int:
+    """0 if the slot closes on the production day itself, 1 if the morning
+    after. A window closing at or before the day-start hour (12AM, 2AM, 4AM,
+    6AM) is the next calendar date."""
+    return 1 if SLOT_END_HOURS[slot] <= DAY_START_HOUR else 0
+
+
+def shift_slot_dates(
+    shift: str, production_day: date_type, shift_hours: int = DEFAULT_SHIFT_HOURS
+) -> list[tuple[str, date_type]] | None:
+    """The (slot, calendar date) checkpoints of one shift on one production
+    day, or None if that day's pattern has no such shift.
+
+    This is where a long 2nd Shift straddles midnight: on a 12-hour day the
+    6PM-6AM crew's 8PM and 10PM readings carry the production date and its
+    12AM-6AM readings carry the next one, exactly as the 2-hour rounds already
+    enter them. The OEE report reads both dates and stitches the shift back
+    together from this list.
+    """
+    slots = shift_plan(shift_hours).get(shift)
+    if slots is None:
+        return None
+    return [
+        (slot, production_day + timedelta(days=_slot_day_offset(slot)))
+        for slot in slots
+    ]
+
+
+def _hour_label(hour: int) -> str:
+    """24h hour -> the slot-style label the rest of the app uses ("6PM")."""
+    hour %= 24
+    if hour == 0:
+        return "12AM"
+    if hour < 12:
+        return f"{hour}AM"
+    if hour == 12:
+        return "12PM"
+    return f"{hour - 12}PM"
+
+
+def shift_span(shift: str, shift_hours: int = DEFAULT_SHIFT_HOURS) -> str | None:
+    """Clock span of a shift on a day of that length, e.g. "6PM-6AM", or None
+    if the shift does not exist on that pattern. Display only."""
+    if shift not in shift_plan(shift_hours):
+        return None
+    start = DAY_START_HOUR + SHIFT_ORDER.index(shift) * shift_hours
+    return f"{_hour_label(start)}-{_hour_label(start + shift_hours)}"
+
+
+def default_scheduled(shift: str, shift_hours: int = DEFAULT_SHIFT_HOURS) -> bool:
+    """Whether a machine counts as scheduled for `shift` when nobody has said
+    otherwise on /console/oee.
+
+    On an 8-hour day every shift defaults to scheduled, which is the
+    machine_schedule rule of "absence means scheduled". On a 10 or 12-hour
+    day the 1st Shift is the day, and a second crew is the exception rather
+    than the rule — more often the machine is off until 6AM — so 2nd Shift
+    defaults to NOT scheduled and ticking the box is how a night crew gets
+    counted. Otherwise every long-shift machine would show a missing night
+    every day and someone would be unticking 34 boxes.
+    """
+    if shift not in shift_plan(shift_hours):
+        return False
+    return shift == SHIFT_ORDER[0] or shift_hours == DEFAULT_SHIFT_HOURS
+
 # Standards are set at 75% of each machine's theoretical maximum. Recorded here
 # for readers; nothing computes with it. The actual ceiling used by the OEE
 # math lives per-machine in the `machine_ideal_rates` table, seeded by
@@ -244,25 +385,40 @@ SLOT_POSITIONS: dict[str, tuple[str, int]] = {
 OEE_ZONE_ORDER: list[str] = SUPERVISOR_ZONE_ORDER
 
 
-def elapsed_slots(shift: str, entry_date: date_type, now: datetime) -> list[str]:
-    """Which of `shift`'s slots have actually finished, for `entry_date`.
+def elapsed_dated_slots(
+    dated_slots: list[tuple[str, date_type]], now: datetime
+) -> list[str]:
+    """Which of a shift's (slot, date) checkpoints have actually finished.
 
-    Used so /oee doesn't report the rest of today as "missing data". A past
-    date has all four slots elapsed; today's has only the ones whose 2-hour
-    window has closed. A future date has none.
+    Used so /oee doesn't report the rest of today as "missing data". A slot
+    has elapsed once its 2-hour window has closed — the 8AM slot at 8:00 —
+    which one comparison against the window's closing datetime covers for
+    past dates (all elapsed), today (only the closed ones) and future dates
+    (none) alike. Carrying the date on each slot is what makes a 12-hour 2nd
+    Shift's post-midnight checkpoints come out right.
+    """
+    return [
+        slot
+        for slot, slot_date in dated_slots
+        if datetime.combine(slot_date, datetime.min.time()).replace(
+            hour=SLOT_END_HOURS[slot]
+        ) <= now
+    ]
+
+
+def elapsed_slots(shift: str, entry_date: date_type, now: datetime) -> list[str]:
+    """Which of `shift`'s 8-hour slots have finished, for a shift filed under
+    `entry_date`. The pre-shift-length form of elapsed_dated_slots(), kept
+    because it is the natural question for an 8-hour day.
 
     3rd Shift needs no special handling despite spanning midnight: its slots
     (12AM-6AM) are logged against the calendar day they LAND on, which is how
     entry_date already works everywhere in the app, so their end hours (0, 2,
-    4, 6) are genuinely early-morning hours of entry_date.
+    4, 6) are genuinely early-morning hours of entry_date — and
+    production_day_for() undoes that one day for the geometry.
     """
-    slots = SHIFT_SLOTS.get(shift, [])
-    today = now.date()
-    if entry_date < today:
-        return list(slots)
-    if entry_date > today:
-        return []
-    return [slot for slot in slots if now.hour >= SLOT_END_HOURS[slot]]
+    dated = shift_slot_dates(shift, production_day_for(shift, entry_date))
+    return elapsed_dated_slots(dated or [], now)
 
 
 class ShiftScrapCreate(BaseModel):
@@ -291,11 +447,13 @@ class DowntimeReasonInput(BaseModel):
     a submission with an empty `reasons` list, which is a materially different
     statement from no submission at all.
 
-    Capped at one whole shift, matching the CHECK on shift_downtime_reason.
+    Capped at the longest shift there is, matching the CHECK on
+    shift_downtime_reason. The tighter cap — this machine's shift length on
+    this day — is applied by create_shift_downtime(), which knows it.
     """
 
     reason_code: str
-    minutes: int = Field(gt=0, le=SHIFT_MINUTES)
+    minutes: int = Field(gt=0, le=MAX_SHIFT_MINUTES)
 
 
 class ShiftDowntimeCreate(BaseModel):
@@ -332,3 +490,33 @@ class ScheduleCreate(BaseModel):
     shift: str
     scheduled: bool
     entered_by: str = Field(min_length=1, max_length=20)
+
+
+class ShiftLengthCreate(BaseModel):
+    """How many hours each shift ran on one machine on one production day.
+
+    `entry_date` is the PRODUCTION DAY — the date the 1st Shift started on —
+    which is also the date the 1st Shift is filed under, so the form's date
+    box on the 1st Shift page is exactly right. Only exceptions need writing
+    (absence means 8), but 8 is accepted so a wrong 12 can be undone.
+    """
+
+    machine_id: str
+    entry_date: date_type
+    shift_hours: int
+    entered_by: str = Field(min_length=1, max_length=20)
+
+    @field_validator("shift_hours")
+    @classmethod
+    def _known_length(cls, value: int) -> int:
+        if value not in SHIFT_LENGTH_HOURS:
+            raise ValueError(f"shift_hours must be one of {SHIFT_LENGTH_HOURS}")
+        return value
+
+
+# The 8-hour plan must reproduce SHIFT_SLOTS, or the two halves of the app
+# (the boards on SHIFT_SLOTS, OEE on shift_plan) disagree about which slots a
+# shift has. Checked at import so a reordering of TIME_SLOTS can't ship.
+assert shift_plan(DEFAULT_SHIFT_HOURS) == SHIFT_SLOTS, (
+    "shift_plan(8) must equal SHIFT_SLOTS - TIME_SLOTS or SHIFT_SLOTS was reordered"
+)

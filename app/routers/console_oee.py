@@ -51,6 +51,21 @@ minutes box, so it carries forward untouched by default or can be deliberately
 unticked and reclassified. An untouched machine never shows it, which is what
 keeps new use impossible. First needed by docs/sql/13_split_operator_adjustments.sql.
 
+SHIFT LENGTH IS SET ON THE 1ST SHIFT PAGE, AND ONLY THERE
+--------------------------------------------------------
+A machine's shift length (8, 10 or 12 hours) is a fact about its PRODUCTION
+DAY, not about one shift: the day starts at 6AM and the pattern never mixes.
+So the control is offered on the 1st Shift page — the date box there IS the
+production day — and the 2nd and 3rd Shift pages show it read-only. That is
+also the moment the decision is made; per the floor, "at 6AM tomorrow they
+could decide to run an 8-hour shift".
+
+Two things follow from a 10 or 12-hour day, both handled by app/models.py:
+the 2nd Shift defaults to NOT scheduled (a night crew is the exception and
+gets ticked on), and the 3rd Shift does not exist — which, because the
+overnight shift is filed under the morning it lands on, means the NEXT date's
+3rd Shift row for that machine is rendered as "no 3rd shift" with no inputs.
+
 Access model matches the rest of the app: no auth, URL obscurity only.
 """
 from datetime import date, datetime
@@ -65,24 +80,33 @@ from app.db.oee import (
     UnknownReasonCodeError,
     create_schedule_exception,
     create_shift_downtime,
+    create_shift_length,
     create_shift_scrap,
     get_downtime_reasons,
     get_latest_downtime_for_date,
     get_latest_scrap_for_date,
     get_schedule_for_date,
+    get_shift_lengths,
 )
 from app.models import (
     DASHBOARD_ZONE_LABELS,
     DASHBOARD_ZONES,
+    DEFAULT_SHIFT_HOURS,
+    MAX_SHIFT_MINUTES,
     OEE_ZONE_ORDER,
-    SHIFT_MINUTES,
+    SHIFT_LENGTH_HOURS,
     SHIFT_ORDER,
     DowntimeReasonInput,
     ScheduleCreate,
     ShiftDowntimeCreate,
+    ShiftLengthCreate,
     ShiftScrapCreate,
+    default_scheduled,
     get_current_shift,
+    production_day_for,
     resolve_shift,
+    shift_plan,
+    shift_span,
 )
 
 router = APIRouter()
@@ -133,6 +157,10 @@ def _all_machines() -> list[str]:
 
 def _blank_row() -> dict:
     return {
+        "shift_hours": DEFAULT_SHIFT_HOURS,
+        "shift_exists": True,
+        "span": "",
+        "shift_minutes": DEFAULT_SHIFT_HOURS * 60,
         "scheduled": True,
         "ran_clean": False,
         "scrap": "",
@@ -170,11 +198,29 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
     downtime = get_latest_downtime_for_date(entry_date)
     schedule = get_schedule_for_date(entry_date)
     active = get_downtime_reasons()
+    # Shift length is per production DAY, and for 3rd Shift that is the day
+    # before the one this page is filed under — see the module docstring.
+    production_day = production_day_for(shift, entry_date)
+    lengths = get_shift_lengths([production_day])
 
     rows: dict[str, dict] = {}
     for machine_id in _all_machines():
         row = _blank_row()
-        row["scheduled"] = schedule.get((machine_id, shift), True)
+        hours = lengths.get((machine_id, production_day), DEFAULT_SHIFT_HOURS)
+        row["shift_hours"] = hours
+        row["shift_exists"] = shift in shift_plan(hours)
+        row["span"] = shift_span(shift, hours) or ""
+        row["shift_minutes"] = hours * 60
+        if not row["shift_exists"]:
+            # No inputs are rendered for this row and nothing is read back
+            # for it on POST, so its record (if any) is neither shown nor
+            # touched.
+            row["scheduled"] = False
+            rows[machine_id] = row
+            continue
+        row["scheduled"] = schedule.get(
+            (machine_id, shift), default_scheduled(shift, hours)
+        )
 
         scrap_value = scrap.get((machine_id, shift))
         if scrap_value is not None:
@@ -215,6 +261,7 @@ def _context(
     """
     saved_count = sum(1 for row in rows.values() if row["status"] == "saved")
     failed_rows = [(m, r) for m, r in rows.items() if r["status"] == "failed"]
+    production_day = production_day_for(shift, entry_date)
 
     return {
         "zones": _zones(),
@@ -228,7 +275,19 @@ def _context(
         "saved_count": saved_count,
         "failed_rows": failed_rows,
         "top_error": top_error,
-        "shift_minutes": SHIFT_MINUTES,
+        "max_shift_minutes": MAX_SHIFT_MINUTES,
+        "shift_length_options": SHIFT_LENGTH_HOURS,
+        "default_shift_hours": DEFAULT_SHIFT_HOURS,
+        # The length control is only offered where the date box is the
+        # production day, which is the 1st Shift page.
+        "length_editable": shift == SHIFT_ORDER[0],
+        "production_day": production_day.isoformat(),
+        # "Tue 9/15", for the "ran 12h shifts on ..." message. Built by hand
+        # because strftime has no portable no-leading-zero day.
+        "production_day_label": (
+            f"{production_day:%a} {production_day.month}/{production_day.day}"
+        ),
+        "is_first_shift": shift == SHIFT_ORDER[0],
     }
 
 
@@ -298,7 +357,7 @@ def _collect_reasons(form, machine_id: str, reasons: dict) -> tuple[list, list[s
         # range failure as bad number formatting.
         except ValidationError:
             errors.append(
-                f"{reasons[code]['label']} minutes must be between 1 and {SHIFT_MINUTES}."
+                f"{reasons[code]['label']} minutes must be between 1 and {MAX_SHIFT_MINUTES}."
             )
         except ValueError:
             errors.append(f"{reasons[code]['label']} minutes must be a whole number.")
@@ -310,10 +369,11 @@ def _collect_reasons(form, machine_id: str, reasons: dict) -> tuple[list, list[s
 async def console_oee_submit(request: Request):
     """Saves downtime, scrap and scheduling for every machine that changed.
 
-    Three INDEPENDENT write paths per machine, each skipped when its submitted
-    state matches what's already stored. That keeps the append-only tables from
-    growing an identical row per machine every time the page is opened and
-    saved, and makes the per-row "saved" badge mean something.
+    Four INDEPENDENT write paths per machine — shift length, scheduling,
+    scrap, downtime — each skipped when its submitted state matches what's
+    already stored. That keeps the append-only tables from growing an
+    identical row per machine every time the page is opened and saved, and
+    makes the per-row "saved" badge mean something.
 
     Machines are processed independently rather than as one transaction: a
     single bad minutes value shouldn't block the other 33 from saving.
@@ -356,8 +416,22 @@ async def console_oee_submit(request: Request):
     rows: dict[str, dict] = {}
     any_change = False
 
+    length_editable = selected_shift == SHIFT_ORDER[0]
+
     for machine_id in _all_machines():
         previous = stored[machine_id]
+
+        # A shift this machine's day doesn't have (the 3rd Shift after a 10
+        # or 12-hour day). The form rendered no inputs for it, so there is
+        # nothing to read and nothing to write.
+        if not previous["shift_exists"]:
+            row = _blank_row()
+            row.update({k: previous[k] for k in
+                        ("shift_hours", "shift_exists", "span", "shift_minutes", "scheduled")})
+            row["status"] = "unchanged"
+            rows[machine_id] = row
+            continue
+
         submitted_scheduled = form.get(f"scheduled_{machine_id}") is not None
         # An unticked checkbox and an absent one are indistinguishable in a form
         # POST. For scheduling that ambiguity is dangerous — reading absence as
@@ -372,9 +446,35 @@ async def console_oee_submit(request: Request):
 
         collected, errors = _collect_reasons(form, machine_id, reasons)
 
+        # Shift length: a radio group, so the browser always posts the
+        # checked value when the control was on the form at all, and nothing
+        # when it wasn't (the 2nd and 3rd Shift pages, where it's read-only).
+        # Absence therefore needs no companion field — it simply means "leave
+        # it alone". Accepted only from the 1st Shift page, whose date box is
+        # the production day the length belongs to.
+        raw_hours = form.get(f"hours_{machine_id}") if length_editable else None
+        submitted_hours = previous["shift_hours"]
+        hours_error = None
+        if raw_hours is not None:
+            try:
+                submitted_hours = int(raw_hours)
+            except ValueError:
+                hours_error = "Shift length must be 8, 10 or 12."
+            if submitted_hours not in SHIFT_LENGTH_HOURS:
+                hours_error = "Shift length must be 8, 10 or 12."
+                # Fall back to what's on record, so the downtime cap and the
+                # re-rendered row below are built from a real length.
+                submitted_hours = previous["shift_hours"]
+        if hours_error:
+            errors.append(hours_error)
+
         row = _blank_row()
         row.update(
             {
+                "shift_hours": submitted_hours,
+                "shift_exists": True,
+                "span": shift_span(selected_shift, submitted_hours),
+                "shift_minutes": submitted_hours * 60,
                 "scheduled": submitted_scheduled if sched_present else previous["scheduled"],
                 "ran_clean": ran_clean,
                 "scrap": raw_scrap,
@@ -396,6 +496,24 @@ async def console_oee_submit(request: Request):
             reasons,
         )
         rows[machine_id] = row
+
+        # --- shift length ---------------------------------------------------
+        # Independent of the downtime path's errors, like scrap: a typo in a
+        # minutes box shouldn't stop the day's length from saving.
+        if hours_error is None and submitted_hours != previous["shift_hours"]:
+            any_change = True
+            try:
+                create_shift_length(
+                    ShiftLengthCreate(
+                        machine_id=machine_id,
+                        entry_date=selected_date,
+                        shift_hours=submitted_hours,
+                        entered_by=entered_by,
+                    )
+                )
+                row["saved_parts"].append(f"{submitted_hours}h shifts")
+            except ValidationError:
+                errors.append("Shift length must be 8, 10 or 12.")
 
         # --- scheduling ---------------------------------------------------
         if sched_present and submitted_scheduled != previous["scheduled"]:
@@ -467,7 +585,10 @@ async def console_oee_submit(request: Request):
                             reasons=collected,
                             note=note or None,
                             entered_by=entered_by,
-                        )
+                        ),
+                        # The cap is this machine's shift length on this
+                        # day, including a length changed on this very save.
+                        shift_minutes=row["shift_minutes"],
                     )
                     row["saved_parts"].append(
                         "no downtime" if not collected else "downtime"
@@ -490,7 +611,7 @@ async def console_oee_submit(request: Request):
 
     top_error = (
         None if any_change
-        else "Nothing changed - enter downtime, scrap or a scheduling change first."
+        else "Nothing changed - enter downtime, scrap, a shift length or a scheduling change first."
     )
     return templates.TemplateResponse(
         request=request,

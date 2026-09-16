@@ -11,11 +11,24 @@
  *     scanned without opening 34 disclosures
  *   - mutual exclusion between "no downtime" and any ticked reason
  *   - a minutes box that follows its checkbox, in both directions
- *   - a running total per machine, warning past one shift's worth
+ *   - a running total per machine, warning past one shift's worth — THAT
+ *     machine's shift, which is 480, 600 or 720 minutes depending on the
+ *     shift length picked for its day
  *   - a "tick no downtime on every untouched machine" shortcut
  */
 
-const SHIFT_MINUTES = window.SHIFT_MINUTES || 480;
+const MAX_SHIFT_MINUTES = window.MAX_SHIFT_MINUTES || 720;
+
+/**
+ * How long this machine's shift is, read off its row. The server renders it
+ * from the record; on the 1st Shift page the radio group can change it
+ * without a reload, and wireLengthToggle() keeps the attribute in step.
+ */
+function shiftMinutesFor(cell) {
+    const row = cell.closest("tr");
+    const value = row ? parseInt(row.dataset.shiftMinutes, 10) : NaN;
+    return Number.isFinite(value) && value > 0 ? value : MAX_SHIFT_MINUTES;
+}
 
 /** Every reason row inside one machine's downtime cell. */
 function reasonRows(cell) {
@@ -57,10 +70,11 @@ function refreshSummary(cell) {
 
     // Over a full shift is impossible, and the server rejects it. Flagging it
     // here saves a round trip through 34 machines to find the one that's wrong.
-    const over = minutes > SHIFT_MINUTES;
+    const cap = shiftMinutesFor(cell);
+    const over = minutes > cap;
     summary.classList.toggle("is-over", over);
     if (over) {
-        summary.textContent += ` — over ${SHIFT_MINUTES} min`;
+        summary.textContent += ` — over ${cap} min`;
     }
 }
 
@@ -115,6 +129,29 @@ function wireCell(cell) {
 }
 
 document.querySelectorAll(".dt-cell").forEach(wireCell);
+
+/**
+ * On the 1st Shift page the shift length is a radio group per machine.
+ * Changing it changes how many minutes of downtime fit, so the row's cap and
+ * its minutes boxes' max follow the choice immediately rather than after a
+ * save-and-reload.
+ */
+function wireLengthToggle(row) {
+    const radios = row.querySelectorAll(".hours-toggle input[type=radio]");
+    if (!radios.length) return;
+    const cell = row.querySelector(".dt-cell");
+    radios.forEach((radio) => {
+        radio.addEventListener("change", () => {
+            if (!radio.checked) return;
+            const minutes = parseInt(radio.value, 10) * 60;
+            row.dataset.shiftMinutes = String(minutes);
+            row.querySelectorAll(".dt-min").forEach((box) => { box.max = String(minutes); });
+            if (cell) refreshSummary(cell);
+        });
+    });
+}
+
+document.querySelectorAll("tr[data-shift-minutes]").forEach(wireLengthToggle);
 
 /**
  * Ticks "no downtime" on every machine that has nothing entered yet.

@@ -38,9 +38,10 @@ page used to carry are gone. That is the right trade rather than a loss: a slot
 delta is the gap between two hand-taken readings, and a reading logged late
 borrows units from its neighbour — noise that produced false "impossible value"
 alarms on seven machines in the first week of use. A shift is 480 minutes
-however the readings fell. Per-slot production is still in the payload and
-surfaces on the Good column's tooltip, which is what you need to find a bad
-checkpoint.
+however the readings fell — or 600 or 720 on a machine whose day was set to
+10 or 12 hours on /console/oee, which the tag next to its name shows. Per-slot
+production is still in the payload and surfaces on the Good column's tooltip,
+which is what you need to find a bad checkpoint.
 
 Read-only, like /supervisor — every write path for scrap, downtime and
 scheduling lives on /console/oee. That matters more here than it looks: the

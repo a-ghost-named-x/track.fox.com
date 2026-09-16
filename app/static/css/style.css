@@ -947,6 +947,28 @@ button.shift-option {
     color: var(--text-dim);
 }
 
+/* "10h" / "12h" next to the machine name when its day was set to that on
+   /console/oee. Empty — and therefore invisible — on an ordinary 8-hour day,
+   so the tag only appears where it explains something: why this row's
+   minutes, checkpoints and standard differ from its neighbours'. */
+.oee-grid .machine-col .shift-length {
+    display: inline-block;
+    margin-left: 0.4rem;
+    padding: 0 0.35rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    vertical-align: 1px;
+    cursor: help;
+}
+
+.oee-grid .machine-col .shift-length:empty {
+    display: none;
+}
+
 .oee-grid .cell,
 .oee-grid .sum {
     font-variant-numeric: tabular-nums;
@@ -1337,6 +1359,98 @@ button.shift-option {
    gets neither colour — just enough to make the saved rows stand out. */
 .batch-row-unchanged {
     opacity: 0.75;
+}
+
+/* ---------- /console/oee — shift length ---------- */
+
+/* Three radios styled as one segmented control, the same shape as the shift
+   toggle at the top of the page so it reads as "pick one" rather than as
+   three checkboxes. The real input stays in the DOM (visually hidden, not
+   display:none) so keyboard and no-JS behaviour are the browser's own. */
+.oee-entry-grid .hours-col {
+    white-space: nowrap;
+}
+
+.hours-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.hours-option {
+    position: relative;
+    display: inline-block;
+    cursor: pointer;
+}
+
+.hours-option input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.hours-option span {
+    display: inline-block;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+}
+
+.hours-option:first-child span {
+    border-left: none;
+}
+
+.hours-option:hover span {
+    color: var(--text);
+}
+
+.hours-option input:checked + span {
+    background: var(--accent);
+    color: #0d1117;
+}
+
+.hours-option input:focus-visible + span {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+/* Read-only on the 2nd and 3rd Shift pages: the length belongs to the day and
+   is set where the date box is the production day. A long day is called out
+   because it is also why the Scheduled box next to it starts unticked. */
+.hours-readonly {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    cursor: help;
+}
+
+.hours-readonly.is-long {
+    color: var(--accent);
+}
+
+.hours-span {
+    margin-left: 0.35rem;
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--text-dim);
+}
+
+/* A shift this machine's day doesn't have. One quiet sentence across the row
+   instead of a grid of inputs that would post nothing useful. */
+.batch-row-absent {
+    opacity: 0.6;
+}
+
+.shift-absent {
+    font-size: 0.85rem;
+    font-style: italic;
+    color: var(--text-dim);
+    text-align: left;
 }
 
 /* ---------- /oee: shift-grain columns ---------- */
