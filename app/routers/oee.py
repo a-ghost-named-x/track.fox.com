@@ -59,7 +59,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from app.db.entries import get_available_entry_dates
+from app.db.entries import get_available_production_days
 from app.db.oee import compute_oee_report
 from app.models import (
     DASHBOARD_ZONE_LABELS,
@@ -107,20 +107,31 @@ def _parse_date(raw: str | None) -> date_type | None:
 
 
 @router.get("/oee", response_class=HTMLResponse)
-def oee_page(request: Request, date: str | None = None, shift: str | None = None):
+def oee_page(
+    request: Request,
+    date: str | None = None,
+    shift: str | None = None,
+    pareto: str | None = None,
+):
     """Page shell for the OEE grid.
 
-    `date` and `shift` are optional query params so a particular view can be
-    bookmarked or pasted; oee.js keeps them in sync with the on-page controls
-    via history.replaceState. Neither is validated into an error here — the
-    shell renders the same either way and /api/oee-data resolves a junk date
-    to a sensible one rather than 500ing.
+    `date`, `shift` and `pareto` are optional query params so a particular
+    view can be bookmarked or pasted; oee.js keeps them in sync with the
+    on-page controls via history.replaceState. None is validated into an
+    error here — the shell renders the same either way, /api/oee-data
+    resolves a junk date to a sensible one rather than 500ing, and oee.js
+    drops machine ids it doesn't know. `pareto` is a comma-separated list of
+    machine ids for the downtime Pareto's picker; absent means the whole
+    floor.
 
     Note there's no All Day option, unlike /supervisor. OEE is defined against
     Planned Production Time, and the three shifts have separate PPTs, separate
     downtime and separate crews — a single number spanning all three would
     average away the very thing the page exists to show. The shift toggle here
     is three options, not four.
+
+    The date is a PRODUCTION day: its 3rd Shift is the one that starts at
+    10PM on it. See "THE PRODUCTION DAY" in app/models.py.
     """
     return templates.TemplateResponse(
         request=request,
@@ -134,6 +145,7 @@ def oee_page(request: Request, date: str | None = None, shift: str | None = None
             "standard_pct_of_ideal": STANDARD_PCT_OF_IDEAL,
             "requested_date": date or "",
             "requested_shift": resolve_shift(shift, datetime.now()),
+            "requested_pareto": pareto or "",
         },
     )
 
@@ -156,9 +168,10 @@ def oee_data(date: str | None = None):
     available_dates comes from `entries`, not from the scrap or downtime
     tables. Production is the spine — a date with downtime logged but no units
     isn't a production day worth reviewing, and OEE can't be computed for it
-    anyway.
+    anyway. They are PRODUCTION days (6AM to 6AM): a morning with only
+    3rd-Shift readings so far doesn't show up as a new day yet.
     """
-    available = get_available_entry_dates()
+    available = get_available_production_days()
     requested = _parse_date(date)
     resolved = requested if requested is not None else (
         available[0] if available else datetime.now().date()

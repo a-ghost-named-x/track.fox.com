@@ -6,9 +6,10 @@ write-time, and stored on the row (per the decision to snapshot status
 rather than recompute it on every dashboard read).
 """
 from datetime import date as date_type
+from datetime import timedelta
 
 from app.db.postgres import get_pg_connection
-from app.models import Entry, EntryCreate
+from app.models import NIGHT_SLOTS, Entry, EntryCreate
 
 
 class StandardNotFoundError(Exception):
@@ -231,4 +232,49 @@ def get_available_entry_dates() -> list[date_type]:
             "SELECT DISTINCT entry_date FROM entries ORDER BY entry_date DESC"
         ).fetchall()
 
+    return [row[0] for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Production-day readers, for the review side (/supervisor, /oee)
+#
+# The rounds and the floor screens date the 12AM-6AM checkpoints by the
+# morning they land on — the two functions above are that calendar-day view,
+# and /dashboard depends on it. The review pages think in PRODUCTION DAYS
+# instead: 6AM to 6AM, "3rd Shift Thursday" being Thursday night. These two
+# translate. Nothing in `entries` changes; the night slots are simply read
+# from the next calendar date. (Why the rounds weren't re-keyed instead:
+# app/models.py, "THE PRODUCTION DAY".)
+# ---------------------------------------------------------------------------
+
+def get_production_day_entries(production_day: date_type) -> list[dict]:
+    """Latest entry per (machine_id, time_slot) for one production day: the
+    day slots (8AM-10PM) from `production_day` itself and the night slots
+    (12AM-6AM) from the morning after. Same row shape as
+    get_latest_entries_for_date(), so the grids render it unchanged; each
+    row's entry_date is still the calendar date the rounds filed it under."""
+    next_day = production_day + timedelta(days=1)
+    night = set(NIGHT_SLOTS)
+    rows = [r for r in get_latest_entries_for_date(production_day) if r["time_slot"] not in night]
+    rows += [r for r in get_latest_entries_for_date(next_day) if r["time_slot"] in night]
+    return rows
+
+
+def get_available_production_days() -> list[date_type]:
+    """Every production day with at least one entry, newest first — the
+    production-day twin of get_available_entry_dates(), for the review
+    pages' date pickers. A night slot counts towards the day BEFORE the
+    calendar date it was filed under, so at 3AM the running day is still
+    yesterday's rather than a new entry in the list."""
+    with get_pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT
+                CASE WHEN time_slot = ANY(%s) THEN entry_date - 1 ELSE entry_date END
+                    AS production_day
+            FROM entries
+            ORDER BY production_day DESC
+            """,
+            (NIGHT_SLOTS,),
+        ).fetchall()
     return [row[0] for row in rows]

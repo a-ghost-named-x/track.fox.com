@@ -51,24 +51,40 @@ minutes box, so it carries forward untouched by default or can be deliberately
 unticked and reclassified. An untouched machine never shows it, which is what
 keeps new use impossible. First needed by docs/sql/13_split_operator_adjustments.sql.
 
-SHIFT LENGTH IS SET ON THE 1ST SHIFT PAGE, AND ONLY THERE
---------------------------------------------------------
-A machine's shift length (8, 10 or 12 hours) is a fact about its PRODUCTION
-DAY, not about one shift: the day starts at 6AM and the pattern never mixes.
-So the control is offered on the 1st Shift page — the date box there IS the
-production day — and the 2nd and 3rd Shift pages show it read-only. That is
-also the moment the decision is made; per the floor, "at 6AM tomorrow they
-could decide to run an 8-hour shift".
+SHIFT LENGTH IS SET PER SHIFT, ON THAT SHIFT'S PAGE
+--------------------------------------------------
+Each machine's shift can be 8, 10 or 12 hours, set on the 1st Shift page for
+the 1st Shift and on the 2nd Shift page for the 2nd (the 3rd can only ever
+be 8, so its page shows it read-only). A shift with nothing set inherits the
+one before it, so "decide at 6AM that today is 12 hours" is one click on the
+1st Shift page and the night follows. The manager's other case — an 8-hour
+1st Shift, then a 12-hour crew arriving at 6PM — is one click on the 2nd
+Shift page.
 
-Two things follow from a 10 or 12-hour day, both handled by app/models.py:
-the 2nd Shift defaults to NOT scheduled (a night crew is the exception and
-gets ticked on), and the 3rd Shift does not exist — which, because the
-overnight shift is filed under the morning it lands on, means the NEXT date's
-3rd Shift row for that machine is rendered as "no 3rd shift" with no inputs.
+The one rule, enforced on every save: a later shift can be as long or longer
+than the one before it, never shorter, because a shift's length decides
+where it starts (the second 12-hour shift of the day is 6PM-6AM) and a
+shorter later shift would start inside the earlier one. Options that would
+break it are disabled on the page and rejected by shift_length_conflict() if
+posted anyway.
+
+Two things follow from a 10 or 12-hour 2nd Shift, both from app/models.py:
+it defaults to NOT scheduled (a night crew is the exception, so picking the
+length on this page ticks it on, and the person can untick), and there is no
+3rd Shift that night — its row is rendered as "no 3rd shift" with no inputs.
+
+THE DATE IS THE DAY THE SHIFT STARTED
+-------------------------------------
+"3rd Shift, Thursday" is Thursday 10PM through Friday 6AM, and it is entered
+at 6AM Friday under THURSDAY's date — the page defaults the date box to
+yesterday when 3rd Shift is opened in the morning, and prints the span with
+dates so it can't be misread. The 2-hour rounds still date the 12AM-6AM
+readings by the morning they land on; that is the boards' convention and it
+isn't changing. See "THE PRODUCTION DAY" in app/models.py.
 
 Access model matches the rest of the app: no auth, URL obscurity only.
 """
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -87,6 +103,7 @@ from app.db.oee import (
     get_latest_scrap_for_date,
     get_schedule_for_date,
     get_shift_lengths,
+    machine_day_lengths,
 )
 from app.models import (
     DASHBOARD_ZONE_LABELS,
@@ -101,11 +118,13 @@ from app.models import (
     ShiftDowntimeCreate,
     ShiftLengthCreate,
     ShiftScrapCreate,
+    default_production_day,
     default_scheduled,
     get_current_shift,
-    production_day_for,
+    resolve_day_lengths,
     resolve_shift,
-    shift_plan,
+    shift_length_conflict,
+    shift_slots,
     shift_span,
 )
 
@@ -161,6 +180,22 @@ def _blank_row() -> dict:
         "shift_exists": True,
         "span": "",
         "shift_minutes": DEFAULT_SHIFT_HOURS * 60,
+        # The shortest this shift may be (the previous shift's length) and
+        # the longest (the next shift's, where one is explicitly set), so the
+        # page can grey out the options that would overlap.
+        "min_hours": DEFAULT_SHIFT_HOURS,
+        "max_hours": max(SHIFT_LENGTH_HOURS),
+        # Whether this shift's length was set on this page or inherited.
+        "hours_explicit": False,
+        # Whether `scheduled` came from a machine_schedule row or from the
+        # default for this shift's length. The POST needs to know, because a
+        # length change on the same save can change the default.
+        "scheduled_explicit": False,
+        # For a row the day has no room for: which shift covers the night.
+        "covered_by": None,
+        # Every explicitly-set length on this machine's day, for the
+        # overlap check on save.
+        "explicit": {},
         "scheduled": True,
         "ran_clean": False,
         "scrap": "",
@@ -198,26 +233,44 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
     downtime = get_latest_downtime_for_date(entry_date)
     schedule = get_schedule_for_date(entry_date)
     active = get_downtime_reasons()
-    # Shift length is per production DAY, and for 3rd Shift that is the day
-    # before the one this page is filed under — see the module docstring.
-    production_day = production_day_for(shift, entry_date)
-    lengths = get_shift_lengths([production_day])
+    lengths = get_shift_lengths(entry_date)
+    index = SHIFT_ORDER.index(shift)
 
     rows: dict[str, dict] = {}
     for machine_id in _all_machines():
         row = _blank_row()
-        hours = lengths.get((machine_id, production_day), DEFAULT_SHIFT_HOURS)
+        day = machine_day_lengths(lengths, machine_id)
+        hours = day[shift]
         row["shift_hours"] = hours
-        row["shift_exists"] = shift in shift_plan(hours)
+        row["shift_exists"] = shift_slots(shift, hours) is not None
         row["span"] = shift_span(shift, hours) or ""
         row["shift_minutes"] = hours * 60
+        row["hours_explicit"] = (machine_id, shift) in lengths
+        row["explicit"] = {
+            s_label: h for (m, s_label), h in lengths.items() if m == machine_id
+        }
+        if index > 0:
+            row["min_hours"] = day[SHIFT_ORDER[index - 1]]
+        later_explicit = [
+            row["explicit"][s_label] for s_label in SHIFT_ORDER[index + 1:]
+            if s_label in row["explicit"]
+        ]
+        if later_explicit:
+            row["max_hours"] = min(later_explicit)
         if not row["shift_exists"]:
             # No inputs are rendered for this row and nothing is read back
             # for it on POST, so its record (if any) is neither shown nor
-            # touched.
+            # touched. Say which shift owns the night instead.
+            previous = SHIFT_ORDER[index - 1]
+            row["covered_by"] = {
+                "shift": previous,
+                "hours": day[previous],
+                "span": shift_span(previous, day[previous]),
+            }
             row["scheduled"] = False
             rows[machine_id] = row
             continue
+        row["scheduled_explicit"] = (machine_id, shift) in schedule
         row["scheduled"] = schedule.get(
             (machine_id, shift), default_scheduled(shift, hours)
         )
@@ -261,7 +314,7 @@ def _context(
     """
     saved_count = sum(1 for row in rows.values() if row["status"] == "saved")
     failed_rows = [(m, r) for m, r in rows.items() if r["status"] == "failed"]
-    production_day = production_day_for(shift, entry_date)
+    next_day = entry_date + timedelta(days=1)
 
     return {
         "zones": _zones(),
@@ -278,16 +331,18 @@ def _context(
         "max_shift_minutes": MAX_SHIFT_MINUTES,
         "shift_length_options": SHIFT_LENGTH_HOURS,
         "default_shift_hours": DEFAULT_SHIFT_HOURS,
-        # The length control is only offered where the date box is the
-        # production day, which is the 1st Shift page.
-        "length_editable": shift == SHIFT_ORDER[0],
-        "production_day": production_day.isoformat(),
-        # "Tue 9/15", for the "ran 12h shifts on ..." message. Built by hand
-        # because strftime has no portable no-leading-zero day.
-        "production_day_label": (
-            f"{production_day:%a} {production_day.month}/{production_day.day}"
-        ),
+        # The 3rd Shift can only ever be 8 hours, so its page shows the
+        # length read-only; the 1st and 2nd pages each set their own.
+        "length_editable": shift != SHIFT_ORDER[-1],
         "is_first_shift": shift == SHIFT_ORDER[0],
+        # "Thu 9/18" and "Fri 9/19", for the span line under the toggle.
+        # Built by hand because strftime has no portable no-leading-zero day.
+        "day_label": f"{entry_date:%a} {entry_date.month}/{entry_date.day}",
+        "next_day_label": f"{next_day:%a} {next_day.month}/{next_day.day}",
+        # The 8-hour span of the selected shift, for the same line. Machines
+        # on other lengths show their own span on their row.
+        "default_span": shift_span(shift) or "",
+        "crosses_midnight": shift == SHIFT_ORDER[-1],
     }
 
 
@@ -298,12 +353,16 @@ def console_oee_page(
     """The end-of-shift entry form, all 34 machines on one page.
 
     `shift` and `entry_date` come from the page's own toggle and date box and
-    default to the shift in progress and today. The date box matters most for
-    3rd Shift, whose slots land on the calendar day AFTER the shift starts, and
-    for anyone filling in yesterday the next morning.
+    default to the shift in progress and the production day it belongs to —
+    which for a 3rd Shift page opened in the morning is YESTERDAY, the day
+    the shift started (default_production_day). The date box is what gets
+    saved, so anyone filling in an earlier day just changes it.
     """
-    selected_shift = resolve_shift(shift, datetime.now())
-    selected_date = _parse_entry_date(entry_date) or date.today()
+    now = datetime.now()
+    selected_shift = resolve_shift(shift, now)
+    selected_date = _parse_entry_date(entry_date) or default_production_day(
+        selected_shift, now
+    )
 
     return templates.TemplateResponse(
         request=request,
@@ -416,7 +475,7 @@ async def console_oee_submit(request: Request):
     rows: dict[str, dict] = {}
     any_change = False
 
-    length_editable = selected_shift == SHIFT_ORDER[0]
+    length_editable = selected_shift != SHIFT_ORDER[-1]
 
     for machine_id in _all_machines():
         previous = stored[machine_id]
@@ -427,7 +486,8 @@ async def console_oee_submit(request: Request):
         if not previous["shift_exists"]:
             row = _blank_row()
             row.update({k: previous[k] for k in
-                        ("shift_hours", "shift_exists", "span", "shift_minutes", "scheduled")})
+                        ("shift_hours", "shift_exists", "span", "shift_minutes",
+                         "scheduled", "covered_by")})
             row["status"] = "unchanged"
             rows[machine_id] = row
             continue
@@ -448,10 +508,9 @@ async def console_oee_submit(request: Request):
 
         # Shift length: a radio group, so the browser always posts the
         # checked value when the control was on the form at all, and nothing
-        # when it wasn't (the 2nd and 3rd Shift pages, where it's read-only).
-        # Absence therefore needs no companion field — it simply means "leave
-        # it alone". Accepted only from the 1st Shift page, whose date box is
-        # the production day the length belongs to.
+        # when it wasn't (the 3rd Shift page, where it's read-only). Absence
+        # therefore needs no companion field — it simply means "leave it
+        # alone".
         raw_hours = form.get(f"hours_{machine_id}") if length_editable else None
         submitted_hours = previous["shift_hours"]
         hours_error = None
@@ -462,6 +521,15 @@ async def console_oee_submit(request: Request):
                 hours_error = "Shift length must be 8, 10 or 12."
             if submitted_hours not in SHIFT_LENGTH_HOURS:
                 hours_error = "Shift length must be 8, 10 or 12."
+            else:
+                # The as-long-or-longer rule, against the whole day as it
+                # would be after this save: everything explicitly set on the
+                # other shifts, this shift's new value, inheritance filling
+                # the rest.
+                hours_error = shift_length_conflict(resolve_day_lengths(
+                    {**previous["explicit"], selected_shift: submitted_hours}
+                ))
+            if hours_error:
                 # Fall back to what's on record, so the downtime cap and the
                 # re-rendered row below are built from a real length.
                 submitted_hours = previous["shift_hours"]
@@ -475,6 +543,10 @@ async def console_oee_submit(request: Request):
                 "shift_exists": True,
                 "span": shift_span(selected_shift, submitted_hours),
                 "shift_minutes": submitted_hours * 60,
+                "min_hours": previous["min_hours"],
+                "max_hours": previous["max_hours"],
+                "hours_explicit": previous["hours_explicit"] or raw_hours is not None,
+                "explicit": previous["explicit"],
                 "scheduled": submitted_scheduled if sched_present else previous["scheduled"],
                 "ran_clean": ran_clean,
                 "scrap": raw_scrap,
@@ -507,6 +579,7 @@ async def console_oee_submit(request: Request):
                     ShiftLengthCreate(
                         machine_id=machine_id,
                         entry_date=selected_date,
+                        shift=selected_shift,
                         shift_hours=submitted_hours,
                         entered_by=entered_by,
                     )
@@ -516,7 +589,18 @@ async def console_oee_submit(request: Request):
                 errors.append("Shift length must be 8, 10 or 12.")
 
         # --- scheduling ---------------------------------------------------
-        if sched_present and submitted_scheduled != previous["scheduled"]:
+        # Compared against what the box will MEAN after this save, not what
+        # it showed before it. Picking 12h on the 2nd Shift page flips that
+        # shift's default from scheduled to not-scheduled; a box ticked on
+        # the same save is then a real statement ("a crew ran") and must be
+        # written, even though it was also ticked when the page loaded.
+        # Without this the tick looks unchanged, nothing is written, and the
+        # next load shows the night as not scheduled.
+        baseline_scheduled = (
+            previous["scheduled"] if previous["scheduled_explicit"]
+            else default_scheduled(selected_shift, submitted_hours)
+        )
+        if sched_present and submitted_scheduled != baseline_scheduled:
             any_change = True
             try:
                 create_schedule_exception(

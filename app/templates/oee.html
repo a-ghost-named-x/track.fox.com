@@ -134,9 +134,45 @@
     <section class="pareto-section" id="pareto-section" hidden>
         <h2 class="zone-section-title">
             Downtime by reason
+            <span class="zone-section-count" id="pareto-scope"></span>
             <span class="zone-section-count" id="pareto-total"></span>
         </h2>
+
+        {# Which machines feed the Pareto. The whole floor by default; a zone
+           chip narrows it to that zone's machines, and the disclosure below
+           goes down to individual machines ("just C1, C2 and C3"). One state
+           underneath all of it — the set of ticked machines — so the chips are
+           shortcuts, not a second mode. Summed in the browser from each
+           machine's reasons (see buildPareto in oee.js): the Pareto is a plain
+           per-reason sum, unlike the OEE rollups, so there is no weighting
+           trap in doing it client-side. #}
+        <div class="pareto-picker" id="pareto-picker">
+            <span class="control-label">Machines</span>
+            <div class="pareto-chips">
+                <button type="button" class="quick-pick pareto-chip" data-zone="*">All</button>
+                {% for zone in zones %}
+                <button type="button" class="quick-pick pareto-chip" data-zone="{{ zone.slug }}">{{ zone.label }}</button>
+                {% endfor %}
+            </div>
+            <details class="pareto-machines" id="pareto-machines">
+                <summary class="pareto-machines-summary">Pick machines</summary>
+                <div class="pareto-machine-groups">
+                    {% for zone in zones %}
+                    <div class="pareto-machine-group">
+                        <span class="pareto-machine-group-label">{{ zone.label }}</span>
+                        {% for machine in zone.machine_ids %}
+                        <label class="pareto-machine">
+                            <input type="checkbox" value="{{ machine }}" checked> {{ machine }}
+                        </label>
+                        {% endfor %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </details>
+        </div>
+
         <div class="pareto" id="pareto"></div>
+        <p class="pareto-empty" id="pareto-empty" hidden></p>
     </section>
 
     <footer class="supervisor-footer">
@@ -149,6 +185,8 @@
     window.STANDARD_PCT_OF_IDEAL = {{ standard_pct_of_ideal|tojson }};
     window.INITIAL_DATE = {{ requested_date|tojson }};
     window.INITIAL_SHIFT = {{ requested_shift|tojson }};
+    window.INITIAL_PARETO = {{ requested_pareto|tojson }};
+    window.ZONES = {{ zones|tojson }};
 </script>
 <script src="/static/js/oee.js"></script>
 {% endblock %}

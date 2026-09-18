@@ -131,22 +131,30 @@ function wireCell(cell) {
 document.querySelectorAll(".dt-cell").forEach(wireCell);
 
 /**
- * On the 1st Shift page the shift length is a radio group per machine.
- * Changing it changes how many minutes of downtime fit, so the row's cap and
- * its minutes boxes' max follow the choice immediately rather than after a
- * save-and-reload.
+ * On the 1st and 2nd Shift pages the shift length is a radio group per
+ * machine. Changing it changes how many minutes of downtime fit, so the row's
+ * cap and its minutes boxes' max follow the choice immediately rather than
+ * after a save-and-reload.
+ *
+ * On the 2nd Shift page (rows carry data-night-crew) picking 10h or 12h also
+ * ticks Scheduled: a long 2nd Shift defaults to not scheduled because a
+ * night crew is the exception, and choosing its length IS saying one ran.
+ * The person can untick it again; the server never assumes.
  */
 function wireLengthToggle(row) {
     const radios = row.querySelectorAll(".hours-toggle input[type=radio]");
     if (!radios.length) return;
     const cell = row.querySelector(".dt-cell");
+    const scheduled = row.querySelector('input[type="checkbox"][name^="scheduled_"]');
     radios.forEach((radio) => {
         radio.addEventListener("change", () => {
             if (!radio.checked) return;
-            const minutes = parseInt(radio.value, 10) * 60;
+            const hours = parseInt(radio.value, 10);
+            const minutes = hours * 60;
             row.dataset.shiftMinutes = String(minutes);
             row.querySelectorAll(".dt-min").forEach((box) => { box.max = String(minutes); });
             if (cell) refreshSummary(cell);
+            if (row.dataset.nightCrew && scheduled && hours !== 8) scheduled.checked = true;
         });
     });
 }

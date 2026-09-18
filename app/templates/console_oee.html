@@ -23,10 +23,19 @@
         </div>
     </div>
 
+    {# The date is the day the shift STARTED. Spelled out with both dates for
+       3rd Shift, which lands the next morning and is usually entered then. #}
+    <p class="shift-span-line">
+        <strong>{{ shift }}</strong> of <strong>{{ day_label }}</strong>
+        {%- if crosses_midnight %}: {{ default_span.split('-')[0] }} {{ day_label }} to {{ default_span.split('-')[1] }} {{ next_day_label }}
+        {%- else %}: {{ default_span }}{% endif %}
+        <span class="optional">— machines on 10h/12h shifts show their own hours on their row</span>
+    </p>
+
     {% if shift != current_shift %}
     <p class="banner banner-notice">
         You're logging <strong>{{ shift }}</strong> — the shift in progress right now is {{ current_shift }}.
-        Check the date below is the day that shift ran.
+        Check the date below is the day that shift started.
     </p>
     {% endif %}
 
@@ -53,8 +62,9 @@
             <label>
                 Date
                 {# The date that gets saved is whatever is in this box at submit
-                   time. Matters most for 3rd Shift, whose slots land on the day
-                   AFTER the shift starts. #}
+                   time. It is the day the shift STARTED — for 3rd Shift,
+                   entered the next morning, that is yesterday, which is what
+                   the page defaults to before noon. #}
                 <input type="date" name="entry_date" id="entry-date" required value="{{ entry_date }}">
             </label>
 
@@ -69,12 +79,17 @@
         <p class="oee-entry-hint">
             Every box is pre-filled with what's already recorded for this shift.
             Change what needs changing and save — machines you don't touch are left alone.
-            {% if length_editable %}
-            <strong>Shift length</strong> is for the whole day (6AM start, never mixed): pick 10h or 12h
-            here for a machine that ran long, and OEE judges it against 600 or 720 minutes.
-            On a 10h/12h day the 2nd Shift starts unticked — tick it there if a night crew ran.
+            {% if is_first_shift %}
+            <strong>Shift length</strong> — pick 10h or 12h for a machine that ran long, and OEE judges
+            it against 600 or 720 minutes. The 2nd Shift follows this length unless it is set on its own
+            page; on a 10h/12h night the 2nd Shift starts unticked — tick it there if a crew ran.
+            {% elif length_editable %}
+            <strong>Shift length</strong> — a 12h 2nd Shift is 6PM–6AM and a 10h one is 4PM–2AM,
+            whatever the 1st Shift was. It can't be shorter than the 1st Shift (it would start inside it).
+            Picking 10h or 12h ticks Scheduled, since you're saying a crew ran; untick it if not.
             {% else %}
-            <strong>Shift length</strong> is set on the 1st Shift page for the day it started.
+            <strong>Shift length</strong> — a 3rd Shift is always 8h, 10PM–6AM. A machine whose 2nd
+            Shift ran 10h or 12h has no 3rd Shift; its night is on the 2nd Shift page.
             {% endif %}
             <button type="button" class="link-button" id="mark-all-clean">Tick “no downtime” on every untouched machine</button>
         </p>
@@ -90,7 +105,7 @@
                 <thead>
                     <tr>
                         <th class="machine-col">Machine</th>
-                        <th class="hours-col">Shift length<span class="optional">whole day</span></th>
+                        <th class="hours-col">Shift length<span class="optional">this shift</span></th>
                         <th class="sched-col">Scheduled<span class="optional">this shift</span></th>
                         <th class="dt-col">Downtime</th>
                         <th>Scrap <span class="optional">(shift total)</span></th>
@@ -101,7 +116,8 @@
                     {% for machine in zone.machine_ids %}
                     {% set row = rows[machine] %}
                     <tr class="batch-row{% if row.status %} batch-row-{{ row.status }}{% endif %}{% if not row.shift_exists %} batch-row-absent{% endif %}"
-                        data-shift-minutes="{{ row.shift_minutes }}">
+                        data-shift-minutes="{{ row.shift_minutes }}"
+                        {% if not is_first_shift %}data-night-crew="1"{% endif %}>
                         <td class="machine-col">
                             {{ machine }}
                             {% if row.status == 'saved' %}
@@ -111,12 +127,11 @@
                         </td>
 
                         {% if not row.shift_exists %}
-                        {# A 10 or 12-hour day has no 3rd Shift: the night was
-                           the 2nd Shift of the day before, filed under that
-                           date. No inputs, so nothing posts for this row. #}
+                        {# After a 10 or 12-hour 2nd Shift there is no 3rd: the
+                           night is on the 2nd Shift page. No inputs, so
+                           nothing posts for this row. #}
                         <td class="shift-absent" colspan="5">
-                            No {{ shift.split(' ')[0] }} shift — ran {{ row.shift_hours }}h shifts on
-                            {{ production_day_label }}, so the night belongs to that day's 2nd Shift.
+                            No {{ shift.split(' ')[0] }} shift — {{ row.covered_by.shift }} ran {{ row.covered_by.hours }}h ({{ row.covered_by.span }}), so the night is entered there.
                         </td>
                         {% else %}
 
@@ -124,19 +139,28 @@
                             {% if length_editable %}
                             {# A radio group: the browser always posts the
                                checked value, so absence in a POST can only
-                               mean the control wasn't on the page. #}
+                               mean the control wasn't on the page. Options
+                               that would overlap a neighbouring shift are
+                               disabled, and the server re-checks. #}
                             <div class="hours-toggle" role="group" aria-label="Shift length for {{ machine }}">
                                 {% for hours in shift_length_options %}
-                                <label class="hours-option">
+                                {% set blocked = hours < row.min_hours or hours > row.max_hours %}
+                                <label class="hours-option{% if blocked %} is-blocked{% endif %}"
+                                       {% if hours < row.min_hours %}title="Can't be shorter than the shift before it ({{ row.min_hours }}h) — it would start inside it."
+                                       {% elif hours > row.max_hours %}title="The next shift is set to {{ row.max_hours }}h and can't be shorter than this one. Change that first."{% endif %}>
                                     <input type="radio" name="hours_{{ machine }}" value="{{ hours }}"
-                                           {% if row.shift_hours == hours %}checked{% endif %}>
+                                           {% if row.shift_hours == hours %}checked{% endif %}
+                                           {% if blocked and row.shift_hours != hours %}disabled{% endif %}>
                                     <span>{{ hours }}h</span>
                                 </label>
                                 {% endfor %}
                             </div>
+                            {% if not is_first_shift and not row.hours_explicit %}
+                            <span class="hours-inherited" title="No length set for this shift; it follows the 1st Shift.">follows 1st</span>
+                            {% endif %}
                             {% else %}
                             <span class="hours-readonly{% if row.shift_hours != default_shift_hours %} is-long{% endif %}"
-                                  title="Set on the 1st Shift page for {{ production_day_label }}.">
+                                  title="A 3rd Shift is always 8 hours.">
                                 {{ row.shift_hours }}h
                                 {% if row.span %}<span class="hours-span">{{ row.span }}</span>{% endif %}
                             </span>
@@ -159,7 +183,7 @@
                             <input type="checkbox" name="scheduled_{{ machine }}" value="1"
                                    {% if row.scheduled %}checked{% endif %}
                                    {% if row.shift_hours != default_shift_hours and not is_first_shift %}
-                                   title="On a {{ row.shift_hours }}h day a second crew is the exception, so this starts unticked. Tick it if one ran {{ row.span }}."
+                                   title="A {{ row.shift_hours }}h night crew ({{ row.span }}) is the exception, so this starts unticked unless set. Tick it if one ran."
                                    {% endif %}>
                         </td>
 

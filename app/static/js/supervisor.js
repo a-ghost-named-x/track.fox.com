@@ -94,14 +94,27 @@ function syncUrl() {
 }
 
 function renderShiftNote() {
-    // 3rd Shift's four slots (12AM-6AM) are logged against the calendar day
-    // AFTER the shift clocked in, which is how entry_date already works
-    // throughout the app. Saying so on-screen stops the date being misread as
-    // the evening the crew started.
-    if (currentShift === "3rd Shift" && payload) {
+    // The date is the day the shift STARTED. 3rd Shift's four slots (12AM-6AM)
+    // land the next morning — and the rounds file them under that morning's
+    // date — so say on-screen which night this is, or the date reads as the
+    // morning the crew clocked out.
+    if (!payload) {
+        shiftNote.hidden = true;
+        return;
+    }
+    const nextDay = parseISODate(payload.date);
+    nextDay.setDate(nextDay.getDate() + 1);
+    const nextLabel = nextDay.toLocaleDateString("en-US", {
+        weekday: "short", month: "short", day: "numeric",
+    });
+    if (currentShift === "3rd Shift") {
         shiftNote.textContent =
-            `3rd Shift runs 10PM the previous evening through 6AM on ${formatDate(payload.date)} — ` +
-            "its slots are logged against the morning they land on.";
+            `3rd Shift of ${formatDate(payload.date)} runs 10PM that evening through 6AM ${nextLabel}. ` +
+            "(On the 2-hour rounds those four readings are entered under the morning's date.)";
+        shiftNote.hidden = false;
+    } else if (currentShift === ALL_DAY) {
+        shiftNote.textContent =
+            `The production day: 6AM ${formatDate(payload.date)} through 6AM ${nextLabel}.`;
         shiftNote.hidden = false;
     } else {
         shiftNote.hidden = true;

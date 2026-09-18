@@ -26,20 +26,31 @@ page needed no new entry query. A true as-of-that-moment view is possible
 (entries is append-only, so `created_at <= <timestamp>` would do it) but is a
 different feature and isn't built here.
 
+THE DATE IS A PRODUCTION DAY (since 2026-09-18)
+----------------------------------------------
+"3rd Shift, Thursday" here is Thursday 10PM through Friday 6AM, and "All Day"
+is 6AM Thursday to 6AM Friday — the day as the floor runs it, not the
+calendar's midnight-to-midnight. The 2-hour rounds still file the 12AM-6AM
+checkpoints under the morning they land on (that is how `entries` and the
+boards work, and it is not changing), so this router reads the night slots
+from the next calendar date and presents them as the tail of the day they
+belong to. /oee does the same. Rationale in app/models.py, "THE PRODUCTION
+DAY".
+
 Access model matches /dashboard and /console: no auth, URL obscurity only,
 per the architecture doc. This router is read-only — it has no write path of
 any kind, which is what makes it safe to leave open alongside the others.
 """
 from datetime import date as date_type
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.db.entries import (
-    get_available_entry_dates,
-    get_latest_entries_for_date,
+    get_available_production_days,
+    get_production_day_entries,
     get_shift_activity,
 )
 from app.models import (
@@ -139,7 +150,7 @@ def supervisor_data(date: str | None = None):
     when they deliberately picked a quiet Sunday would be more confusing than
     showing them the empty day they asked for.
     """
-    available = get_available_entry_dates()
+    available = get_available_production_days()
     requested = _parse_date(date)
 
     if requested is None:
@@ -147,7 +158,7 @@ def supervisor_data(date: str | None = None):
     else:
         resolved = requested
 
-    entries = get_latest_entries_for_date(resolved)
+    entries = get_production_day_entries(resolved)
 
     # One get_shift_activity() call per shift — six queries per load. The
     # dashboard only ever needs the shift in progress, but a review page can
@@ -157,8 +168,17 @@ def supervisor_data(date: str | None = None):
     # dashboard's every-60-seconds. Keeping get_shift_activity() untouched
     # also means the operator/issue carry-forward rule stays defined in
     # exactly one place rather than being reimplemented per-shift here.
+    #
+    # The 3rd Shift's four slots are all night slots, filed by the rounds
+    # under the next calendar date — so that is the date its activity is
+    # read from. (A long 2nd Shift also crosses midnight, but this page is
+    # the 8-hour grid; shift lengths live on /oee.)
     shift_activity = {
-        label: get_shift_activity(resolved, SHIFT_SLOTS[label]) for label in SHIFT_ORDER
+        label: get_shift_activity(
+            resolved + timedelta(days=1) if label == SHIFT_ORDER[-1] else resolved,
+            SHIFT_SLOTS[label],
+        )
+        for label in SHIFT_ORDER
     }
 
     return {

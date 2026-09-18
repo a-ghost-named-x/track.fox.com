@@ -20,10 +20,11 @@ Three things this exists to catch:
   3. WRITE ISOLATION on /console/oee — nothing is written for a machine whose
      values match what's already stored, so opening and saving the page does
      not append 34 identical rows.
-  4. SHIFT LENGTH — the 8/10/12h control is offered on the 1st Shift page
-     only, a 10/12h day unticks the 2nd Shift by default and removes the NEXT
-     date's 3rd Shift row, and the downtime cap follows the machine's own
-     length.
+  4. SHIFT LENGTH — the 8/10/12h control is offered on the 1st and 2nd Shift
+     pages (each for its own shift), a later shift can't be shorter than the
+     one before it, a 10/12h 2nd Shift is unticked by default and removes the
+     SAME date's 3rd Shift row, and the downtime cap follows the machine's
+     own length.
 """
 import os
 import sys
@@ -87,25 +88,25 @@ entries = [
 # --- stub every read -------------------------------------------------------
 entries_mod.get_latest_entries_for_date = lambda d: entries
 entries_mod.get_available_entry_dates = lambda: [DAY]
+entries_mod.get_available_production_days = lambda: [DAY]
+entries_mod.get_production_day_entries = lambda d: entries
 entries_mod.get_shift_activity = lambda d, slots: {"C1": {"operator": "Sam", "issues": []}}
 console_mod.get_shift_activity = entries_mod.get_shift_activity
-sup_mod.get_available_entry_dates = entries_mod.get_available_entry_dates
-sup_mod.get_latest_entries_for_date = entries_mod.get_latest_entries_for_date
+sup_mod.get_available_production_days = entries_mod.get_available_production_days
+sup_mod.get_production_day_entries = entries_mod.get_production_day_entries
 sup_mod.get_shift_activity = entries_mod.get_shift_activity
-oee_router.get_available_entry_dates = entries_mod.get_available_entry_dates
+oee_router.get_available_production_days = entries_mod.get_available_production_days
 
 stored_scrap = {}
 stored_downtime = {}
 stored_schedule = {}
-stored_lengths = {}   # (machine_id, production day) -> hours
+stored_lengths = {}   # (machine_id, shift) -> hours, all for DAY
 
 for mod in (oee_mod, console_oee_mod):
     mod.get_latest_scrap_for_date = lambda d: dict(stored_scrap)
     mod.get_latest_downtime_for_date = lambda d: dict(stored_downtime)
     mod.get_schedule_for_date = lambda d: dict(stored_schedule)
-    mod.get_shift_lengths = lambda dates: {
-        k: v for k, v in stored_lengths.items() if k[1] in dates
-    }
+    mod.get_shift_lengths = lambda d: dict(stored_lengths) if d == DAY else {}
     mod.get_downtime_reasons = (
         lambda active_only=True: dict(REASONS if active_only else ALL_REASONS)
     )
@@ -400,7 +401,7 @@ res = client.post("/console/oee", data={"entered_by": "9001", "shift": SHIFT,
                                         "entry_date": "not-a-date"})
 check("bad date blocked", "valid date" in res.text)
 
-print("\n== SHIFT LENGTH: set on the 1st Shift page, for the whole day ==")
+print("\n== SHIFT LENGTH: each shift sets its own, on its own page ==")
 reset()
 first = client.get(f"/console/oee?shift=1st%20Shift&entry_date={DAY.isoformat()}").text
 check("1st Shift page offers the radio group",
@@ -409,49 +410,89 @@ check("8h is the default", "checked" in first.split('name="hours_C1" value="8"')
 check("every machine gets one", first.count('name="hours_') == 34 * 3,
       str(first.count('name="hours_')))
 second = client.get(f"/console/oee?shift=2nd%20Shift&entry_date={DAY.isoformat()}").text
-check("2nd Shift page has NO radio group", 'name="hours_C1"' not in second)
-check("but shows the length read-only", 'class="hours-readonly' in second and "8h" in second)
-check("and points at the 1st Shift page", "Set on the 1st Shift page" in second)
+check("2nd Shift page offers it too", 'name="hours_C1" value="12"' in second)
+check("...marked as following the 1st Shift when nothing is set", "follows 1st" in second)
+third = client.get(f"/console/oee?shift=3rd%20Shift&entry_date={DAY.isoformat()}").text
+check("3rd Shift page has NO radio group (a 3rd is always 8h)", 'name="hours_C1"' not in third)
+check("but shows it read-only", 'class="hours-readonly' in third and "10PM-6AM" in third)
+check("the span line says the 3rd Shift lands the next morning",
+      "10PM Tue 9/8 to 6AM Wed 9/9" in third, third[:0])
 
-# Picking 12h for C1 writes one length row, for C1, for the date in the box.
+# Picking 12h for C1 on the 1st Shift page writes one length row for that shift.
 res = post({"hours_C1": "12"})
 check("200", res.status_code == 200, str(res.status_code))
 check("one length row written", len(written["length"]) == 1, str(written["length"]))
-check("for C1, 12 hours, on the production day",
+check("for C1, 1st Shift, 12 hours, on the date in the box",
       written["length"] and written["length"][0].machine_id == "C1"
+      and written["length"][0].shift == "1st Shift"
       and written["length"][0].shift_hours == 12
       and written["length"][0].entry_date == DAY)
-check("no other machine touched", all(p.machine_id == "C1" for p in written["length"]))
 check("saved badge names it", "12h shifts" in res.text)
 
-# Re-posting the default writes nothing; a hand-crafted length on the 2nd
-# Shift page is ignored, because that page's date box isn't the production
-# day (for 3rd Shift it's the day AFTER).
+# The manager's case: an ordinary 1st Shift, then a 12-hour crew at 6PM. Set
+# on the 2nd Shift page, for the 2nd Shift.
+reset()
+res = client.post("/console/oee", data={"entered_by": "9001", "shift": "2nd Shift",
+                                        "entry_date": DAY.isoformat(), "hours_C1": "12",
+                                        "sched_present_C1": "1", "scheduled_C1": "1"})
+check("a 12h 2nd Shift after an 8h 1st is accepted", res.status_code == 200, res.text[:300])
+check("written for the 2nd Shift", len(written["length"]) == 1
+      and written["length"][0].shift == "2nd Shift" and written["length"][0].shift_hours == 12,
+      str(written["length"]))
+check("and ticking Scheduled with it writes the exception (default is off)",
+      len(written["schedule"]) == 1 and written["schedule"][0].scheduled is True,
+      str(written["schedule"]))
+
 reset()
 post({"hours_C1": "8"})
 check("posting 8h over nothing stored writes nothing", written["length"] == [])
 reset()
-client.post("/console/oee", data={"entered_by": "9001", "shift": "2nd Shift",
+client.post("/console/oee", data={"entered_by": "9001", "shift": "3rd Shift",
                                   "entry_date": DAY.isoformat(), "hours_C1": "12"})
-check("a length posted from the 2nd Shift page is ignored", written["length"] == [],
+check("a length posted from the 3rd Shift page is ignored", written["length"] == [],
       str(written["length"]))
 reset()
 res = post({"hours_C1": "9"})
 check("an unknown length is refused", written["length"] == [] and "8, 10 or 12" in res.text)
 
-print("\n== SHIFT LENGTH: what a 12-hour day does to the other two shifts ==")
+print("\n== SHIFT LENGTH: as long or longer, never shorter ==")
 reset()
-stored_lengths[("C1", DAY)] = 12
+stored_lengths[("C1", "1st Shift")] = 12
+second = client.get(f"/console/oee?shift=2nd%20Shift&entry_date={DAY.isoformat()}").text
+c1_hours = second.split('aria-label="Shift length for C1"')[1].split("</div>")[0]
+check("on the 2nd Shift page, 8h and 10h are disabled after a 12h 1st",
+      c1_hours.count("disabled") == 2 and 'value="12"' in c1_hours, c1_hours[:400])
+check("...and say why", "would start inside it" in c1_hours)
+res = client.post("/console/oee", data={"entered_by": "9001", "shift": "2nd Shift",
+                                        "entry_date": DAY.isoformat(), "hours_C1": "8"})
+check("posting a shorter 2nd Shift anyway is refused", written["length"] == [])
+check("...naming both shifts", "2nd Shift" in res.text and "shorter than 1st Shift" in res.text)
+
+reset()
+stored_lengths[("C1", "2nd Shift")] = 8
+first = client.get(f"/console/oee?shift=1st%20Shift&entry_date={DAY.isoformat()}").text
+c1_hours = first.split('aria-label="Shift length for C1"')[1].split("</div>")[0]
+check("on the 1st Shift page, 10h and 12h are disabled when the 2nd is set to 8h",
+      c1_hours.count("disabled") == 2 and "Change that first" in c1_hours, c1_hours[:400])
+res = post({"hours_C1": "12"})
+check("posting a longer 1st Shift anyway is refused", written["length"] == [],
+      str(written["length"]))
+# ...but an inherited 2nd Shift follows the 1st, so raising the 1st is fine.
+reset()
+post({"hours_C1": "12"})
+check("raising the 1st with nothing set on the 2nd is fine", len(written["length"]) == 1)
+
+print("\n== SHIFT LENGTH: what a 12-hour 2nd Shift does to the day ==")
+reset()
+stored_lengths[("C1", "1st Shift")] = 12
 second = client.get(f"/console/oee?shift=2nd%20Shift&entry_date={DAY.isoformat()}").text
 c1_sched = second.split('name="scheduled_C1"')[1][:200]
-check("2nd Shift's Scheduled box starts UNTICKED on a 12h day", "checked" not in c1_sched)
-check("and says why", "second crew is the exception" in c1_sched)
+check("2nd Shift's Scheduled box starts UNTICKED on a 12h night", "checked" not in c1_sched)
+check("and says why", "night crew" in c1_sched)
 check("with the night span", "6PM-6AM" in second)
 c2_sched = second.split('name="scheduled_C2"')[1][:80]
 check("an 8h machine's box is still ticked", "checked" in c2_sched)
 
-# Ticking it on is the exception being recorded: default is False, so a
-# scheduled=True row is a real change.
 body = {"entered_by": "9001", "shift": "2nd Shift", "entry_date": DAY.isoformat(),
         "sched_present_C1": "1", "scheduled_C1": "1"}
 client.post("/console/oee", data=body)
@@ -459,25 +500,25 @@ check("ticking the night crew on writes scheduled=True",
       len(written["schedule"]) == 1 and written["schedule"][0].scheduled is True
       and written["schedule"][0].shift == "2nd Shift", str(written["schedule"]))
 
-# The NEXT date's 3rd Shift row is the one a 12h day removes.
-next_day = DAY + timedelta(days=1)
-third = client.get(f"/console/oee?shift=3rd%20Shift&entry_date={next_day.isoformat()}").text
-check("3rd Shift of the next date shows 'no 3rd shift' for C1",
-      "No 3rd shift" in third and "ran 12h shifts on" in third)
+# The SAME date's 3rd Shift row is the one a long 2nd Shift removes — the
+# date is the day the shift started.
+third = client.get(f"/console/oee?shift=3rd%20Shift&entry_date={DAY.isoformat()}").text
+check("3rd Shift of the same date shows 'no 3rd shift' for C1",
+      "No 3rd shift" in third and "2nd Shift ran 12h (6PM-6AM)" in third, third[:0])
 check("with no inputs for it", 'name="scrap_C1"' not in third
       and 'name="sched_present_C1"' not in third and 'name="dt_none_C1"' not in third)
 check("while C2 is untouched", 'name="scrap_C2"' in third)
-# ...and the SAME date's 3rd Shift row (which is yesterday's night) is normal.
-third_same = client.get(f"/console/oee?shift=3rd%20Shift&entry_date={DAY.isoformat()}").text
-check("3rd Shift of the SAME date is unaffected (it belongs to yesterday)",
-      'name="scrap_C1"' in third_same and "No 3rd shift" not in third_same)
+next_day = DAY + timedelta(days=1)
+third_next = client.get(f"/console/oee?shift=3rd%20Shift&entry_date={next_day.isoformat()}").text
+check("the NEXT date's 3rd Shift is unaffected",
+      'name="scrap_C1"' in third_next and "No 3rd shift" not in third_next)
 
-# Posting the next date's 3rd Shift form doesn't touch C1 even if a stale
-# browser sends fields for it.
+# Posting the 3rd Shift form doesn't touch C1 even if a stale browser sends
+# fields for it.
 reset()
-stored_lengths[("C1", DAY)] = 12
+stored_lengths[("C1", "1st Shift")] = 12
 client.post("/console/oee", data={"entered_by": "9001", "shift": "3rd Shift",
-                                  "entry_date": next_day.isoformat(),
+                                  "entry_date": DAY.isoformat(),
                                   "dt_none_C1": "1", "scrap_C1": "5",
                                   "sched_present_C1": "1"})
 check("a shift that doesn't exist is never written",
@@ -486,7 +527,7 @@ check("a shift that doesn't exist is never written",
 
 print("\n== SHIFT LENGTH: the downtime cap follows the machine ==")
 reset()
-stored_lengths[("C1", DAY)] = 12
+stored_lengths[("C1", "1st Shift")] = 12
 res = post({"dt_on_C1_SETUP": "1", "dt_min_C1_SETUP": "300",
             "dt_on_C1_DELIVERY": "1", "dt_min_C1_DELIVERY": "300"})
 check("600 minutes fits a 12h shift", len(written["downtime"]) == 1, res.text[:300])
@@ -506,6 +547,13 @@ check("length changed on the same save is the cap",
       len(written["length"]) == 1 and len(written["downtime"]) == 1, res.text[:300])
 reset()
 
+print("\n== THE PRODUCTION DAY: the 3rd Shift page defaults to the day it started ==")
+from app.models import default_production_day  # noqa: E402
+expected = default_production_day("3rd Shift", datetime.now())
+third_default = client.get("/console/oee?shift=3rd%20Shift").text
+check("3rd Shift page's date box defaults to the production day",
+      f'value="{expected.isoformat()}"' in third_default, expected.isoformat())
+
 print("\n== /oee is shift-grain now ==")
 oee_page = client.get("/oee").text
 check("no per-slot OEE columns", 'class="cell slot-cell"' not in oee_page)
@@ -518,6 +566,9 @@ data = client.get("/api/oee-data")
 check("/api/oee-data 200", data.status_code == 200, data.text[:300])
 payload = data.json()
 check("all three shifts", set(payload["shifts"]) == {"1st Shift", "2nd Shift", "3rd Shift"})
+check("the 3rd Shift's checkpoints carry the next calendar date",
+      all(c["date"] == (DAY + timedelta(days=1)).isoformat()
+          for c in payload["shifts"]["3rd Shift"]["machines"]["C1"]["checkpoints"]))
 check("machines carry no per-slot OEE",
       "slots" not in payload["shifts"][SHIFT]["machines"]["C1"])
 check("but do carry the checkpoint sequence",
@@ -526,6 +577,12 @@ check("and their shift length", payload["shifts"][SHIFT]["machines"]["C1"]["shif
       and payload["shifts"][SHIFT]["machines"]["C1"]["shift_exists"] is True
       and payload["shifts"][SHIFT]["machines"]["C1"]["span"] == "6AM-2PM")
 check("/oee page has the length tag slot", 'class="shift-length"' in oee_page)
+check("/oee has the Pareto picker with a chip per zone",
+      oee_page.count('class="quick-pick pareto-chip"') == 6)   # All + 5 zones
+check("...and a checkbox per machine",
+      oee_page.count('<input type="checkbox" value="') == 34)
+check("?pareto= is passed through to the page",
+      'window.INITIAL_PARETO = "C1,C2"' in client.get("/oee?pareto=C1,C2").text)
 
 print("\n== /dashboard is the site menu ==")
 index = client.get("/dashboard").text

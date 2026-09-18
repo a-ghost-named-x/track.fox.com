@@ -947,10 +947,10 @@ button.shift-option {
     color: var(--text-dim);
 }
 
-/* "10h" / "12h" next to the machine name when its day was set to that on
-   /console/oee. Empty — and therefore invisible — on an ordinary 8-hour day,
-   so the tag only appears where it explains something: why this row's
-   minutes, checkpoints and standard differ from its neighbours'. */
+/* "8h" / "10h" / "12h" next to the machine name: which OEE this row is. Always
+   shown so nobody has to infer the length from the minutes. The 8-hour label
+   is dim because it is the normal case; a longer one is lit because it is
+   what makes two rows in the same zone not directly comparable. */
 .oee-grid .machine-col .shift-length {
     display: inline-block;
     margin-left: 0.4rem;
@@ -958,11 +958,16 @@ button.shift-option {
     font-size: 0.7rem;
     font-weight: 600;
     letter-spacing: 0.03em;
-    color: var(--accent);
-    border: 1px solid var(--accent);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
     border-radius: 3px;
     vertical-align: 1px;
     cursor: help;
+}
+
+.oee-grid .machine-col .shift-length[data-long] {
+    color: var(--accent);
+    border-color: var(--accent);
 }
 
 .oee-grid .machine-col .shift-length:empty {
@@ -1042,6 +1047,82 @@ button.shift-option {
    "42% of lost minutes were material waits" is. */
 .pareto-section {
     margin: 2.5rem 0 1rem;
+}
+
+/* Which machines feed the Pareto. Chips reuse .quick-pick so the picker looks
+   like the date shortcuts above it; the per-machine list is a native
+   <details> for the same reason the downtime picker on /console/oee is —
+   34 checkboxes are worth collapsing, and it needs no JS to open. */
+.pareto-picker {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    margin: 0 0 1rem;
+}
+
+.pareto-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.pareto-machines {
+    flex-basis: 100%;
+}
+
+.pareto-machines-summary {
+    display: inline-block;
+    font-size: 0.8rem;
+    color: var(--accent);
+    cursor: pointer;
+    user-select: none;
+}
+
+.pareto-machine-groups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem 1.5rem;
+    margin-top: 0.6rem;
+    padding: 0.7rem 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.pareto-machine-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.6rem;
+}
+
+.pareto-machine-group-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-right: 0.25rem;
+}
+
+.pareto-machine {
+    font-size: 0.82rem;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.pareto-machine input {
+    margin-right: 0.2rem;
+    vertical-align: -1px;
+}
+
+/* A selection with nothing in it: the section stays so the picker does. */
+.pareto-empty {
+    margin: 0.5rem 0 0;
+    font-size: 0.85rem;
+    font-style: italic;
+    color: var(--text-dim);
 }
 
 .pareto {
@@ -1417,6 +1498,35 @@ button.shift-option {
 .hours-option input:focus-visible + span {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
+}
+
+/* An option that would overlap a neighbouring shift: visible so the reader
+   sees the menu is 8/10/12, but clearly not on offer. The title says why. */
+.hours-option.is-blocked {
+    cursor: not-allowed;
+}
+
+.hours-option.is-blocked span {
+    opacity: 0.35;
+    text-decoration: line-through;
+}
+
+/* A 2nd Shift with no length of its own is following the 1st Shift's. */
+.hours-inherited {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    cursor: help;
+}
+
+/* "3rd Shift of Thu 9/18: 10PM Thu 9/18 to 6AM Fri 9/19" — the date box
+   is the day the shift STARTED, and this line is what stops it being misread
+   on the morning after. */
+.shift-span-line {
+    margin: 0 0 1rem;
+    font-size: 0.9rem;
+    color: var(--text-dim);
 }
 
 /* Read-only on the 2nd and 3rd Shift pages: the length belongs to the day and

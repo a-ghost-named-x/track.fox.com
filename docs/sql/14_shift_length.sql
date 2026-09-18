@@ -1,5 +1,10 @@
 -- track.fox.com v2 — Per-machine, per-day shift length (8, 10 or 12 hours) for OEE
 --
+-- SUPERSEDED IN PART BY 15_shift_length_per_shift.sql (2026-09-18): the length
+-- is now per SHIFT, not per day, and the review side files the 3rd Shift under
+-- the day it STARTED. This file still creates the table and raises the
+-- downtime cap, so it must run first; read 15's header for the current model.
+--
 -- WHY
 -- ---
 -- Per the production manager (2026-09-16): with the current staffing, a machine

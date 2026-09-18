@@ -29,12 +29,23 @@ SHIFT LENGTH
 A shift is 480 minutes on a normal day — but with the current staffing a
 machine is often run for 10 or 12 hours by one crew (production manager,
 2026-09-16), and OEE must judge it against the minutes it actually ran or a
-12-hour machine "beats its maximum" every day. The length is set per machine
-per production day on /console/oee (`machine_shift_length`, absence = 8) and
+12-hour machine "beats its maximum" every day. The length is set per machine,
+per production day, PER SHIFT on /console/oee (`machine_shift_length`; a
+shift with no row inherits the one before it, the 1st defaults to 8) and
 decides three things here: which checkpoints the shift has, how many minutes
-it is, and whether the shift exists at all — a 12-hour day has no 3rd Shift.
-The geometry lives in app/models.py (shift_plan, shift_slot_dates); this
-module just asks it. The 2-hour rounds and the floor screens stay 8-hour.
+it is, and whether the shift exists at all — after a 12-hour 2nd Shift there
+is no 3rd. The geometry and the as-long-or-longer rule live in app/models.py
+(shift_slots, resolve_day_lengths, shift_slot_dates); this module just asks.
+The 2-hour rounds and the floor screens stay 8-hour.
+
+THE PRODUCTION DAY
+------------------
+compute_oee_report(D) is the day that STARTED at 6AM on D: 1st Shift, 2nd
+Shift, and the 3rd Shift running D 10PM -> D+1 6AM. Scrap, downtime,
+scheduling and shift-length rows are all filed under D. Production
+checkpoints are not — the rounds date the 12AM-6AM readings by the morning
+they land on — so this module always reads D's and D+1's entries and lets
+shift_slot_dates() say which date each checkpoint carries.
 
 THE FORMULAS
 ------------
@@ -105,7 +116,7 @@ from app.models import (
     ShiftScrapCreate,
     default_scheduled,
     elapsed_dated_slots,
-    production_day_for,
+    resolve_day_lengths,
     shift_slot_dates,
     shift_span,
 )
@@ -352,22 +363,27 @@ def create_schedule_exception(payload: ScheduleCreate) -> int:
 
 
 def create_shift_length(payload: ShiftLengthCreate) -> int:
-    """Appends a shift-length record for one machine on one production day.
+    """Appends a shift-length record for one machine, production day and
+    shift.
 
-    Same shape as create_schedule_exception(): only non-default days need a
-    row, but 8 is accepted so a wrong 12 can be undone with a newer row.
+    Same shape as create_schedule_exception(): only a length that differs
+    from what the shift would inherit needs a row, but any value is accepted
+    so a wrong 12 can be undone with a newer row. The as-long-or-longer rule
+    is the caller's to check (shift_length_conflict) — it needs the other
+    shifts' lengths, which this function doesn't see.
     """
     with get_pg_connection() as conn:
         row = conn.execute(
             """
             INSERT INTO machine_shift_length
-                (machine_id, entry_date, shift_hours, entered_by)
-            VALUES (%s, %s, %s, %s)
+                (machine_id, entry_date, shift, shift_hours, entered_by)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
                 payload.machine_id,
                 payload.entry_date,
+                payload.shift,
                 payload.shift_hours,
                 payload.entered_by,
             ),
@@ -380,29 +396,33 @@ def create_shift_length(payload: ShiftLengthCreate) -> int:
 # Reads
 # ---------------------------------------------------------------------------
 
-def get_shift_lengths(dates: list[date_type]) -> dict[tuple[str, date_type], int]:
-    """Latest shift length per (machine_id, production day) for the given
-    days. Only exceptions are stored, so a missing key means 8 — callers
-    default with DEFAULT_SHIFT_HOURS.
-
-    Takes several dates at once because one /oee page needs two: the 3rd
-    Shift row filed under a date belongs to the PREVIOUS production day (see
-    production_day_for), so its length lives on yesterday's row.
+def get_shift_lengths(entry_date: date_type) -> dict[tuple[str, str], int]:
+    """Latest explicitly-set shift length per (machine_id, shift) for one
+    production day. A missing key means "inherit" — resolve with
+    machine_day_lengths() rather than reading this directly.
     """
-    if not dates:
-        return {}
     with get_pg_connection() as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT ON (machine_id, entry_date)
-                machine_id, entry_date, shift_hours
+            SELECT DISTINCT ON (machine_id, shift)
+                machine_id, shift, shift_hours
             FROM machine_shift_length
-            WHERE entry_date = ANY(%s)
-            ORDER BY machine_id, entry_date, created_at DESC
+            WHERE entry_date = %s
+            ORDER BY machine_id, shift, created_at DESC
             """,
-            (list(dates),),
+            (entry_date,),
         ).fetchall()
-    return {(machine_id, day): hours for machine_id, day, hours in rows}
+    return {(machine_id, shift): hours for machine_id, shift, hours in rows}
+
+
+def machine_day_lengths(
+    lengths: dict[tuple[str, str], int], machine_id: str
+) -> dict[str, int]:
+    """One machine's length for every shift of the day, inheritance applied.
+    `lengths` is get_shift_lengths()' result for that day."""
+    return resolve_day_lengths(
+        {shift: hours for (m, shift), hours in lengths.items() if m == machine_id}
+    )
 
 
 def get_latest_scrap_for_date(entry_date: date_type) -> dict[tuple[str, str], int]:
@@ -858,10 +878,13 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
     seeded gets no OEE at all rather than a guessed ceiling.
 
     SHIFT LENGTH decides each machine's slots and minutes per shift, and
-    whether the shift exists for it at all (a 12-hour day has no 3rd Shift).
-    A shift that doesn't exist is reported as such — scheduled=False with
-    shift_exists=False — so every rollup skips it the way it skips a machine
-    marked not-scheduled, without a second code path.
+    whether the shift exists for it at all (after a 12-hour 2nd Shift there
+    is no 3rd). A shift that doesn't exist is reported as such —
+    scheduled=False with shift_exists=False — so every rollup skips it the
+    way it skips a machine marked not-scheduled, without a second code path.
+
+    `entry_date` is the PRODUCTION DAY: the 3rd Shift here is the one that
+    starts at 10PM on it and lands the next morning.
     """
     now = now or datetime.now()
 
@@ -870,54 +893,46 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
     # importable the moment entries.py ever needs anything from here.
     from app.db.entries import get_latest_entries_for_date
 
-    # Two production days matter to one page: this date's, and the previous
-    # one's, which is where the 3rd Shift row filed under this date comes
-    # from (production_day_for).
-    previous_day = entry_date - timedelta(days=1)
-    next_day = entry_date + timedelta(days=1)
-    lengths = get_shift_lengths([previous_day, entry_date])
+    production_day = entry_date
+    next_day = production_day + timedelta(days=1)
+    lengths = get_shift_lengths(production_day)
 
-    # A long 2nd Shift runs past midnight and its 12AM-6AM checkpoints are
-    # filed under the NEXT date, so that date's entries are read too — but
-    # only when some machine actually ran long today; an ordinary day is one
-    # query, as before.
-    dates_needed = [entry_date]
-    if any(
-        hours != DEFAULT_SHIFT_HOURS
-        for (_, day), hours in lengths.items() if day == entry_date
-    ):
-        dates_needed.append(next_day)
-
+    # Every production day's 12AM-6AM checkpoints — the 3rd Shift's, or a
+    # long 2nd Shift's — are filed by the rounds under the NEXT calendar
+    # date, so both dates are read and shift_slot_dates() says which one each
+    # checkpoint carries.
     units_map: dict[tuple[str, date_type, str], int] = {}
     operator_map: dict[tuple[str, date_type, str], str] = {}
-    for day in dates_needed:
+    for day in (production_day, next_day):
         for row in get_latest_entries_for_date(day):
             key = (row["machine_id"], day, row["time_slot"])
             units_map[key] = row["units_produced"]
             operator_map[key] = row["operator"]
 
-    scrap_map = get_latest_scrap_for_date(entry_date)
-    downtime_map = get_latest_downtime_for_date(entry_date)
-    schedule_map = get_schedule_for_date(entry_date)
+    scrap_map = get_latest_scrap_for_date(production_day)
+    downtime_map = get_latest_downtime_for_date(production_day)
+    schedule_map = get_schedule_for_date(production_day)
     ideal_rates = get_ideal_rates()
     standards = get_shift_standards()
+    day_lengths = {m: machine_day_lengths(lengths, m) for m in MACHINE_IDS}
 
     shifts: dict[str, dict] = {}
 
     for shift_label in SHIFT_ORDER:
-        production_day = production_day_for(shift_label, entry_date)
         # The 8-hour view of this shift, for the page-level "N elapsed slots"
-        # note. Machines on longer days carry their own count.
+        # note. Machines on longer shifts carry their own count.
         default_elapsed = elapsed_dated_slots(
             shift_slot_dates(shift_label, production_day) or [], now
         )
         machines: dict[str, dict] = {}
 
         for machine_id in MACHINE_IDS:
-            hours = lengths.get((machine_id, production_day), DEFAULT_SHIFT_HOURS)
+            hours = day_lengths[machine_id][shift_label]
             dated_slots = shift_slot_dates(shift_label, production_day, hours)
             if dated_slots is None:
-                machines[machine_id] = _absent_shift(hours, production_day)
+                machines[machine_id] = _absent_shift(
+                    hours, production_day, day_lengths[machine_id]
+                )
                 continue
 
             slots = [slot for slot, _ in dated_slots]
@@ -1059,23 +1074,30 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
     }
 
 
-def _absent_shift(hours: int, production_day: date_type) -> dict:
-    """The row for a shift that doesn't exist on this machine's day — the 3rd
-    Shift of a 10 or 12-hour pattern.
+def _absent_shift(hours: int, production_day: date_type, day_lengths: dict[str, int]) -> dict:
+    """The row for a shift the day has no room for — the 3rd Shift after a
+    10 or 12-hour 2nd.
 
     Reported with scheduled=False so _build_rollup, _build_pareto and
     _completeness all leave it out without knowing why, and shift_exists=False
-    so the page can say "no 3rd shift — ran 12h" instead of "not scheduled".
+    so the page can say "no 3rd shift" instead of "not scheduled". The
+    previous shift's length and span ride along so the page can say WHY.
     Whatever may have been entered under that (date, shift) is deliberately
-    not shown: the shift's hours belong to the long 2nd Shift, which is where
+    not shown: the night's hours belong to the long 2nd Shift, which is where
     they are counted.
     """
+    previous = SHIFT_ORDER[-2]
     return {
         "scheduled": False,
         "shift_exists": False,
         "shift_hours": hours,
         "shift_minutes": 0,
         "span": None,
+        "covered_by": {
+            "shift": previous,
+            "hours": day_lengths[previous],
+            "span": shift_span(previous, day_lengths[previous]),
+        },
         "production_day": production_day.isoformat(),
         "operator": None,
         "shift": None,

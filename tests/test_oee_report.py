@@ -15,13 +15,16 @@ actually bite:
     C6   downtime record but no production           -> no OEE, still in Pareto
     P3   ran, but marked not scheduled               -> absent from rollups
 
-Plus the long-shift cases (shift length is per machine per production day):
+Plus the long-shift cases (shift length is per machine, per day, per shift):
 
     WS1  12-hour 1st Shift at standard               -> 720 min, 6 slots, 0.75
-         ...and its 2nd Shift defaults to NOT scheduled
+         ...its 2nd Shift inherits 12h and defaults to NOT scheduled
     WS2  12-hour day with a 6PM-6AM crew ticked on   -> stitched across two dates
-    WS3  ran 12 hours YESTERDAY                      -> no 3rd Shift row today
+    WS3  8-hour 1st Shift, then a 12-hour crew at 6PM -> the manager's case
     P1   10-hour 1st Shift at standard               -> 600 min, 5 slots, 0.75
+
+And the production-day rule: C1's 3rd Shift on DAY is DAY 10PM -> DAY_AFTER
+6AM, read from DAY_AFTER's night entries.
 
 See tests/test_oee_math.py for the unit-level arithmetic. The rule this file
 guards is aggregation: percentages are never averaged, and A x P x Q must
@@ -91,14 +94,21 @@ add("P1", [14400, 28800, 43200, 57600, 72000], slots=TIME_SLOTS[:5])
 # which is how the 2-hour rounds already enter an overnight shift.
 add("WS2", [9900, 19800], slots=["8PM", "10PM"])
 add("WS2", [29700, 39600, 49500, 59400], slots=["12AM", "2AM", "4AM", "6AM"], day=DAY_AFTER)
+# WS3, the manager's case: an ordinary 8-hour 1st Shift, idle 2PM-6PM, then
+# a 12-hour crew from 6PM. Same night readings as WS2.
+add("WS3", [9900, 19800, 29700, 39600])
+add("WS3", [9900, 19800], slots=["8PM", "10PM"])
+add("WS3", [29700, 39600, 49500, 59400], slots=["12AM", "2AM", "4AM", "6AM"], day=DAY_AFTER)
+# C1's ordinary 3rd Shift on DAY: 10PM DAY -> 6AM DAY_AFTER, filed by the
+# rounds under DAY_AFTER.
+add("C1", [11700, 23400, 35100, 46800], slots=["12AM", "2AM", "4AM", "6AM"], day=DAY_AFTER)
 
-# Per (machine, production day). WS3 ran 12 hours YESTERDAY, so the 3rd Shift
-# row filed under DAY (the 10PM-6AM crew) is one it never had.
+# Explicitly-set lengths per (machine, shift) for DAY; anything else inherits.
 shift_lengths = {
-    ("WS1", DAY): 12,
-    ("WS2", DAY): 12,
-    ("P1", DAY): 10,
-    ("WS3", DAY_BEFORE): 12,
+    ("WS1", "1st Shift"): 12,
+    ("WS2", "1st Shift"): 12,
+    ("WS3", "2nd Shift"): 12,
+    ("P1", "1st Shift"): 10,
 }
 
 clean = {"note": None, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0}
@@ -121,19 +131,24 @@ downtime = {
     ("WS1", SHIFT): dict(clean),
     ("P1", SHIFT): dict(clean),
     ("WS2", "2nd Shift"): dict(clean),
+    ("WS3", SHIFT): dict(clean),
+    ("WS3", "2nd Shift"): dict(clean),
+    ("C1", "3rd Shift"): dict(clean),
 }
 scrap = {("C1", SHIFT): 0, ("C2", SHIFT): 250, ("C4", SHIFT): 100,
-         ("WS1", SHIFT): 0, ("P1", SHIFT): 0, ("WS2", "2nd Shift"): 0}
+         ("WS1", SHIFT): 0, ("P1", SHIFT): 0, ("WS2", "2nd Shift"): 0,
+         ("WS3", SHIFT): 0, ("WS3", "2nd Shift"): 0, ("C1", "3rd Shift"): 0}
 
 entries_mod.get_latest_entries_for_date = lambda d: list(entries_by_date.get(d, []))
 oee.get_latest_scrap_for_date = lambda d: dict(scrap) if d == DAY else {}
 oee.get_latest_downtime_for_date = lambda d: dict(downtime) if d == DAY else {}
 # WS2's night crew is the exception that has to be ticked on: a 12-hour day's
 # 2nd Shift defaults to not scheduled.
-oee.get_schedule_for_date = lambda d: {("P3", SHIFT): False, ("WS2", "2nd Shift"): True}
-oee.get_shift_lengths = lambda dates: {
-    key: hours for key, hours in shift_lengths.items() if key[1] in dates
-}
+oee.get_schedule_for_date = lambda d: (
+    {("P3", SHIFT): False, ("WS2", "2nd Shift"): True, ("WS3", "2nd Shift"): True}
+    if d == DAY else {}
+)
+oee.get_shift_lengths = lambda d: dict(shift_lengths) if d == DAY else {}
 oee.get_ideal_rates = lambda: {m: inc / 1.5 for m, inc in INCREMENTS.items()}
 oee.get_shift_standards = lambda: {
     (m, s): inc * 4 for m, inc in INCREMENTS.items() for s in SHIFT_SLOTS
@@ -231,18 +246,35 @@ check("good is the 6AM reading from the NEXT date", ws2_2nd["shift"]["good"], 59
 check("ppt is 720", ws2_2nd["shift"]["ppt_minutes"], 720)
 check("oee", ws2_2nd["shift"]["oee"], 0.75)
 check("it is in the 2nd Shift rollup",
-      report["shifts"]["2nd Shift"]["rollup"]["machines"], 1)
+      report["shifts"]["2nd Shift"]["rollup"]["machines"], 2)
 
-print("\n== WS3 ran 12 hours yesterday: no 3rd Shift row today ==")
+print("\n== WS3, the manager's case: 8h 1st Shift, then a 12h crew at 6PM ==")
+check("1st Shift is an ordinary 8-hour one", M["WS3"]["shift_hours"], 8)
+check("1st Shift span", M["WS3"]["span"], "6AM-2PM")
+check("1st Shift oee", M["WS3"]["shift"]["oee"], 0.75)
+ws3_2nd = report["shifts"]["2nd Shift"]["machines"]["WS3"]
+check("2nd Shift is 12 hours", ws3_2nd["shift_hours"], 12)
+check("2nd Shift is 6PM-6AM, not 2PM-2AM", ws3_2nd["span"], "6PM-6AM")
+check("2nd Shift stitched across midnight", ws3_2nd["shift"]["good"], 59400)
+check("2nd Shift oee", ws3_2nd["shift"]["oee"], 0.75)
 ws3_3rd = report["shifts"]["3rd Shift"]["machines"]["WS3"]
-check("shift does not exist", ws3_3rd["shift_exists"], False)
+check("no 3rd Shift that night", ws3_3rd["shift_exists"], False)
 check("so it is not scheduled", ws3_3rd["scheduled"], False)
-check("and carries yesterday's length for the message", ws3_3rd["shift_hours"], 12)
-check("its production day is yesterday", ws3_3rd["production_day"], "2026-09-07")
-check("3rd Shift completeness leaves it out",
-      report["shifts"]["3rd Shift"]["completeness"]["machines"], 33)
-check("WS3's 1st Shift TODAY is an ordinary 8-hour one", M["WS3"]["shift_hours"], 8)
-check("...that exists", M["WS3"]["shift_exists"], True)
+check("and says who covered the night", ws3_3rd["covered_by"],
+      {"shift": "2nd Shift", "hours": 12, "span": "6PM-6AM"})
+check("3rd Shift completeness leaves it out (WS1, WS2, WS3, P1 have none)",
+      report["shifts"]["3rd Shift"]["completeness"]["machines"], 30)
+
+print("\n== the production day: C1's 3rd Shift is DAY 10PM -> DAY_AFTER 6AM ==")
+c1_3rd = report["shifts"]["3rd Shift"]["machines"]["C1"]
+check("exists", c1_3rd["shift_exists"], True)
+check("checkpoints carry the next calendar date",
+      [(c["slot"], c["date"]) for c in c1_3rd["checkpoints"]],
+      [("12AM", "2026-09-09"), ("2AM", "2026-09-09"), ("4AM", "2026-09-09"), ("6AM", "2026-09-09")])
+check("good is the 6AM reading from DAY_AFTER's entries", c1_3rd["shift"]["good"], 46800)
+check("oee", c1_3rd["shift"]["oee"], 0.75)
+check("its downtime came from DAY's rows (filed under the day it started)",
+      c1_3rd["has_downtime"], True)
 
 print("\n== P1: 10-hour 1st Shift at standard ==")
 p1 = M["P1"]
@@ -251,10 +283,10 @@ check("span", p1["span"], "6AM-4PM")
 check("ppt is 600", p1["shift"]["ppt_minutes"], 600)
 check("standard is 57,600 x 1.25", p1["shift"]["standard"], 72000)
 check("oee is exactly 0.75", p1["shift"]["oee"], 0.75)
-check("its 2nd Shift would be 4PM-2AM",
+check("its 2nd Shift inherits 10h: 4PM-2AM",
       report["shifts"]["2nd Shift"]["machines"]["P1"]["span"], "4PM-2AM")
 check("and there is no 3rd",
-      report["shifts"]["3rd Shift"]["machines"]["P1"]["shift_exists"], True)  # P1 was 8h YESTERDAY
+      report["shifts"]["3rd Shift"]["machines"]["P1"]["shift_exists"], False)
 
 print("\n== ordinary machines are untouched by all of this ==")
 check("C1 still has four checkpoints", len(M["C1"]["checkpoints"]), 4)
@@ -262,18 +294,21 @@ check("C1 shift_hours", M["C1"]["shift_hours"], 8)
 check("C1 span", M["C1"]["span"], "6AM-2PM")
 check("C1 3rd Shift exists and is scheduled",
       report["shifts"]["3rd Shift"]["machines"]["C1"]["scheduled"], True)
+check("C2 3rd Shift exists, unentered, still 8h",
+      report["shifts"]["3rd Shift"]["machines"]["C2"]["shift_hours"], 8)
 
 print("\n== rollup ==")
 rollup = shift["rollup"]
-# C1, C2, C3, WS1, P1 countable and scheduled. C4 flagged, C5/C6 incomplete,
-# P3 excluded.
-check("machines counted", rollup["machines"], 5)
+# C1, C2, C3, WS1, WS3, P1 countable and scheduled. C4 flagged, C5/C6
+# incomplete, P3 excluded.
+check("machines counted", rollup["machines"], 6)
 check("P3's 64,800 is not in the rollup",
-      rollup["good"], 46800 + 15750 + 46800 + 59400 + 72000)
-check("scrap subset is narrower (C3 has none)", rollup["split_machines"], 4)
+      rollup["good"], 46800 + 15750 + 46800 + 59400 + 39600 + 72000)
+check("scrap subset is narrower (C3 has none)", rollup["split_machines"], 5)
 check("identity withheld on mixed populations", rollup["oee_from_factors"], None)
 check("a 12-hour machine contributes 720 minutes of PPT, not 480",
-      rollup["ppt_minutes"], 480 * 3 + 720 + 600)
+      rollup["ppt_minutes"], 480 * 4 + 720 + 600)
+check("2nd Shift rollup: WS2 and WS3's night crews", report["shifts"]["2nd Shift"]["rollup"]["machines"], 2)
 
 print("\n== per-zone rollups come from the server ==")
 zones = shift["zones"]
@@ -281,7 +316,7 @@ check("b3 holds the C machines", zones["b3"]["machines"], 3)
 check("b3 oee is component-summed, not averaged",
       zones["b3"]["oee"], (46800 + 15750 + 46800) / (130 * 480 * 3))
 check("b4 holds P1 only — P3 is unscheduled", zones["b4"]["machines"], 1)
-check("ws holds WS1 (WS2 only ran nights)", zones["ws"]["machines"], 1)
+check("ws holds WS1 and WS3 (WS2 only ran nights)", zones["ws"]["machines"], 2)
 
 print("\n== pareto ==")
 pareto = shift["pareto"]
@@ -293,10 +328,10 @@ check("share of unplanned", pareto[0]["pct_of_unplanned"], 240 / 315)
 print("\n== completeness is per column, counted in machines ==")
 c = shift["completeness"]
 check("scheduled machines", c["machines"], 33)          # 34 minus unscheduled P3
-check("production entered", c["production"], 7)         # C1-C5, WS1, P1 (P3 excluded)
-check("downtime entered", c["downtime"], 7)             # C1-C4, C6, WS1, P1
-check("scrap entered", c["scrap"], 5)                   # C1, C2, C4, WS1, P1
-check("long-shift machines", c["long_shift_machines"], 3)  # WS1, WS2, P1
+check("production entered", c["production"], 8)         # C1-C5, WS1, WS3, P1 (P3 excluded)
+check("downtime entered", c["downtime"], 8)             # C1-C4, C6, WS1, WS3, P1
+check("scrap entered", c["scrap"], 6)                   # C1, C2, C4, WS1, WS3, P1
+check("long-shift machines on 1st Shift", c["long_shift_machines"], 3)  # WS1, WS2, P1
 check("slots_expected is the 8-hour view", c["slots_expected"], 4)
 
 print("\n== payload is JSON-serialisable (the API returns it directly) ==")

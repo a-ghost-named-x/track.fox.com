@@ -92,7 +92,28 @@ const zoneSections = document.getElementById("zone-sections");
 const paretoSection = document.getElementById("pareto-section");
 const paretoEl = document.getElementById("pareto");
 const paretoTotal = document.getElementById("pareto-total");
+const paretoScope = document.getElementById("pareto-scope");
+const paretoPicker = document.getElementById("pareto-picker");
+const paretoEmpty = document.getElementById("pareto-empty");
 const loadedAt = document.getElementById("loaded-at");
+
+// Zones in page order, as the template rendered them: [{slug, label, machine_ids}].
+const ZONES = window.ZONES || [];
+const ALL_MACHINE_IDS = ZONES.flatMap((zone) => zone.machine_ids);
+
+/**
+ * Which machines feed the downtime Pareto. One Set, always a subset of
+ * ALL_MACHINE_IDS; the zone chips and the checkbox list are two views of it.
+ * Starts from ?pareto=C1,C2,C3 when present so a view can be bookmarked;
+ * unknown ids are dropped and an empty result falls back to everything.
+ */
+let paretoSelection = (() => {
+    const wanted = new Set(
+        (window.INITIAL_PARETO || "").split(",").map((s) => s.trim()).filter(Boolean)
+    );
+    const known = ALL_MACHINE_IDS.filter((id) => wanted.has(id));
+    return new Set(known.length ? known : ALL_MACHINE_IDS);
+})();
 
 let payload = null;
 let currentShift = SHIFT_ORDER.includes(window.INITIAL_SHIFT)
@@ -163,11 +184,11 @@ function setBand(el, value) {
 
 function syncUrl() {
     if (!payload) return;
-    window.history.replaceState(
-        null,
-        "",
-        `/oee?date=${encodeURIComponent(payload.date)}&shift=${encodeURIComponent(currentShift)}`
-    );
+    let url = `/oee?date=${encodeURIComponent(payload.date)}&shift=${encodeURIComponent(currentShift)}`;
+    if (!isWholeFloor()) {
+        url += `&pareto=${encodeURIComponent(ALL_MACHINE_IDS.filter((id) => paretoSelection.has(id)).join(","))}`;
+    }
+    window.history.replaceState(null, "", url);
 }
 
 /** Why a machine has no OEE, phrased as the thing that's missing. */
@@ -251,22 +272,33 @@ function clearGrid() {
 }
 
 /**
- * The "10h" / "12h" tag next to a machine's name. Empty on an ordinary
- * 8-hour day so the common case stays quiet — the tag is there to explain
- * why this row's minutes, checkpoints and standard differ from its
- * neighbours', and on an 8-hour day they don't.
+ * The "8h" / "10h" / "12h" label next to a machine's name: which OEE this
+ * row is — an 8-hour one judged against 480 minutes, or a 10/12-hour one
+ * against 600/720. Always shown, so a reader never has to infer the length
+ * from the minutes; the 8-hour label is dim and the longer ones are lit,
+ * because the longer ones are what makes two rows in the same zone not
+ * directly comparable.
  */
 function fillShiftLength(row, machine) {
     const tag = row.querySelector(".shift-length");
     if (!tag) return;
     const hours = machine.shift_hours;
-    if (!hours || hours === 8) return;
+    if (!hours) return;
     tag.textContent = `${hours}h`;
-    tag.setAttribute("data-long", "");
-    tag.title = machine.shift_exists
-        ? `${hours}-hour shifts on ${formatQuickPick(machine.production_day)}: ` +
-          `this one is ${machine.span}, ${machine.shift_minutes} minutes. Set on /console/oee.`
-        : `Ran ${hours}-hour shifts on ${formatQuickPick(machine.production_day)}.`;
+    if (hours !== 8) tag.setAttribute("data-long", "");
+    if (!machine.shift_exists) {
+        // The day has no room for this shift; the tag shows what took it.
+        const by = machine.covered_by || {};
+        tag.textContent = by.hours ? `${by.hours}h` : "";
+        tag.title = by.shift
+            ? `${by.shift} ran ${by.hours} hours (${by.span}), which covers the night.`
+            : "";
+        return;
+    }
+    tag.title =
+        `${hours}-hour OEE: this shift is ${machine.span}, so the machine is judged ` +
+        `against ${machine.shift_minutes} minutes and ${machine.checkpoints.length} ` +
+        "checkpoints. Shift length is set on /console/oee.";
 }
 
 function fillMachineRow(row, machine) {
@@ -283,15 +315,13 @@ function fillMachineRow(row, machine) {
     };
 
     if (machine.shift_exists === false) {
-        // A 10 or 12-hour day has no 3rd Shift. The overnight shift is filed
-        // under the morning it lands on, so it's THIS date's 3rd Shift row
-        // that yesterday's long day removes — and the night's hours are on
-        // yesterday's 2nd Shift, where they're counted.
+        // After a 10 or 12-hour 2nd Shift there is no 3rd: the night's hours
+        // are on the 2nd Shift, where they're counted.
+        const by = machine.covered_by || {};
         row.setAttribute("data-unscheduled", "");
         set("oee", `no ${shortShift(currentShift)} shift`,
-            `Ran ${machine.shift_hours}-hour shifts on ` +
-            `${formatQuickPick(machine.production_day)}, so the night belongs to that ` +
-            "day's 2nd Shift. Left out of the rollup entirely.");
+            `${by.shift || "The previous shift"} ran ${by.hours} hours (${by.span}), ` +
+            "which covers the night. Left out of the rollup entirely.");
         return;
     }
 
@@ -301,9 +331,9 @@ function fillMachineRow(row, machine) {
         row.setAttribute("data-unscheduled", "");
         set("oee", "not scheduled",
             machine.shift_hours !== 8 && currentShift !== SHIFT_ORDER[0]
-                ? `On a ${machine.shift_hours}-hour day a second crew is the exception, ` +
-                  `so this shift (${machine.span}) starts as not scheduled. Tick Scheduled ` +
-                  "on /console/oee if one ran. Left out of the rollup entirely — not 0%."
+                ? `A ${machine.shift_hours}-hour night crew (${machine.span}) is the exception, ` +
+                  "so this shift starts as not scheduled. Tick Scheduled on /console/oee " +
+                  "if one ran. Left out of the rollup entirely — not 0%."
                 : "Marked as not scheduled to run this shift on /console/oee, so it is " +
                   "left out of the zone rollup entirely — not counted as 0%.");
         return;
@@ -532,14 +562,103 @@ function renderFlags(shiftData) {
     }
 }
 
+function isWholeFloor() {
+    return paretoSelection.size === ALL_MACHINE_IDS.length;
+}
+
+/**
+ * Downtime minutes by reason across the selected machines for one shift —
+ * the same sum _build_pareto() does server-side for the whole floor, done
+ * here because the picker can name any subset. Unscheduled machines and
+ * shifts that don't exist are skipped, as there; a machine's reasons are
+ * counted whether or not its OEE was computable, as there.
+ *
+ * This is safe to do in the browser where the OEE rollups are not: a Pareto
+ * is a plain per-reason sum with no weighting, so there is nothing to get
+ * subtly wrong. Keep it that way — if it ever needs a rate, move it server
+ * side with the rest.
+ */
+function buildPareto(machines, selected) {
+    const byCode = new Map();
+    for (const [machineId, machine] of Object.entries(machines)) {
+        if (!selected.has(machineId) || !machine.scheduled) continue;
+        for (const reason of machine.reasons || []) {
+            if (!byCode.has(reason.code)) {
+                byCode.set(reason.code, {
+                    code: reason.code, label: reason.label, is_planned: reason.is_planned,
+                    minutes: 0, machines: 0,
+                });
+            }
+            const bucket = byCode.get(reason.code);
+            bucket.minutes += reason.minutes;
+            bucket.machines += 1;
+        }
+    }
+    const ranked = Array.from(byCode.values()).sort((a, b) => b.minutes - a.minutes);
+    const unplannedTotal = ranked.filter((i) => !i.is_planned).reduce((s, i) => s + i.minutes, 0);
+    for (const item of ranked) {
+        item.pct_of_unplanned =
+            unplannedTotal && !item.is_planned ? item.minutes / unplannedTotal : null;
+    }
+    return ranked;
+}
+
+/** "all machines", a zone's name when the selection is exactly that zone, or the ids. */
+function paretoScopeLabel() {
+    if (isWholeFloor()) return "all machines";
+    for (const zone of ZONES) {
+        if (zone.machine_ids.length === paretoSelection.size
+            && zone.machine_ids.every((id) => paretoSelection.has(id))) {
+            return zone.label;
+        }
+    }
+    const ids = ALL_MACHINE_IDS.filter((id) => paretoSelection.has(id));
+    return ids.length > 6 ? `${ids.slice(0, 6).join(", ")} +${ids.length - 6}` : ids.join(", ");
+}
+
+/** Pushes the selection into the chips and checkboxes, so they always agree with it. */
+function syncParetoPicker() {
+    paretoPicker.querySelectorAll('input[type="checkbox"]').forEach((box) => {
+        box.checked = paretoSelection.has(box.value);
+    });
+    paretoPicker.querySelectorAll(".pareto-chip").forEach((chip) => {
+        const slug = chip.dataset.zone;
+        const active = slug === "*"
+            ? isWholeFloor()
+            : (() => {
+                const zone = ZONES.find((z) => z.slug === slug);
+                return !!zone && !isWholeFloor()
+                    && zone.machine_ids.length === paretoSelection.size
+                    && zone.machine_ids.every((id) => paretoSelection.has(id));
+            })();
+        chip.classList.toggle("is-active", active);
+    });
+}
+
 function renderPareto(shiftData) {
-    const items = shiftData.pareto || [];
     paretoEl.textContent = "";
-    if (!items.length) {
+    paretoEmpty.hidden = true;
+
+    // Hide the whole section only when NO machine has any downtime this
+    // shift. A selection with nothing in it keeps the section (and the
+    // picker) on screen, or there'd be no way to pick something else.
+    const anyDowntime = Object.values(shiftData.machines)
+        .some((m) => m.scheduled && (m.reasons || []).length);
+    if (!anyDowntime) {
         paretoSection.hidden = true;
         return;
     }
     paretoSection.hidden = false;
+    syncParetoPicker();
+    paretoScope.textContent = paretoScopeLabel();
+
+    const items = buildPareto(shiftData.machines, paretoSelection);
+    if (!items.length) {
+        paretoTotal.textContent = "";
+        paretoEmpty.textContent = `No downtime recorded for ${paretoScopeLabel()} this shift.`;
+        paretoEmpty.hidden = false;
+        return;
+    }
 
     const unplanned = items.filter((i) => !i.is_planned);
     const unplannedTotal = unplanned.reduce((sum, i) => sum + i.minutes, 0);
@@ -576,7 +695,7 @@ function renderPareto(shiftData) {
         rowEl.appendChild(label);
         rowEl.appendChild(track);
         rowEl.appendChild(value);
-        rowEl.title = `${item.occurrences} slot(s) reported this reason`;
+        rowEl.title = `${item.machines} machine(s) reported this reason`;
         paretoEl.appendChild(rowEl);
     }
 }
@@ -690,6 +809,34 @@ shiftToggle.addEventListener("click", (event) => {
     if (!button) return;
     currentShift = button.dataset.shift;
     render(); // no fetch — all three shifts are already loaded
+});
+
+// The Pareto picker only ever changes paretoSelection, then re-renders the
+// Pareto from the payload already loaded. A zone chip is a shortcut for
+// "exactly that zone's machines"; a checkbox adjusts one machine. Ticking the
+// last box off is refused — an empty Pareto says nothing.
+paretoPicker.addEventListener("click", (event) => {
+    const chip = event.target.closest(".pareto-chip");
+    if (!chip) return;
+    const slug = chip.dataset.zone;
+    const zone = ZONES.find((z) => z.slug === slug);
+    paretoSelection = new Set(slug === "*" || !zone ? ALL_MACHINE_IDS : zone.machine_ids);
+    if (payload && payload.shifts[currentShift]) renderPareto(payload.shifts[currentShift]);
+    syncUrl();
+});
+
+paretoPicker.addEventListener("change", (event) => {
+    const box = event.target.closest('input[type="checkbox"]');
+    if (!box) return;
+    if (box.checked) {
+        paretoSelection.add(box.value);
+    } else if (paretoSelection.size > 1) {
+        paretoSelection.delete(box.value);
+    } else {
+        box.checked = true; // keep at least one machine
+    }
+    if (payload && payload.shifts[currentShift]) renderPareto(payload.shifts[currentShift]);
+    syncUrl();
 });
 
 load(window.INITIAL_DATE || null);
