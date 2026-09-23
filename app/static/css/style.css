@@ -1117,6 +1117,29 @@ button.shift-option {
     vertical-align: -1px;
 }
 
+/* The Period and Machines rows sit one above the other, so their labels get
+   one width and the chips line up in a column. */
+.pareto-picker > .control-label {
+    min-width: 5.5rem;
+}
+
+.pareto-period {
+    margin-bottom: 0.6rem;
+}
+
+/* Under a week or a month's bars: how many shift records they are built from,
+   and how many shifts ran with no downtime entered. Amber when there are
+   some, like the completeness counts at the top — behind, not wrong. */
+.pareto-coverage {
+    margin: 0.75rem 0 0;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+
+.pareto-coverage.is-short {
+    color: #d29922;
+}
+
 /* A selection with nothing in it: the section stays so the picker does. */
 .pareto-empty {
     margin: 0.5rem 0 0;
@@ -1465,7 +1488,8 @@ button.shift-option {
     cursor: pointer;
 }
 
-.hours-option input {
+/* Radios only: the short-day option carries a visible number box too. */
+.hours-option input[type="radio"] {
     position: absolute;
     opacity: 0;
     width: 0;
@@ -1509,6 +1533,93 @@ button.shift-option {
 .hours-option.is-blocked span {
     opacity: 0.35;
     text-decoration: line-through;
+}
+
+/* The short day: the fourth segment, with the hours typed straight into it.
+   Its box inherits the segment's colours, so it goes dark-on-accent with the
+   rest of the segment when the short day is the one picked. */
+.hours-option-short span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+    padding: 0.2rem 0.5rem 0.2rem 0.3rem;
+}
+
+/* Out-specifies `.oee-entry-grid input[type="number"]`, which sizes the scrap
+   and minutes boxes. */
+.oee-entry-grid .hours-option-short .hours-short {
+    width: 2.8em;
+    padding: 0.1rem 0.2rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-align: center;
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+
+.batch-grid .hours-short::-webkit-outer-spin-button,
+.batch-grid .hours-short::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.batch-grid .hours-short::placeholder {
+    color: inherit;
+    opacity: 0.55;
+}
+
+.hours-option input[type="radio"]:checked + span .hours-short {
+    border-color: rgba(13, 17, 23, 0.35);
+}
+
+.hours-option.is-blocked .hours-short {
+    cursor: not-allowed;
+}
+
+/* What a non-8-hour length means on the clock ("6AM-10AM"), under the
+   control, so a typed 4 reads as a real span of the day. */
+.hours-span-line {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: 0.72rem;
+    color: var(--accent);
+}
+
+/* "Set every machine to [ ] hours  Apply" — inline in the short-day hint. */
+.set-all-hours {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.45rem;
+    color: var(--text);
+}
+
+.entry-form .set-all-hours label {
+    display: inline;
+    font-size: inherit;
+    color: inherit;
+}
+
+.entry-form .set-all-hours input {
+    width: 4em;
+    padding: 0.2rem 0.35rem;
+    font-size: 0.85rem;
+    text-align: center;
+}
+
+.entry-form .set-all-hours .link-button {
+    display: inline;
+    margin: 0;
+    font-size: 0.85rem;
+}
+
+.set-all-result {
+    color: var(--text-dim);
 }
 
 /* A 2nd Shift with no length of its own is following the 1st Shift's. */

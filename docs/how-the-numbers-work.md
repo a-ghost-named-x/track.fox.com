@@ -85,7 +85,10 @@ Each machine needs three things for one shift:
 Plus two settings:
 
 - The **Scheduled** checkbox. Untick it for a machine that wasn't supposed to run (planned maintenance, no work for it). That machine is left out of the shift entirely — it doesn't score 0%, it just isn't in the picture.
-- The **Shift length** — 8h, 10h or 12h — per machine, per day, *per shift*: set on the 1st Shift page for the 1st Shift and on the 2nd Shift page for the 2nd (a 3rd Shift is always 8h). A machine that ran 6AM to 6PM is judged against 720 minutes, not 480, and its shift is the six readings from 8AM to 6PM. The crew keeps writing the running count into the 4PM and 6PM boxes on the rounds exactly as they do now; only OEE reads them differently.
+- The **Shift length** — 8h, 10h or 12h, or a typed 1–6 on a short day — per machine, per day, *per shift*: set on the 1st Shift page for the 1st Shift and on the 2nd Shift page for the 2nd (a 3rd Shift is 8h unless the day is a short one). A machine that ran 6AM to 6PM is judged against 720 minutes, not 480, and its shift is the six readings from 8AM to 6PM. The crew keeps writing the running count into the 4PM and 6PM boxes on the rounds exactly as they do now; only OEE reads them differently.
+  - **Short days** (mostly Saturdays): the day runs on 6-hour shifts — 1st 6AM–12PM, 2nd 12PM–6PM, 3rd 6PM–12AM, nothing after midnight. Type how many of those hours the machine was **scheduled** for, 1 to 6, in the box after 12h; 4 on the 1st Shift means 6AM–10AM, judged against 240 minutes, with the standard scaled down to match. A "Set every machine to __ hours" button fills all 34 in one go. Production is still the shift's last reading — on a short 1st Shift that's the 8AM/10AM/12PM boxes, so the final count needs to be in the 12PM box at the latest (a 2PM reading belongs to the 12PM–6PM shift). Each 6-hour crew starts its count from zero, like any shift change.
+  - **Scheduled hours, not hours run.** If a machine was scheduled for 6 hours and the operator didn't turn up for two of them, type 6 and put 120 minutes on Lack of Operator. Typing 4 would make those two lost hours vanish from OEE, the same way unticking Scheduled makes a whole shift vanish.
+  - On a short day the 2nd and 3rd Shift start *unticked* — the usual short day is one morning crew. Typing hours on their page ticks the box.
   - A shift's length says where it starts: the second 12-hour shift of the day is 6PM–6AM, the second 10-hour one is 4PM–2AM. So an 8-hour 1st Shift followed by a 12-hour crew at 6PM is just "2nd Shift: 12h" on the 2nd Shift page.
   - A shift with nothing set follows the one before it, so setting the 1st Shift to 12h makes the night a 12-hour 2nd Shift automatically.
   - The one rule: a later shift can be **as long or longer** than the one before it, never shorter — a shorter one would start inside it. The page greys out the options that would, and refuses them if posted anyway.
@@ -98,7 +101,7 @@ Plus two settings:
 OEE is three percentages multiplied together:
 
 - **Availability — "how much of the shift was it actually running?"**
-  A shift is 480 minutes (600 or 720 if its length was set to 10h or 12h). Subtract the downtime minutes. 60 minutes down means it ran 420 of 480 = 87.5%.
+  A shift is 480 minutes (600 or 720 if its length was set to 10h or 12h, or 60 per hour typed on a short day). Subtract the downtime minutes. 60 minutes down means it ran 420 of 480 = 87.5%.
 
 - **Performance — "while it was running, how close to full speed was it?"**
   Take the machine's top speed (per minute), multiply by the minutes it ran — that's what it *could* have made. Divide what it actually made (good + scrap) by that.
@@ -153,6 +156,9 @@ That's why hitting standard = 75%: 46,800 ÷ 62,400 = 75%.
 ### The downtime chart (Pareto)
 
 - Every downtime reason entered across the shift, added up by reason, biggest bar first, with each one's share of the total.
+- **Period:** *This shift* (the one picked at the top of the page), or **7 days** / **30 days** — the week or month ending on the date in the date box, all three shifts added together. Pick an older date and you get the week that ended then. Only the chart has these; the OEE table above it stays one shift.
+- Over a week or a month, a line under the bars says how many machine-shifts the chart is built from, and how many shifts reported production but never had their downtime entered. Those shifts' losses can't be in the bars, so a month with a lot of them looks better than it was — the line turns amber to say so.
+- **Machines:** the whole floor, one zone, or any machines you tick. Works the same for every period.
 - The fourteen reasons are the floor's own list: Roll Change, Setup, FAAR, Equipment Failure, Operator Adjustments (split four ways — Temperature, Timing, Pressure, Air jet), Defective Material, Lack of Material, Lack of Operator, Delivery, Registration, Start of Shift. There's deliberately no "Other".
 - Operator Adjustments was one reason until it was split (September 2026). Shifts entered before that keep the single "Operator Adjustments" bar — there's no way to know after the fact which kind each one was — so a date before the split shows one bar and a date after shows up to four. If you open an older shift on the entry form, that old reason is still listed on the machines that had it, tagged "retired", so a correction doesn't lose its minutes.
 - A machine that has downtime entered but no production numbers still shows up here — 20 minutes waiting on material is a real 20 minutes.
@@ -170,7 +176,7 @@ The site's rule is **never guess.** A missing number is shown as missing, not fi
 - **"!"** in red — the numbers can't be right and the machine is excluded from the totals until fixed. There are four causes, and the banner at the top of the page names the machine and the fix:
   - Last checkpoint is lower than an earlier one (the shift total would be wrong)
   - More than double the machine's top speed (usually a typo — a transposed digit, or a day's total typed into a shift's box)
-  - More minutes of downtime than the shift has (480, 600 or 720)
+  - More minutes of downtime than the shift has (480, 600 or 720, or 60 per hour on a short day)
   - No top speed set up for that machine (a setup issue, not a floor issue)
 - **A small warning mark** on a score that still shows — worth a look but the machine still counts:
   - A mid-shift reading is lower than the one before it, but a later reading is higher, so the shift total is still right

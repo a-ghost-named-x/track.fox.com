@@ -278,3 +278,28 @@ def get_available_production_days() -> list[date_type]:
             (NIGHT_SLOTS,),
         ).fetchall()
     return [row[0] for row in rows]
+
+
+def get_reported_slots(
+    start: date_type, end: date_type
+) -> set[tuple[str, date_type, str]]:
+    """Every (machine_id, calendar entry_date, time_slot) with at least one
+    entry, for calendar dates `start` to `end` inclusive.
+
+    Presence only, no values: the 7/30-day Pareto uses it to tell a shift
+    that ran (some checkpoint was reported) from one nobody worked, so that
+    only the first can count as "missing its downtime". Any row will do —
+    a correction can change a reading but never retract one, so an entry
+    existing at all means the machine reported. Calendar dates, like the
+    rows themselves; the caller maps night slots with shift_slot_dates().
+    """
+    with get_pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT machine_id, entry_date, time_slot
+            FROM entries
+            WHERE entry_date BETWEEN %s AND %s
+            """,
+            (start, end),
+        ).fetchall()
+    return {(machine_id, day, slot) for machine_id, day, slot in rows}

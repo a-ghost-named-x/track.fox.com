@@ -25,6 +25,9 @@ Three things this exists to catch:
      one before it, a 10/12h 2nd Shift is unticked by default and removes the
      SAME date's 3rd Shift row, and the downtime cap follows the machine's
      own length.
+  5. SHORT DAYS — the typed 1-6 hours box on every row, the rule that the box
+     only counts next to the short-day choice, the 3rd Shift page offering a
+     length only after a short 2nd Shift, and /oee's 7/30-day Pareto.
 """
 import os
 import sys
@@ -110,6 +113,21 @@ for mod in (oee_mod, console_oee_mod):
     mod.get_downtime_reasons = (
         lambda active_only=True: dict(REASONS if active_only else ALL_REASONS)
     )
+# The range readers behind the 7/30-day Pareto, over the same stored state
+# (all of it filed under DAY).
+oee_mod.get_shift_lengths_for_range = lambda s, e: (
+    {(m, DAY, sh): h for (m, sh), h in stored_lengths.items()} if s <= DAY <= e else {}
+)
+oee_mod.get_downtime_for_range = lambda s, e: (
+    {(m, DAY, sh): v for (m, sh), v in stored_downtime.items()} if s <= DAY <= e else {}
+)
+oee_mod.get_schedule_for_range = lambda s, e: (
+    {(m, DAY, sh): v for (m, sh), v in stored_schedule.items()} if s <= DAY <= e else {}
+)
+entries_mod.get_reported_slots = lambda s, e: {
+    (r["machine_id"], r["entry_date"], r["time_slot"]) for r in entries
+    if s <= r["entry_date"] <= e
+}
 oee_mod.get_ideal_rates = lambda: {m: i / 1.5 for m, i in INCREMENTS.items()}
 oee_mod.get_shift_standards = lambda: {
     (m, s): i * 4 for m, i in INCREMENTS.items() for s in SHIFT_SLOTS
@@ -149,6 +167,16 @@ def check(label, ok, detail=""):
     print(f"  {'PASS' if ok else 'FAIL'}  {label}{(' — ' + detail) if detail and not ok else ''}")
     if not ok:
         failures.append(label)
+
+
+def radio_tag(html, machine, value):
+    """The <input> tag of one option in a machine's length control."""
+    start = html.index(f'name="hours_{machine}" value="{value}"')
+    return html[start:html.index(">", start)]
+
+
+def radio_disabled(html, machine, value):
+    return "disabled" in radio_tag(html, machine, value)
 
 
 print("\n== every page renders ==")
@@ -407,13 +435,14 @@ first = client.get(f"/console/oee?shift=1st%20Shift&entry_date={DAY.isoformat()}
 check("1st Shift page offers the radio group",
       all(f'name="hours_C1" value="{h}"' in first for h in (8, 10, 12)))
 check("8h is the default", "checked" in first.split('name="hours_C1" value="8"')[1][:80])
-check("every machine gets one", first.count('name="hours_') == 34 * 3,
-      str(first.count('name="hours_')))
+check("every machine gets one (8h, 10h, 12h and the short day)",
+      first.count('name="hours_') == 34 * 4, str(first.count('name="hours_')))
 second = client.get(f"/console/oee?shift=2nd%20Shift&entry_date={DAY.isoformat()}").text
 check("2nd Shift page offers it too", 'name="hours_C1" value="12"' in second)
 check("...marked as following the 1st Shift when nothing is set", "follows 1st" in second)
 third = client.get(f"/console/oee?shift=3rd%20Shift&entry_date={DAY.isoformat()}").text
-check("3rd Shift page has NO radio group (a 3rd is always 8h)", 'name="hours_C1"' not in third)
+check("3rd Shift page has NO radio group after an 8h 2nd (it can only be 8h)",
+      'name="hours_C1"' not in third)
 check("but shows it read-only", 'class="hours-readonly' in third and "10PM-6AM" in third)
 check("the span line says the 3rd Shift lands the next morning",
       "10PM Tue 9/8 to 6AM Wed 9/9" in third, third[:0])
@@ -460,8 +489,9 @@ reset()
 stored_lengths[("C1", "1st Shift")] = 12
 second = client.get(f"/console/oee?shift=2nd%20Shift&entry_date={DAY.isoformat()}").text
 c1_hours = second.split('aria-label="Shift length for C1"')[1].split("</div>")[0]
-check("on the 2nd Shift page, 8h and 10h are disabled after a 12h 1st",
-      c1_hours.count("disabled") == 2 and 'value="12"' in c1_hours, c1_hours[:400])
+check("on the 2nd Shift page, 8h, 10h and the short day are disabled after a 12h 1st",
+      [radio_disabled(second, "C1", v) for v in ("8", "10", "12", "short")]
+      == [True, True, False, True], c1_hours[:400])
 check("...and say why", "would start inside it" in c1_hours)
 res = client.post("/console/oee", data={"entered_by": "9001", "shift": "2nd Shift",
                                         "entry_date": DAY.isoformat(), "hours_C1": "8"})
@@ -547,6 +577,128 @@ check("length changed on the same save is the cap",
       len(written["length"]) == 1 and len(written["downtime"]) == 1, res.text[:300])
 reset()
 
+print("\n== SHORT DAYS: typed hours, 1 to 6 ==")
+FIRST_URL = f"/console/oee?shift=1st%20Shift&entry_date={DAY.isoformat()}"
+SECOND_URL = f"/console/oee?shift=2nd%20Shift&entry_date={DAY.isoformat()}"
+THIRD_URL = f"/console/oee?shift=3rd%20Shift&entry_date={DAY.isoformat()}"
+
+
+def short_box(html, machine):
+    """The short-day hours <input> tag for one machine."""
+    start = html.index(f'name="short_hours_{machine}"')
+    return html[start:html.index(">", start)]
+
+
+def post_shift(shift, fields):
+    body = {"entered_by": "9001", "shift": shift, "entry_date": DAY.isoformat()}
+    body.update(fields)
+    return client.post("/console/oee", data=body)
+
+
+reset()
+first = client.get(FIRST_URL).text
+check("every row has the short-day option", first.count('value="short"') == 34,
+      str(first.count('value="short"')))
+check("...with its hours box, 1 to 6", 'min="1" max="6"' in short_box(first, "C1"))
+check("the short day is open on the 1st Shift", not radio_disabled(first, "C1", "short"))
+check("the hint says the hours are SCHEDULED hours", "<em>scheduled</em>" in first
+      and "Lack of Operator" in first)
+check("the set-every-machine control is on the page", 'id="set-all-hours"' in first)
+
+res = post({"hours_C1": "short", "short_hours_C1": "6"})
+check("6 hours saves one length row of 6",
+      len(written["length"]) == 1 and written["length"][0].shift_hours == 6, str(written["length"]))
+check("badge says short day", "6h short day" in res.text)
+
+reset()
+res = post({"hours_C1": "short", "short_hours_C1": ""})
+check("short day with no hours writes nothing, and says so",
+      written["length"] == [] and "no hours are typed" in res.text)
+reset()
+res = post({"hours_C1": "short", "short_hours_C1": "7"})
+check("7 is refused", written["length"] == [] and "1 to 6" in res.text)
+reset()
+res = post({"hours_C1": "short", "short_hours_C1": "2.5"})
+check("a fraction is refused", written["length"] == [] and "whole number" in res.text)
+reset()
+res = post({"hours_C1": "8", "short_hours_C1": "4"})
+check("hours typed next to 8h are a contradiction, not a guess",
+      written["length"] == [] and "pick the short day, or clear the box" in res.text)
+
+print("\n== SHORT DAYS: a stored 4-hour morning ==")
+reset()
+stored_lengths[("C1", "1st Shift")] = 4
+first = client.get(FIRST_URL).text
+check("the box is pre-filled with 4", 'value="4"' in short_box(first, "C1"))
+check("...with the short day picked", "checked" in radio_tag(first, "C1", "short"))
+check("...and the span under it", "6AM-10AM" in first)
+check("the minutes boxes are capped at 240", 'max="240"' in first)
+post({"hours_C1": "short", "short_hours_C1": "4"})
+check("saving it untouched writes nothing", written["length"] == [], str(written["length"]))
+res = post({"hours_C1": "short", "short_hours_C1": "4",
+            "dt_on_C1_SETUP": "1", "dt_min_C1_SETUP": "300"})
+check("300 minutes of downtime don't fit 4 hours",
+      written["downtime"] == [] and "240-minute" in res.text, res.text[:300])
+
+second = client.get(SECOND_URL).text
+check("the 2nd Shift follows the pattern: a full 6-hour short day",
+      "checked" in radio_tag(second, "C1", "short") and 'value="6"' in short_box(second, "C1"))
+check("8h/10h/12h are all still possible after a short morning",
+      not any(radio_disabled(second, "C1", v) for v in ("8", "10", "12")))
+c1_sched = second.split('name="scheduled_C1"')[1][:400]
+check("its Scheduled box starts unticked", "checked" not in c1_sched.split(">")[0])
+check("...and says why", "short day" in c1_sched)
+check("an 8h machine's 2nd Shift is untouched", "checked" in second.split('name="scheduled_C2"')[1][:80])
+
+reset()
+stored_lengths[("C1", "1st Shift")] = 4
+post_shift("2nd Shift", {"hours_C1": "short", "short_hours_C1": "6",
+                         "sched_present_C1": "1", "scheduled_C1": "1"})
+check("ticking the afternoon crew on writes scheduled=True and no length",
+      len(written["schedule"]) == 1 and written["schedule"][0].scheduled is True
+      and written["length"] == [], f"{written['schedule']} {written['length']}")
+
+print("\n== SHORT DAYS: the 3rd Shift page ==")
+third = client.get(THIRD_URL).text
+check("offers a length after a short 2nd Shift: 8h or a short day",
+      'name="hours_C1" value="short"' in third and 'name="hours_C1" value="8"' in third)
+check("...never 10h or 12h (they'd run past 6AM)",
+      'name="hours_C1" value="10"' not in third and 'name="hours_C1" value="12"' not in third)
+check("the short day is picked, 6PM-12AM", "checked" in radio_tag(third, "C1", "short")
+      and "6PM-12AM" in third)
+check("an ordinary machine's 3rd Shift row is still read-only", 'name="hours_C2"' not in third)
+check("inherited rows say they follow the 2nd", "follows 2nd" in third)
+
+reset()
+stored_lengths[("C1", "1st Shift")] = 4
+post_shift("3rd Shift", {"hours_C1": "short", "short_hours_C1": "5",
+                         "sched_present_C1": "1", "scheduled_C1": "1"})
+check("5 hours on the 3rd Shift saves as the 3rd Shift's",
+      len(written["length"]) == 1 and written["length"][0].shift == "3rd Shift"
+      and written["length"][0].shift_hours == 5, str(written["length"]))
+check("with the evening crew ticked on",
+      len(written["schedule"]) == 1 and written["schedule"][0].scheduled is True)
+
+print("\n== SHORT DAYS: never inside a longer shift ==")
+reset()
+second = client.get(SECOND_URL).text
+check("the short day is disabled on the 2nd Shift after an 8h 1st",
+      radio_disabled(second, "C1", "short") and "disabled" in short_box(second, "C1"))
+res = post_shift("2nd Shift", {"hours_C1": "short", "short_hours_C1": "4"})
+check("posting it anyway is refused, saying why",
+      written["length"] == [] and "short-day shift after 1st Shift" in res.text)
+reset()
+stored_lengths[("C1", "1st Shift")] = 4
+stored_lengths[("C1", "2nd Shift")] = 6
+first = client.get(FIRST_URL).text
+check("with a short 2nd Shift set, the 1st can only be a short day",
+      [radio_disabled(first, "C1", v) for v in ("8", "10", "12", "short")]
+      == [True, True, True, False])
+res = post({"hours_C1": "8"})
+check("...and lengthening it anyway is refused",
+      written["length"] == [] and "short-day shift after 1st Shift" in res.text)
+reset()
+
 print("\n== THE PRODUCTION DAY: the 3rd Shift page defaults to the day it started ==")
 from app.models import default_production_day  # noqa: E402
 expected = default_production_day("3rd Shift", datetime.now())
@@ -583,6 +735,32 @@ check("...and a checkbox per machine",
       oee_page.count('<input type="checkbox" value="') == 34)
 check("?pareto= is passed through to the page",
       'window.INITIAL_PARETO = "C1,C2"' in client.get("/oee?pareto=C1,C2").text)
+
+print("\n== the Pareto's 7 and 30-day periods ==")
+check("/oee has the period chips",
+      all(f'data-period="{p}"' in oee_page for p in ("shift", "7", "30")))
+check("?period=30 is passed through", "window.INITIAL_PERIOD = 30" in client.get("/oee?period=30").text)
+check("an unknown period means the shift",
+      "window.INITIAL_PERIOD = null" in client.get("/oee?period=9").text)
+reset()
+stored_downtime[("C2", SHIFT)] = {
+    "note": None, "planned_minutes": 0, "unplanned_minutes": 20,
+    "reasons": [{"code": "SETUP", "label": "Setup", "minutes": 20, "is_planned": False}],
+}
+rng = client.get(f"/api/oee-pareto?end={DAY.isoformat()}&days=30")
+check("/api/oee-pareto 200", rng.status_code == 200, rng.text[:300])
+body = rng.json() if rng.status_code == 200 else {"machines": {}}
+check("30 days ending on the date", body.get("days") == 30 and body.get("end") == DAY.isoformat())
+check("every machine, so the picker can narrow it", set(body["machines"]) == set(MACHINE_IDS))
+check("C2's reasons are there",
+      [(r["code"], r["minutes"]) for r in body["machines"].get("C2", {}).get("reasons", [])]
+      == [("SETUP", 20)])
+check("C1 ran with no downtime entered: counted as missing",
+      body["machines"].get("C1", {}).get("missing") == 1)
+check("a junk period falls back to 7", client.get("/api/oee-pareto?days=abc").json()["days"] == 7)
+check("no end means the latest day with data",
+      client.get("/api/oee-pareto").json()["end"] == DAY.isoformat())
+reset()
 
 print("\n== /dashboard is the site menu ==")
 index = client.get("/dashboard").text

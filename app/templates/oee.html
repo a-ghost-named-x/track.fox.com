@@ -146,6 +146,21 @@
            machine's reasons (see buildPareto in oee.js): the Pareto is a plain
            per-reason sum, unlike the OEE rollups, so there is no weighting
            trap in doing it client-side. #}
+        {# Which stretch of time feeds it. "This shift" is the shift picked at
+           the top of the page; the rolling windows end on the date in the date
+           box and add up all three shifts (/api/oee-pareto). Only the Pareto
+           has periods — the OEE grid stays one shift, for the reason the shift
+           toggle has no All Day. #}
+        <div class="pareto-picker pareto-period" id="pareto-period">
+            <span class="control-label">Period</span>
+            <div class="pareto-chips">
+                <button type="button" class="quick-pick period-chip" data-period="shift">This shift</button>
+                {% for days in pareto_range_days %}
+                <button type="button" class="quick-pick period-chip" data-period="{{ days }}">{{ days }} days</button>
+                {% endfor %}
+            </div>
+        </div>
+
         <div class="pareto-picker" id="pareto-picker">
             <span class="control-label">Machines</span>
             <div class="pareto-chips">
@@ -173,6 +188,10 @@
 
         <div class="pareto" id="pareto"></div>
         <p class="pareto-empty" id="pareto-empty" hidden></p>
+        {# Over a week or a month, how much data the bars are built from — and
+           how many shifts ran with no downtime entered, whose losses can't be
+           in them. A thin month otherwise looks like a good one. #}
+        <p class="pareto-coverage" id="pareto-coverage" hidden></p>
     </section>
 
     <footer class="supervisor-footer">
@@ -186,6 +205,9 @@
     window.INITIAL_DATE = {{ requested_date|tojson }};
     window.INITIAL_SHIFT = {{ requested_shift|tojson }};
     window.INITIAL_PARETO = {{ requested_pareto|tojson }};
+    window.INITIAL_PERIOD = {{ requested_period|tojson }};
+    window.PARETO_RANGE_DAYS = {{ pareto_range_days|tojson }};
+    window.SHORT_PATTERN_HOURS = {{ short_pattern_hours|tojson }};
     window.ZONES = {{ zones|tojson }};
 </script>
 <script src="/static/js/oee.js"></script>

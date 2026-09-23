@@ -27,6 +27,9 @@ const WORLD_CLASS = 0.85;
 
 const QUICK_PICK_COUNT = 7;
 
+// A short day's shifts are 6 hours, and a stored length of 1-6 means one.
+const SHORT_PATTERN_HOURS = window.SHORT_PATTERN_HOURS || 6;
+
 /**
  * Hard flags: the number cannot be right whatever the machine's rate is, so
  * the shift is excluded from OEE and from the rollups.
@@ -49,7 +52,8 @@ const FLAG_LABELS = {
     downtime_over_shift: {
         title: "More downtime than fits in the shift",
         detail: "A shift holds at most its own length: 480 minutes on an 8-hour day, " +
-            "600 on a 10-hour one, 720 on a 12-hour one. Check the minutes on /console/oee.",
+            "600 on a 10-hour one, 720 on a 12-hour one, 60 per hour typed on a short day. " +
+            "Check the minutes, and the hours, on /console/oee.",
     },
     no_ideal_rate: {
         title: "No ideal rate seeded",
@@ -69,8 +73,9 @@ const WARNING_LABELS = {
     },
     over_100: {
         title: "Beat the maximum derived from its standard",
-        detail: "Still counted. The machine produced more than an 8-hour shift " +
-            "at its rated speed allows, so its numbers are shown as-is.",
+        detail: "Still counted. The machine produced more than its shift's hours " +
+            "at its rated speed allow, so its numbers are shown as-is. On a machine " +
+            "that ran long or short, check its shift length on /console/oee first.",
     },
 };
 
@@ -94,7 +99,9 @@ const paretoEl = document.getElementById("pareto");
 const paretoTotal = document.getElementById("pareto-total");
 const paretoScope = document.getElementById("pareto-scope");
 const paretoPicker = document.getElementById("pareto-picker");
+const paretoPeriodPicker = document.getElementById("pareto-period");
 const paretoEmpty = document.getElementById("pareto-empty");
+const paretoCoverage = document.getElementById("pareto-coverage");
 const loadedAt = document.getElementById("loaded-at");
 
 // Zones in page order, as the template rendered them: [{slug, label, machine_ids}].
@@ -114,6 +121,26 @@ let paretoSelection = (() => {
     const known = ALL_MACHINE_IDS.filter((id) => wanted.has(id));
     return new Set(known.length ? known : ALL_MACHINE_IDS);
 })();
+
+/**
+ * Which stretch of time feeds the Pareto: "shift" (the shift picked at the
+ * top of the page, from the payload already loaded) or a number of days —
+ * a rolling window ending on the page's date, all shifts, fetched from
+ * /api/oee-pareto. Starts from ?period= so a view can be bookmarked.
+ */
+const PARETO_RANGE_DAYS = window.PARETO_RANGE_DAYS || [7, 30];
+let paretoPeriod = PARETO_RANGE_DAYS.includes(window.INITIAL_PERIOD)
+    ? window.INITIAL_PERIOD
+    : "shift";
+
+/**
+ * Range payloads by "date|days". The page doesn't poll, so a range loaded
+ * once is kept for the visit like the day's own payload is; flipping between
+ * 7 and 30 days or between machine picks costs nothing after the first load.
+ * A pending fetch is stored as "loading" so a second render doesn't start
+ * another, and a failed one as "error".
+ */
+const rangeCache = new Map();
 
 let payload = null;
 let currentShift = SHIFT_ORDER.includes(window.INITIAL_SHIFT)
@@ -188,6 +215,7 @@ function syncUrl() {
     if (!isWholeFloor()) {
         url += `&pareto=${encodeURIComponent(ALL_MACHINE_IDS.filter((id) => paretoSelection.has(id)).join(","))}`;
     }
+    if (paretoPeriod !== "shift") url += `&period=${paretoPeriod}`;
     window.history.replaceState(null, "", url);
 }
 
@@ -274,10 +302,10 @@ function clearGrid() {
 /**
  * The "8h" / "10h" / "12h" label next to a machine's name: which OEE this
  * row is — an 8-hour one judged against 480 minutes, or a 10/12-hour one
- * against 600/720. Always shown, so a reader never has to infer the length
- * from the minutes; the 8-hour label is dim and the longer ones are lit,
- * because the longer ones are what makes two rows in the same zone not
- * directly comparable.
+ * against 600/720, or a short day's 1-6 hours against 60 per hour. Always
+ * shown, so a reader never has to infer the length from the minutes; the
+ * 8-hour label is dim and every other is lit, because those are what make
+ * two rows in the same zone not directly comparable.
  */
 function fillShiftLength(row, machine) {
     const tag = row.querySelector(".shift-length");
@@ -293,6 +321,15 @@ function fillShiftLength(row, machine) {
         tag.title = by.shift
             ? `${by.shift} ran ${by.hours} hours (${by.span}), which covers the night.`
             : "";
+        return;
+    }
+    if (machine.window_span && machine.window_span !== machine.span) {
+        // A short day: scheduled for part of a 6-hour shift.
+        tag.title =
+            `Short day: scheduled ${hours} hour${hours === 1 ? "" : "s"} (${machine.span}) of ` +
+            `the ${machine.window_span} shift, so the machine is judged against ` +
+            `${machine.shift_minutes} minutes. Production is the last reading in that ` +
+            "shift's checkpoints. Set on /console/oee.";
         return;
     }
     tag.title =
@@ -329,13 +366,19 @@ function fillMachineRow(row, machine) {
         // Not scheduled is not a zero. The machine is excluded from the rollup
         // entirely rather than scoring 0% and dragging the zone down with it.
         row.setAttribute("data-unscheduled", "");
-        set("oee", "not scheduled",
-            machine.shift_hours !== 8 && currentShift !== SHIFT_ORDER[0]
-                ? `A ${machine.shift_hours}-hour night crew (${machine.span}) is the exception, ` +
-                  "so this shift starts as not scheduled. Tick Scheduled on /console/oee " +
-                  "if one ran. Left out of the rollup entirely — not 0%."
-                : "Marked as not scheduled to run this shift on /console/oee, so it is " +
-                  "left out of the zone rollup entirely — not counted as 0%.");
+        const lateShift = currentShift !== SHIFT_ORDER[0];
+        let why = "Marked as not scheduled to run this shift on /console/oee, so it is " +
+            "left out of the zone rollup entirely — not counted as 0%.";
+        if (lateShift && machine.shift_hours <= SHORT_PATTERN_HOURS) {
+            why = `On a short day this shift (${machine.window_span}) starts as not ` +
+                "scheduled, since usually only the morning crew runs. Tick Scheduled on " +
+                "/console/oee if this machine ran. Left out of the rollup entirely — not 0%.";
+        } else if (lateShift && machine.shift_hours !== 8) {
+            why = `A ${machine.shift_hours}-hour night crew (${machine.span}) is the exception, ` +
+                "so this shift starts as not scheduled. Tick Scheduled on /console/oee " +
+                "if one ran. Left out of the rollup entirely — not 0%.";
+        }
+        set("oee", "not scheduled", why);
         return;
     }
 
@@ -469,11 +512,12 @@ function renderCompleteness(shiftData) {
 
     const slotWord = `${c.slots_expected} elapsed slot${c.slots_expected === 1 ? "" : "s"}`;
     // The slot count is the 8-hour view; a machine on a 10 or 12-hour day has
-    // more, and is judged on its own. Say how many there are so "4 slots"
-    // isn't read as the whole story.
-    const longNote = c.long_shift_machines
-        ? ` (${c.long_shift_machines} machine${c.long_shift_machines === 1 ? "" : "s"} ` +
-          "on 10h/12h shifts, with more)"
+    // more and one on a short day fewer, and each is judged on its own. Say
+    // how many there are so "4 slots" isn't read as the whole story.
+    const others = c.other_length_machines;
+    const longNote = others
+        ? ` (${others} machine${others === 1 ? "" : "s"} on other shift lengths, ` +
+          "judged on their own hours)"
         : "";
     completenessNote.textContent =
         `across ${slotWord}${longNote}. Production comes from the 2-hour rounds; ` +
@@ -567,31 +611,31 @@ function isWholeFloor() {
 }
 
 /**
- * Downtime minutes by reason across the selected machines for one shift —
- * the same sum _build_pareto() does server-side for the whole floor, done
- * here because the picker can name any subset. Unscheduled machines and
- * shifts that don't exist are skipped, as there; a machine's reasons are
- * counted whether or not its OEE was computable, as there.
+ * Downtime minutes by reason, summed across lists of reasons and ranked.
+ * Each list is one machine's: its reasons for one shift, or its totals over
+ * a week or a month from /api/oee-pareto, where each reason also says on
+ * how many machine-shifts it was reported (`shifts`).
  *
- * This is safe to do in the browser where the OEE rollups are not: a Pareto
- * is a plain per-reason sum with no weighting, so there is nothing to get
- * subtly wrong. Keep it that way — if it ever needs a rate, move it server
- * side with the rest.
+ * This is the same sum _build_pareto() does server-side for the whole
+ * floor, done here because the picker can name any subset of machines. It
+ * is safe to do in the browser where the OEE rollups are not: a Pareto is a
+ * plain per-reason sum with no weighting, so there is nothing to get subtly
+ * wrong. Keep it that way — if it ever needs a rate, move it server side
+ * with the rest.
  */
-function buildPareto(machines, selected) {
+function rankReasons(reasonLists) {
     const byCode = new Map();
-    for (const [machineId, machine] of Object.entries(machines)) {
-        if (!selected.has(machineId) || !machine.scheduled) continue;
-        for (const reason of machine.reasons || []) {
+    for (const reasons of reasonLists) {
+        for (const reason of reasons) {
             if (!byCode.has(reason.code)) {
                 byCode.set(reason.code, {
                     code: reason.code, label: reason.label, is_planned: reason.is_planned,
-                    minutes: 0, machines: 0,
+                    minutes: 0, count: 0,
                 });
             }
             const bucket = byCode.get(reason.code);
             bucket.minutes += reason.minutes;
-            bucket.machines += 1;
+            bucket.count += reason.shifts || 1;
         }
     }
     const ranked = Array.from(byCode.values()).sort((a, b) => b.minutes - a.minutes);
@@ -633,29 +677,133 @@ function syncParetoPicker() {
             })();
         chip.classList.toggle("is-active", active);
     });
+    paretoPeriodPicker.querySelectorAll(".period-chip").forEach((chip) => {
+        chip.classList.toggle("is-active", chip.dataset.period === String(paretoPeriod));
+    });
 }
 
-function renderPareto(shiftData) {
+/**
+ * The week or month ending on `date`, or null while it loads (the fetch is
+ * started here, and redraws the Pareto when it lands), or "error".
+ *
+ * A failure is handed back once and then forgotten, so the next redraw of
+ * any kind tries again rather than the page being stuck until a reload.
+ */
+function rangeFor(date, days) {
+    const key = `${date}|${days}`;
+    const cached = rangeCache.get(key);
+    if (cached === "loading") return null;
+    if (cached === "error") {
+        rangeCache.delete(key);
+        return "error";
+    }
+    if (cached) return cached;
+
+    rangeCache.set(key, "loading");
+    fetch(`/api/oee-pareto?end=${encodeURIComponent(date)}&days=${days}`)
+        .then((res) => {
+            if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+            return res.json();
+        })
+        .then((data) => rangeCache.set(key, data))
+        .catch((err) => {
+            rangeCache.set(key, "error");
+            console.error("Pareto range load failed:", err);
+        })
+        .finally(() => {
+            // Only if the page still wants THIS range: the date or the period
+            // may have moved on while it was loading.
+            if (payload && payload.date === date && paretoPeriod === days) renderPareto();
+        });
+    return null;
+}
+
+/**
+ * How much the week/month bars are built from, for the selected machines.
+ * "Missing" is shifts that reported production but have no downtime entered
+ * — their losses can't be in the bars, so a month with many of them looks
+ * better than it was. Said in words because the bars can't say it.
+ */
+function renderCoverage(range) {
+    let records = 0;
+    let missing = 0;
+    for (const [machineId, machine] of Object.entries(range.machines)) {
+        if (!paretoSelection.has(machineId)) continue;
+        records += machine.records;
+        missing += machine.missing;
+    }
+    paretoCoverage.textContent =
+        `Built from ${count(records)} machine-shift${records === 1 ? "" : "s"} with downtime entered` +
+        (missing
+            ? `. ${count(missing)} more reported production but have no downtime entered, ` +
+              "so whatever they lost isn't in these bars — enter them on /console/oee."
+            : ". Every shift that reported production has its downtime entered.");
+    paretoCoverage.classList.toggle("is-short", missing > 0);
+    paretoCoverage.hidden = false;
+}
+
+/** "1,234 min", with hours alongside once the number stops being readable as minutes. */
+function minutesText(minutes) {
+    return minutes >= 600 ? `${count(minutes)} min (${(minutes / 60).toFixed(0)} h)` : `${count(minutes)} min`;
+}
+
+function renderPareto() {
     paretoEl.textContent = "";
     paretoEmpty.hidden = true;
+    paretoCoverage.hidden = true;
 
-    // Hide the whole section only when NO machine has any downtime this
-    // shift. A selection with nothing in it keeps the section (and the
-    // picker) on screen, or there'd be no way to pick something else.
-    const anyDowntime = Object.values(shiftData.machines)
-        .some((m) => m.scheduled && (m.reasons || []).length);
-    if (!anyDowntime) {
+    // Shown whenever the page has data, even when this shift has no
+    // downtime at all — the period and machine pickers live in here, and a
+    // quiet shift is exactly when someone wants the week instead.
+    if (!payload || !payload.has_any_data) {
         paretoSection.hidden = true;
         return;
     }
     paretoSection.hidden = false;
     syncParetoPicker();
-    paretoScope.textContent = paretoScopeLabel();
 
-    const items = buildPareto(shiftData.machines, paretoSelection);
+    let items;
+    let when;
+    let unit;
+    if (paretoPeriod === "shift") {
+        const shiftData = payload.shifts[currentShift] || { machines: {} };
+        // Unscheduled machines and shifts that don't exist are skipped, as in
+        // _build_pareto(); a machine's reasons count whether or not its OEE
+        // was computable, as there.
+        items = rankReasons(
+            Object.entries(shiftData.machines)
+                .filter(([machineId, machine]) => paretoSelection.has(machineId) && machine.scheduled)
+                .map(([, machine]) => machine.reasons || [])
+        );
+        when = `${shortShift(currentShift)} Shift, ${formatQuickPick(payload.date)}`;
+        unit = "machine";
+    } else {
+        const range = rangeFor(payload.date, paretoPeriod);
+        paretoScope.textContent = `${paretoScopeLabel()} · last ${paretoPeriod} days`;
+        if (range === null || range === "error") {
+            paretoTotal.textContent = "";
+            paretoEmpty.textContent = range === null
+                ? `Loading the last ${paretoPeriod} days…`
+                : "Couldn't load that period. Check the connection and pick it again.";
+            paretoEmpty.hidden = false;
+            return;
+        }
+        items = rankReasons(
+            Object.entries(range.machines)
+                .filter(([machineId]) => paretoSelection.has(machineId))
+                .map(([, machine]) => machine.reasons)
+        );
+        when = `${formatQuickPick(range.start)} – ${formatQuickPick(range.end)}, all shifts`;
+        unit = "machine-shift";
+        renderCoverage(range);
+    }
+    paretoScope.textContent = `${paretoScopeLabel()} · ${when}`;
+
     if (!items.length) {
         paretoTotal.textContent = "";
-        paretoEmpty.textContent = `No downtime recorded for ${paretoScopeLabel()} this shift.`;
+        paretoEmpty.textContent = paretoPeriod === "shift"
+            ? `No downtime recorded for ${paretoScopeLabel()} this shift.`
+            : `No downtime recorded for ${paretoScopeLabel()} in these ${paretoPeriod} days.`;
         paretoEmpty.hidden = false;
         return;
     }
@@ -664,7 +812,8 @@ function renderPareto(shiftData) {
     const unplannedTotal = unplanned.reduce((sum, i) => sum + i.minutes, 0);
     const plannedTotal = items.filter((i) => i.is_planned).reduce((s, i) => s + i.minutes, 0);
     paretoTotal.textContent =
-        `${unplannedTotal} min unplanned` + (plannedTotal ? ` · ${plannedTotal} min planned` : "");
+        `${minutesText(unplannedTotal)} unplanned` +
+        (plannedTotal ? ` · ${minutesText(plannedTotal)} planned` : "");
 
     // Bars are scaled to the largest bar, not to the total, so the shape of
     // the distribution is readable even when one reason dominates.
@@ -689,13 +838,15 @@ function renderPareto(shiftData) {
         const value = document.createElement("span");
         value.className = "pareto-value";
         value.textContent = item.is_planned
-            ? `${item.minutes} min (planned)`
-            : `${item.minutes} min · ${pct(item.pct_of_unplanned, 0)}`;
+            ? `${count(item.minutes)} min (planned)`
+            : `${count(item.minutes)} min · ${pct(item.pct_of_unplanned, 0)}`;
 
         rowEl.appendChild(label);
         rowEl.appendChild(track);
         rowEl.appendChild(value);
-        rowEl.title = `${item.machines} machine(s) reported this reason`;
+        rowEl.title =
+            `Reported on ${item.count} ${unit}${item.count === 1 ? "" : "s"}` +
+            (item.minutes >= 60 ? ` · ${(item.minutes / 60).toFixed(1)} hours` : "");
         paretoEl.appendChild(rowEl);
     }
 }
@@ -728,7 +879,7 @@ function render() {
 
     renderCompleteness(shiftData);
     renderFlags(shiftData);
-    renderPareto(shiftData);
+    renderPareto();
     syncUrl();
 }
 
@@ -821,7 +972,18 @@ paretoPicker.addEventListener("click", (event) => {
     const slug = chip.dataset.zone;
     const zone = ZONES.find((z) => z.slug === slug);
     paretoSelection = new Set(slug === "*" || !zone ? ALL_MACHINE_IDS : zone.machine_ids);
-    if (payload && payload.shifts[currentShift]) renderPareto(payload.shifts[currentShift]);
+    renderPareto();
+    syncUrl();
+});
+
+// The period only changes what the Pareto sums. "This shift" re-sums the
+// payload already loaded; 7 or 30 days fetch once per date and are cached.
+paretoPeriodPicker.addEventListener("click", (event) => {
+    const chip = event.target.closest(".period-chip");
+    if (!chip) return;
+    const days = parseInt(chip.dataset.period, 10);
+    paretoPeriod = PARETO_RANGE_DAYS.includes(days) ? days : "shift";
+    renderPareto();
     syncUrl();
 });
 
@@ -835,7 +997,7 @@ paretoPicker.addEventListener("change", (event) => {
     } else {
         box.checked = true; // keep at least one machine
     }
-    if (payload && payload.shifts[currentShift]) renderPareto(payload.shifts[currentShift]);
+    renderPareto();
     syncUrl();
 });
 

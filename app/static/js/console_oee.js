@@ -13,16 +13,22 @@
  *   - a minutes box that follows its checkbox, in both directions
  *   - a running total per machine, warning past one shift's worth — THAT
  *     machine's shift, which is 480, 600 or 720 minutes depending on the
- *     shift length picked for its day
+ *     shift length picked for its day, or 60 x the hours on a short day
  *   - a "tick no downtime on every untouched machine" shortcut
+ *   - typing in a short-day box picks the short day, and a "set every
+ *     machine to N hours" shortcut for a Saturday
  */
 
 const MAX_SHIFT_MINUTES = window.MAX_SHIFT_MINUTES || 720;
+const SHIFT_INDEX = window.SHIFT_INDEX || 0;
+const DAY_START_HOUR = window.DAY_START_HOUR === undefined ? 6 : window.DAY_START_HOUR;
+const SHORT_PATTERN_HOURS = window.SHORT_PATTERN_HOURS || 6;
+const DEFAULT_SHIFT_HOURS = window.DEFAULT_SHIFT_HOURS || 8;
 
 /**
  * How long this machine's shift is, read off its row. The server renders it
- * from the record; on the 1st Shift page the radio group can change it
- * without a reload, and wireLengthToggle() keeps the attribute in step.
+ * from the record; the length control can change it without a reload, and
+ * applyLength() keeps the attribute in step.
  */
 function shiftMinutesFor(cell) {
     const row = cell.closest("tr");
@@ -130,36 +136,184 @@ function wireCell(cell) {
 
 document.querySelectorAll(".dt-cell").forEach(wireCell);
 
+/** 24h hour -> "6PM", the same labels as _hour_label() in app/models.py. */
+function hourLabel(hour) {
+    const h = ((hour % 24) + 24) % 24;
+    if (h === 0) return "12AM";
+    if (h < 12) return `${h}AM`;
+    if (h === 12) return "12PM";
+    return `${h - 12}PM`;
+}
+
 /**
- * On the 1st and 2nd Shift pages the shift length is a radio group per
- * machine. Changing it changes how many minutes of downtime fit, so the row's
- * cap and its minutes boxes' max follow the choice immediately rather than
- * after a save-and-reload.
- *
- * On the 2nd Shift page (rows carry data-night-crew) picking 10h or 12h also
- * ticks Scheduled: a long 2nd Shift defaults to not scheduled because a
- * night crew is the exception, and choosing its length IS saying one ran.
- * The person can untick it again; the server never assumes.
+ * The clock span a length means on this page's shift — shift_span() in
+ * app/models.py. The Nth shift of an L-hour pattern starts at 6AM + N x L,
+ * and a short day's 1-6 all sit in the 6-hour pattern.
  */
+function spanFor(hours) {
+    const pattern = hours <= SHORT_PATTERN_HOURS ? SHORT_PATTERN_HOURS : hours;
+    const start = DAY_START_HOUR + SHIFT_INDEX * pattern;
+    return `${hourLabel(start)}-${hourLabel(start + hours)}`;
+}
+
+/**
+ * The hours a row's length control says right now, or null while the short
+ * day is picked with no valid number in its box yet.
+ */
+function chosenHours(row) {
+    const picked = row.querySelector(".hours-toggle input[type=radio]:checked");
+    if (!picked) return null;
+    if (picked.value !== "short") return parseInt(picked.value, 10);
+    const box = row.querySelector(".hours-short");
+    const value = box ? Number(box.value) : NaN;
+    return Number.isInteger(value) && value >= 1 && value <= SHORT_PATTERN_HOURS ? value : null;
+}
+
+/**
+ * Changing the length changes how many minutes of downtime fit, so the row's
+ * cap, its minutes boxes' max and the span under the control follow the
+ * choice immediately rather than after a save-and-reload.
+ */
+function applyLength(row) {
+    const hours = chosenHours(row);
+    const spanLine = row.querySelector(".hours-span-line");
+    if (hours === null) {
+        if (spanLine) spanLine.hidden = true;
+        return;
+    }
+    const minutes = hours * 60;
+    row.dataset.shiftMinutes = String(minutes);
+    row.querySelectorAll(".dt-min").forEach((box) => { box.max = String(minutes); });
+    const cell = row.querySelector(".dt-cell");
+    if (cell) refreshSummary(cell);
+    if (spanLine) {
+        spanLine.textContent = spanFor(hours);
+        spanLine.hidden = hours === DEFAULT_SHIFT_HOURS;
+    }
+}
+
+/**
+ * On the 2nd and 3rd Shift pages (rows carry data-night-crew) choosing
+ * anything but an ordinary 8 hours also ticks Scheduled. A long 2nd Shift is
+ * a night crew and a short day's afternoon and evening shifts usually don't
+ * run, so both default to not scheduled — and choosing the length IS saying
+ * this one ran. The person can untick it again; the server never assumes.
+ */
+function tickIfCrewRan(row) {
+    if (!row.dataset.nightCrew) return;
+    const scheduled = row.querySelector('input[type="checkbox"][name^="scheduled_"]');
+    const hours = chosenHours(row);
+    if (scheduled && hours !== null && hours !== DEFAULT_SHIFT_HOURS) scheduled.checked = true;
+}
+
+/**
+ * Picks `value` ("8", "10", "12" or "short") on a row, with `shortHours` in
+ * the box for the short day. Returns false, touching nothing, when that
+ * option isn't on the row or would overlap a neighbouring shift.
+ */
+function pickLength(row, value, shortHours) {
+    const radio = row.querySelector(`.hours-toggle input[type=radio][value="${value}"]`);
+    if (!radio || radio.disabled) return false;
+    radio.checked = true;
+    const box = row.querySelector(".hours-short");
+    // The box only counts next to the short day, and the server refuses a
+    // number in it beside any other choice, so it is cleared rather than
+    // left holding a value that no longer means anything.
+    if (box) box.value = value === "short" ? String(shortHours) : "";
+    applyLength(row);
+    tickIfCrewRan(row);
+    return true;
+}
+
 function wireLengthToggle(row) {
     const radios = row.querySelectorAll(".hours-toggle input[type=radio]");
     if (!radios.length) return;
-    const cell = row.querySelector(".dt-cell");
-    const scheduled = row.querySelector('input[type="checkbox"][name^="scheduled_"]');
+    const shortRadio = row.querySelector('.hours-toggle input[type=radio][value="short"]');
+    const shortBox = row.querySelector(".hours-short");
+
     radios.forEach((radio) => {
         radio.addEventListener("change", () => {
             if (!radio.checked) return;
-            const hours = parseInt(radio.value, 10);
-            const minutes = hours * 60;
-            row.dataset.shiftMinutes = String(minutes);
-            row.querySelectorAll(".dt-min").forEach((box) => { box.max = String(minutes); });
-            if (cell) refreshSummary(cell);
-            if (row.dataset.nightCrew && scheduled && hours !== 8) scheduled.checked = true;
+            if (radio.value === "short") {
+                if (shortBox) shortBox.focus();
+            } else if (shortBox) {
+                shortBox.value = "";
+            }
+            applyLength(row);
+            tickIfCrewRan(row);
         });
     });
+
+    // Typing hours IS picking the short day. Deliberately on input rather
+    // than focus: tabbing through the box on the way to Scheduled mustn't
+    // switch a machine to a short day with no hours in it.
+    if (shortRadio && shortBox) {
+        shortBox.addEventListener("input", () => {
+            if (shortBox.value && !shortRadio.disabled) shortRadio.checked = true;
+            applyLength(row);
+            tickIfCrewRan(row);
+        });
+    }
 }
 
 document.querySelectorAll("tr[data-shift-minutes]").forEach(wireLengthToggle);
+
+/**
+ * "Set every machine to N hours" — a short Saturday is 34 machines at the
+ * same number, and typing it 34 times is how one gets missed. Fills the form
+ * only; nothing is saved until Save. Machines where that length would
+ * overlap a neighbouring shift are skipped and named, not forced.
+ */
+const setAllInput = document.getElementById("set-all-hours");
+const setAllApply = document.getElementById("set-all-apply");
+const setAllResult = document.getElementById("set-all-result");
+if (setAllInput && setAllApply) {
+    const rows = Array.from(document.querySelectorAll("tr[data-machine]"))
+        .filter((row) => row.querySelector(".hours-toggle"));
+    const longValues = new Set(
+        Array.from(document.querySelectorAll('.hours-toggle input[type=radio]:not([value="short"])'))
+            .map((radio) => radio.value)
+    );
+
+    if (!rows.length) {
+        // A 3rd Shift page where no machine's day allows a choice.
+        setAllInput.closest(".set-all-hours").hidden = true;
+    }
+
+    const apply = () => {
+        const hours = Number(setAllInput.value);
+        const short = Number.isInteger(hours) && hours >= 1 && hours <= SHORT_PATTERN_HOURS;
+        if (!short && !longValues.has(String(hours))) {
+            setAllResult.textContent =
+                `Type 1–${SHORT_PATTERN_HOURS}` +
+                (longValues.size ? `, or ${Array.from(longValues).join(", ")}` : "") + ".";
+            return;
+        }
+        const skipped = [];
+        let set = 0;
+        rows.forEach((row) => {
+            if (pickLength(row, short ? "short" : String(hours), hours)) {
+                set += 1;
+            } else {
+                skipped.push(row.dataset.machine);
+            }
+        });
+        setAllResult.textContent =
+            `Set ${set} machine${set === 1 ? "" : "s"} to ${hours}h — not saved until you press Save.` +
+            (skipped.length
+                ? ` Skipped ${skipped.join(", ")}: that length would overlap another shift on their day.`
+                : "");
+    };
+
+    setAllApply.addEventListener("click", apply);
+    // Enter in this box would otherwise submit the whole form.
+    setAllInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            apply();
+        }
+    });
+}
 
 /**
  * Ticks "no downtime" on every machine that has nothing entered yet.

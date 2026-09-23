@@ -38,6 +38,12 @@ is no 3rd. The geometry and the as-long-or-longer rule live in app/models.py
 (shift_slots, resolve_day_lengths, shift_slot_dates); this module just asks.
 The 2-hour rounds and the floor screens stay 8-hour.
 
+A short day (2026-09-23, mostly Saturdays) runs 6-hour shifts, and the
+length stored for one is the 1-6 hours the machine was scheduled for. Its
+checkpoints are the whole 6-hour window's, but its minutes are the hours
+typed — the one place a shift's minutes are not its checkpoints x 120. See
+"SHORT DAYS" in app/models.py.
+
 THE PRODUCTION DAY
 ------------------
 compute_oee_report(D) is the day that STARTED at 6AM on D: 1st Shift, 2nd
@@ -50,7 +56,7 @@ shift_slot_dates() say which date each checkpoint carries.
 THE FORMULAS
 ------------
 Per machine per shift (elapsed minutes = 480 for a completed 8-hour shift,
-600 or 720 for a 10 or 12-hour one):
+600 or 720 for a 10 or 12-hour one, 60 x the hours typed on a short day):
 
     good        = last production reading in the shift (see _cumulative_deltas)
     total       = good + scrap
@@ -119,6 +125,7 @@ from app.models import (
     resolve_day_lengths,
     shift_slot_dates,
     shift_span,
+    window_span,
 )
 
 
@@ -255,7 +262,7 @@ def create_shift_downtime(
     """Appends a downtime submission (header plus one row per reason).
 
     `shift_minutes` is how long THIS machine's shift was on THIS day — 480,
-    600 or 720 — and caps the total. The caller (/console/oee) knows it
+    600 or 720, or as little as 60 on a short day — and caps the total. The caller (/console/oee) knows it
     because the same page shows the shift length; the default is the 8-hour
     day so nothing else that writes downtime has to care.
 
@@ -396,23 +403,41 @@ def create_shift_length(payload: ShiftLengthCreate) -> int:
 # Reads
 # ---------------------------------------------------------------------------
 
+# Each OEE table is read by ONE query, over a range of production days. The
+# single-day readers below are that query with start == end, keyed without
+# the date — which is all /oee's one-day report and /console/oee need, and
+# means the "newest row wins" SQL exists once per table, not once per caller.
+# The range form is what the 7/30-day Pareto reads (compute_pareto_range).
+
+def get_shift_lengths_for_range(
+    start: date_type, end: date_type
+) -> dict[tuple[str, date_type, str], int]:
+    """Latest explicitly-set shift length per (machine_id, production day,
+    shift), for every day from `start` to `end` inclusive."""
+    with get_pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ON (machine_id, entry_date, shift)
+                machine_id, entry_date, shift, shift_hours
+            FROM machine_shift_length
+            WHERE entry_date BETWEEN %s AND %s
+            ORDER BY machine_id, entry_date, shift, created_at DESC
+            """,
+            (start, end),
+        ).fetchall()
+    return {(machine_id, day, shift): hours for machine_id, day, shift, hours in rows}
+
+
 def get_shift_lengths(entry_date: date_type) -> dict[tuple[str, str], int]:
     """Latest explicitly-set shift length per (machine_id, shift) for one
     production day. A missing key means "inherit" — resolve with
     machine_day_lengths() rather than reading this directly.
     """
-    with get_pg_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT ON (machine_id, shift)
-                machine_id, shift, shift_hours
-            FROM machine_shift_length
-            WHERE entry_date = %s
-            ORDER BY machine_id, shift, created_at DESC
-            """,
-            (entry_date,),
-        ).fetchall()
-    return {(machine_id, shift): hours for machine_id, shift, hours in rows}
+    return {
+        (machine_id, shift): hours
+        for (machine_id, _, shift), hours
+        in get_shift_lengths_for_range(entry_date, entry_date).items()
+    }
 
 
 def machine_day_lengths(
@@ -441,8 +466,11 @@ def get_latest_scrap_for_date(entry_date: date_type) -> dict[tuple[str, str], in
     return {(machine_id, shift): scrap for machine_id, shift, scrap in rows}
 
 
-def get_latest_downtime_for_date(entry_date: date_type) -> dict[tuple[str, str], dict]:
-    """Latest downtime submission per (machine_id, shift) for one date.
+def get_downtime_for_range(
+    start: date_type, end: date_type
+) -> dict[tuple[str, date_type, str], dict]:
+    """Latest downtime submission per (machine_id, production day, shift),
+    for every day from `start` to `end` inclusive.
 
     Resolution is per SUBMISSION, not per reason: the newest header for a shift
     wins and older ones are ignored entirely, children and all. That is what
@@ -461,27 +489,27 @@ def get_latest_downtime_for_date(entry_date: date_type) -> dict[tuple[str, str],
         rows = conn.execute(
             """
             WITH latest AS (
-                SELECT DISTINCT ON (machine_id, shift)
-                    id, machine_id, shift, note
+                SELECT DISTINCT ON (machine_id, entry_date, shift)
+                    id, machine_id, entry_date, shift, note
                 FROM shift_downtime_entry
-                WHERE entry_date = %s
-                ORDER BY machine_id, shift, created_at DESC
+                WHERE entry_date BETWEEN %s AND %s
+                ORDER BY machine_id, entry_date, shift, created_at DESC
             )
-            SELECT l.machine_id, l.shift, l.note,
+            SELECT l.machine_id, l.entry_date, l.shift, l.note,
                    r.reason_code, r.minutes, r.was_planned
             FROM latest l
             LEFT JOIN shift_downtime_reason r ON r.downtime_entry_id = l.id
-            ORDER BY l.machine_id, l.shift, r.minutes DESC NULLS LAST
+            ORDER BY l.machine_id, l.entry_date, l.shift, r.minutes DESC NULLS LAST
             """,
-            (entry_date,),
+            (start, end),
         ).fetchall()
 
     labels = get_downtime_reasons(active_only=False)
-    downtime: dict[tuple[str, str], dict] = {}
+    downtime: dict[tuple[str, date_type, str], dict] = {}
 
-    for machine_id, shift, note, reason_code, minutes, was_planned in rows:
+    for machine_id, day, shift, note, reason_code, minutes, was_planned in rows:
         record = downtime.setdefault(
-            (machine_id, shift),
+            (machine_id, day, shift),
             {"note": note, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0},
         )
         if reason_code is None:
@@ -502,24 +530,53 @@ def get_latest_downtime_for_date(entry_date: date_type) -> dict[tuple[str, str],
     return downtime
 
 
-def get_schedule_for_date(entry_date: date_type) -> dict[tuple[str, str], bool]:
-    """Latest scheduling record per (machine_id, shift) for one date.
+def get_latest_downtime_for_date(entry_date: date_type) -> dict[tuple[str, str], dict]:
+    """Latest downtime submission per (machine_id, shift) for one production
+    day. See get_downtime_for_range() for how a submission is resolved."""
+    return {
+        (machine_id, shift): record
+        for (machine_id, _, shift), record
+        in get_downtime_for_range(entry_date, entry_date).items()
+    }
+
+
+def get_schedule_for_range(
+    start: date_type, end: date_type
+) -> dict[tuple[str, date_type, str], bool]:
+    """Latest scheduling record per (machine_id, production day, shift), for
+    every day from `start` to `end` inclusive.
 
     Only exceptions are stored, so a key missing from this map means the
-    machine WAS scheduled. Callers default to True on absence.
+    shift's default — default_scheduled(), which depends on its length.
     """
     with get_pg_connection() as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT ON (machine_id, shift)
-                machine_id, shift, scheduled
+            SELECT DISTINCT ON (machine_id, entry_date, shift)
+                machine_id, entry_date, shift, scheduled
             FROM machine_schedule
-            WHERE entry_date = %s
-            ORDER BY machine_id, shift, created_at DESC
+            WHERE entry_date BETWEEN %s AND %s
+            ORDER BY machine_id, entry_date, shift, created_at DESC
             """,
-            (entry_date,),
+            (start, end),
         ).fetchall()
-    return {(machine_id, shift): scheduled for machine_id, shift, scheduled in rows}
+    return {
+        (machine_id, day, shift): scheduled
+        for machine_id, day, shift, scheduled in rows
+    }
+
+
+def get_schedule_for_date(entry_date: date_type) -> dict[tuple[str, str], bool]:
+    """Latest scheduling record per (machine_id, shift) for one date.
+
+    Only exceptions are stored, so a key missing from this map means the
+    shift's default — default_scheduled(), which depends on its length.
+    """
+    return {
+        (machine_id, shift): scheduled
+        for (machine_id, _, shift), scheduled
+        in get_schedule_for_range(entry_date, entry_date).items()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -961,9 +1018,15 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
             # planned reason codes in the floor's set, planned downtime is
             # always zero today — but the arithmetic still subtracts it, so
             # adding a planned code later needs no change here.
+            #
+            # A short day's shift owns a 6-hour window but is scheduled for
+            # only `hours` of it, counted from the window's start, so its
+            # clock is capped there: 4 hours on the 1st Shift is 240 minutes
+            # whether it's read at 11AM or next week. For 8/10/12 hours the
+            # cap is the whole window and changes nothing.
             planned = downtime["planned_minutes"] if downtime else 0
             unplanned = downtime["unplanned_minutes"] if downtime else 0
-            elapsed_minutes = SLOT_MINUTES * len(elapsed)
+            elapsed_minutes = min(SLOT_MINUTES * len(elapsed), hours * 60)
             ppt = elapsed_minutes - planned if downtime else None
             run = ppt - unplanned if ppt is not None else None
 
@@ -989,8 +1052,9 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
             scrap_known = countable and scrap is not None
 
             # The seeded standard is a 4-checkpoint (8-hour) target; a
-            # longer shift's target is proportionally more. Every increment
-            # on the floor divides by 8, so this stays a whole number.
+            # longer or shorter shift's target is in proportion to its
+            # hours. It is 4 x the 2-hour increment, and every increment on
+            # the floor is even, so this stays a whole number even for 5.
             standard = (
                 standards.get((machine_id, shift_label), 0) * hours // DEFAULT_SHIFT_HOURS
             )
@@ -1013,8 +1077,11 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
                 "scheduled": scheduled,
                 "shift_exists": True,
                 "shift_hours": hours,
-                "shift_minutes": SLOT_MINUTES * len(slots),
+                "shift_minutes": hours * 60,
                 "span": shift_span(shift_label, hours),
+                # Differs from `span` only on a short day: the 6-hour window
+                # the checkpoints come from, e.g. 6AM-12PM around 6AM-10AM.
+                "window_span": window_span(shift_label, hours),
                 "production_day": production_day.isoformat(),
                 "operator": next(
                     (
@@ -1093,6 +1160,7 @@ def _absent_shift(hours: int, production_day: date_type, day_lengths: dict[str, 
         "shift_hours": hours,
         "shift_minutes": 0,
         "span": None,
+        "window_span": None,
         "covered_by": {
             "shift": previous,
             "hours": day_lengths[previous],
@@ -1132,19 +1200,20 @@ def _completeness(machines: dict[str, dict], elapsed: list[str]) -> dict:
 
     `elapsed` is the 8-hour view of the shift, for the page's "N elapsed
     slots" note; each machine is judged on its own elapsed count, which is
-    larger on a 10 or 12-hour day. `long_shift_machines` says how many of the
-    scheduled machines are on such a day so the note can mention it.
+    larger on a 10 or 12-hour day and smaller on a short one.
+    `other_length_machines` says how many of the scheduled machines are on
+    something other than 8 hours so the note can mention it.
     """
     counts = {"production": 0, "downtime": 0, "scrap": 0}
     total = 0
-    long_shift = 0
+    other_length = 0
 
     for machine in machines.values():
         if not machine["scheduled"]:
             continue
         total += 1
         if machine["shift_hours"] != DEFAULT_SHIFT_HOURS:
-            long_shift += 1
+            other_length += 1
         if not machine["elapsed_count"]:
             continue
         if machine["has_production"]:
@@ -1157,8 +1226,128 @@ def _completeness(machines: dict[str, dict], elapsed: list[str]) -> dict:
     return {
         "machines": total,
         "slots_expected": len(elapsed),
-        "long_shift_machines": long_shift,
+        "other_length_machines": other_length,
         "production": counts["production"],
         "downtime": counts["downtime"],
         "scrap": counts["scrap"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# The downtime Pareto over a week or a month
+# ---------------------------------------------------------------------------
+
+def compute_pareto_range(
+    end_day: date_type, days: int, *, now: datetime | None = None
+) -> dict:
+    """Downtime minutes by reason for every machine, summed over the `days`
+    production days ending on (and including) `end_day`, all three shifts
+    together. What /oee's Pareto shows when "7 days" or "30 days" is picked.
+
+    PER MACHINE, NOT PRE-SUMMED. The picker on /oee narrows the Pareto to any
+    set of machines, so the per-reason sum across machines happens in the
+    browser from these — the same split the one-shift Pareto already makes
+    (buildPareto in oee.js), and safe for the same reason: a Pareto is a
+    plain sum of minutes with no rate in it. Summing across DAYS happens here,
+    because that needs each day's shift lengths and scheduling.
+
+    Which machine-shifts count is decided exactly as compute_oee_report()
+    decides it for one day: the shift has to exist on that machine's day
+    (after a 12-hour 2nd Shift there is no 3rd) and the machine has to be
+    scheduled for it, explicitly or by default_scheduled() for its length.
+    A counted shift's reasons are included whether or not its OEE was
+    computable, as there.
+
+    HOW MUCH IS BEHIND THE BARS
+    ---------------------------
+    A month in which half the downtime was never entered looks quieter than
+    it was, and a bar chart can't say so on its own. Each machine carries:
+
+      records - counted machine-shifts with a downtime submission, "ran
+                clean" ones included
+      missing - counted machine-shifts that are over, reported production,
+                and have NO downtime submission — losses the bars can't show
+
+    "Reported production" is the test for whether a shift ran, so a Sunday
+    nobody worked (and nobody unticked Scheduled for) is not "missing". A
+    shift still in progress isn't either: its downtime is entered at the end.
+
+    Five queries for any length of range, rather than one report per day —
+    every query opens its own connection, and 30 days of reports would be
+    several hundred of them.
+    """
+    # Imported here for the same reason compute_oee_report() does it.
+    from app.db.entries import get_reported_slots
+
+    now = now or datetime.now()
+    start = end_day - timedelta(days=days - 1)
+
+    explicit_lengths = get_shift_lengths_for_range(start, end_day)
+    schedule = get_schedule_for_range(start, end_day)
+    downtime = get_downtime_for_range(start, end_day)
+    # The last day's night checkpoints are filed under the morning after it.
+    reported = get_reported_slots(start, end_day + timedelta(days=1))
+
+    explicit_by_day: dict[tuple[str, date_type], dict[str, int]] = {}
+    for (machine_id, day, shift), hours in explicit_lengths.items():
+        explicit_by_day.setdefault((machine_id, day), {})[shift] = hours
+
+    machines: dict[str, dict] = {}
+    for machine_id in MACHINE_IDS:
+        reasons: dict[str, dict] = {}
+        records = 0
+        missing = 0
+
+        for offset in range(days):
+            day = start + timedelta(days=offset)
+            lengths = resolve_day_lengths(explicit_by_day.get((machine_id, day), {}))
+
+            for shift in SHIFT_ORDER:
+                hours = lengths[shift]
+                dated_slots = shift_slot_dates(shift, day, hours)
+                if dated_slots is None:
+                    continue  # the day has no room for this shift
+                scheduled = schedule.get(
+                    (machine_id, day, shift), default_scheduled(shift, hours)
+                )
+                if not scheduled:
+                    continue
+
+                record = downtime.get((machine_id, day, shift))
+                if record is None:
+                    over = len(elapsed_dated_slots(dated_slots, now)) == len(dated_slots)
+                    ran = any(
+                        (machine_id, slot_date, slot) in reported
+                        for slot, slot_date in dated_slots
+                    )
+                    if over and ran:
+                        missing += 1
+                    continue
+
+                records += 1
+                for reason in record["reasons"]:
+                    bucket = reasons.setdefault(
+                        reason["code"],
+                        {
+                            "code": reason["code"],
+                            "label": reason["label"],
+                            "is_planned": reason["is_planned"],
+                            "minutes": 0,
+                            "shifts": 0,
+                        },
+                    )
+                    bucket["minutes"] += reason["minutes"]
+                    bucket["shifts"] += 1
+
+        machines[machine_id] = {
+            "reasons": sorted(reasons.values(), key=lambda r: r["minutes"], reverse=True),
+            "records": records,
+            "missing": missing,
+        }
+
+    return {
+        "start": start.isoformat(),
+        "end": end_day.isoformat(),
+        "days": days,
+        "machines": machines,
     }

@@ -39,9 +39,19 @@ delta is the gap between two hand-taken readings, and a reading logged late
 borrows units from its neighbour — noise that produced false "impossible value"
 alarms on seven machines in the first week of use. A shift is 480 minutes
 however the readings fell — or 600 or 720 on a machine whose day was set to
-10 or 12 hours on /console/oee, which the tag next to its name shows. Per-slot
-production is still in the payload and surfaces on the Good column's tooltip,
-which is what you need to find a bad checkpoint.
+10 or 12 hours on /console/oee, or 60 per hour typed on a short day, which
+the tag next to its name shows. Per-slot production is still in the payload
+and surfaces on the Good column's tooltip, which is what you need to find a
+bad checkpoint.
+
+THE PARETO'S PERIODS
+--------------------
+The downtime Pareto shows the selected shift by default, or the last 7 or 30
+production days ending on the date in the date box, all three shifts
+together (/api/oee-pareto). Rolling rather than calendar weeks, and anchored
+on the date box rather than on today, so it is "the last week" by default and
+"the week that ended then" for any date picked. Only the Pareto has periods;
+the OEE grid stays one shift, for the reason there's no All Day option.
 
 Read-only, like /supervisor — every write path for scrap, downtime and
 scheduling lives on /console/oee. That matters more here than it looks: the
@@ -60,12 +70,14 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.db.entries import get_available_production_days
-from app.db.oee import compute_oee_report
+from app.db.oee import compute_oee_report, compute_pareto_range
 from app.models import (
     DASHBOARD_ZONE_LABELS,
     DASHBOARD_ZONES,
     OEE_ZONE_ORDER,
+    PARETO_RANGE_DAYS,
     SHIFT_ORDER,
+    SHORT_PATTERN_HOURS,
     STANDARD_PCT_OF_IDEAL,
     resolve_shift,
 )
@@ -106,23 +118,35 @@ def _parse_date(raw: str | None) -> date_type | None:
         return None
 
 
+def _parse_period(raw: str | None) -> int | None:
+    """The Pareto's period: one of PARETO_RANGE_DAYS, or None for the
+    selected shift (the default, and what anything unrecognised means)."""
+    try:
+        days = int(raw) if raw else None
+    except ValueError:
+        return None
+    return days if days in PARETO_RANGE_DAYS else None
+
+
 @router.get("/oee", response_class=HTMLResponse)
 def oee_page(
     request: Request,
     date: str | None = None,
     shift: str | None = None,
     pareto: str | None = None,
+    period: str | None = None,
 ):
     """Page shell for the OEE grid.
 
-    `date`, `shift` and `pareto` are optional query params so a particular
-    view can be bookmarked or pasted; oee.js keeps them in sync with the
-    on-page controls via history.replaceState. None is validated into an
-    error here — the shell renders the same either way, /api/oee-data
+    `date`, `shift`, `pareto` and `period` are optional query params so a
+    particular view can be bookmarked or pasted; oee.js keeps them in sync
+    with the on-page controls via history.replaceState. None is validated
+    into an error here — the shell renders the same either way, /api/oee-data
     resolves a junk date to a sensible one rather than 500ing, and oee.js
     drops machine ids it doesn't know. `pareto` is a comma-separated list of
     machine ids for the downtime Pareto's picker; absent means the whole
-    floor.
+    floor. `period` is 7 or 30 for the Pareto's rolling windows; absent
+    means the selected shift.
 
     Note there's no All Day option, unlike /supervisor. OEE is defined against
     Planned Production Time, and the three shifts have separate PPTs, separate
@@ -146,6 +170,9 @@ def oee_page(
             "requested_date": date or "",
             "requested_shift": resolve_shift(shift, datetime.now()),
             "requested_pareto": pareto or "",
+            "requested_period": _parse_period(period),
+            "pareto_range_days": PARETO_RANGE_DAYS,
+            "short_pattern_hours": SHORT_PATTERN_HOURS,
         },
     )
 
@@ -181,3 +208,27 @@ def oee_data(date: str | None = None):
     report["available_dates"] = [d.isoformat() for d in available]
     report["has_any_data"] = bool(available)
     return report
+
+
+@router.get("/api/oee-pareto")
+def oee_pareto(end: str | None = None, days: str | None = None):
+    """Downtime by reason, per machine, over the `days` production days
+    ending on `end` — the Pareto's "7 days" / "30 days" views.
+
+    Rolling and anchored on the page's date box rather than on today, so the
+    default (the page opens on the latest day with data) is "the last week",
+    and picking an older date shows the week that ended then. All three
+    shifts together: the shift toggle is about one shift's OEE, and a week
+    of downtime is the floor's. Returned per machine so the page's machine
+    picker narrows it without another round trip; see compute_pareto_range().
+
+    Forgiving like /api/oee-data: a missing or junk `end` means the latest
+    production day with data, and a `days` that isn't one of the offered
+    periods means the shortest one.
+    """
+    period = _parse_period(days) or PARETO_RANGE_DAYS[0]
+    end_day = _parse_date(end)
+    if end_day is None:
+        available = get_available_production_days()
+        end_day = available[0] if available else datetime.now().date()
+    return compute_pareto_range(end_day, period)
