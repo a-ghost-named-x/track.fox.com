@@ -32,8 +32,6 @@ number on the site in plain language, without code.
   (Jinja2 templates plus plain JavaScript). No frontend build step.
 - **Postgres** holds the manually entered data. The app connects as a
   low-privilege role.
-- **MSSQL** (read-only) is where automated production data will come from.
-  The connection helper exists; the query is still a TODO.
 - **Docker Compose** on a single Linux VM, behind a separate Traefik instance.
 - **CI/CD:** a push to `main` builds the image on GitHub Actions, pushes it to
   GHCR, and a self-hosted runner on the server pulls it and restarts the
@@ -74,7 +72,6 @@ app/
     entries.py       2-hour production entries
     oee.py           OEE tables and the OEE / Pareto computation
     postgres.py      Postgres connection
-    mssql.py         read-only MSSQL connection
   routers/           one module per page group
   templates/         Jinja2 templates
   static/            CSS and JavaScript

@@ -1,8 +1,4 @@
-"""Routes for /dashboard: the site menu and the floor screens.
-
-The floor screens show manual-entry data from Postgres. MSSQL data will be
-merged in here once that query exists (see the TODO below).
-"""
+"""Routes for /dashboard: the site menu and the floor screens."""
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
@@ -71,9 +67,6 @@ def dashboard_data():
 
     Returns today's entries plus the current shift's four slot columns, so
     the grid can switch shifts without a page reload.
-
-    TODO: query MSSQL via app.db.mssql.run_readonly_query() and merge it in,
-    once the production schema is confirmed.
     """
     now = datetime.now()
     today = now.date()
