@@ -95,8 +95,8 @@
         {# Scheduled hours, not hours run: typing fewer to cover a no-show
            would hide that loss from OEE. #}
         <p class="oee-entry-hint">
-            <strong>Short day:</strong> type the hours ({{ short_shift_hours[0] }}–{{ short_shift_hours[-1] }})
-            a machine was <em>scheduled</em> for in the box after 12h, and its day runs on 6-hour shifts:
+            <strong>Short day:</strong> type the hours ({{ short_hours_text }}, since production is read every
+            2 hours) a machine was <em>scheduled</em> for in the box after 12h, and its day runs on 6-hour shifts:
             1st 6AM–12PM, 2nd 12PM–6PM, 3rd 6PM–12AM. OEE judges it against that many hours.
             {% if not is_first_shift %}After a short 1st Shift this shift starts unticked, since usually
             only the morning crew runs; typing hours here ticks it.{% endif %}
@@ -104,7 +104,7 @@
             log the gap as Lack of Operator.
             <span class="set-all-hours">
                 <label for="set-all-hours">Set every machine to</label>
-                <input type="number" id="set-all-hours" min="1" max="12" step="1" inputmode="numeric"
+                <input type="text" id="set-all-hours" inputmode="numeric"
                        placeholder="h" aria-describedby="set-all-result">
                 hours
                 <button type="button" class="link-button" id="set-all-apply">Apply</button>
@@ -177,13 +177,13 @@
                                 {% endfor %}
                                 <label class="hours-option hours-option-short{% if short_blocked %} is-blocked{% endif %}"
                                        {% if short_blocked %}title="A short day's shift would start inside the {{ row.min_pattern }}h shift before it. Make that shift a short day first."
-                                       {% else %}title="Short day: 6-hour shifts (1st 6AM–12PM, 2nd 12PM–6PM, 3rd 6PM–12AM). Type the hours this machine was scheduled for, {{ short_shift_hours[0] }}–{{ short_shift_hours[-1] }}."{% endif %}>
+                                       {% else %}title="Short day: 6-hour shifts (1st 6AM–12PM, 2nd 12PM–6PM, 3rd 6PM–12AM). Type the hours this machine was scheduled for: {{ short_hours_text }}."{% endif %}>
                                     <input type="radio" name="hours_{{ machine }}" value="short"
                                            {% if is_short %}checked{% endif %}
                                            {% if short_blocked and not is_short %}disabled{% endif %}>
                                     <span><input type="number" class="hours-short" name="short_hours_{{ machine }}"
-                                                 min="{{ short_shift_hours[0] }}" max="{{ short_shift_hours[-1] }}" step="1"
-                                                 inputmode="numeric" placeholder="1–6"
+                                                 min="{{ short_shift_hours[0] }}" max="{{ short_shift_hours[-1] }}" step="2"
+                                                 inputmode="numeric" placeholder="2/4/6"
                                                  aria-label="Short-day hours for {{ machine }}"
                                                  value="{{ row.short_value }}"
                                                  {% if short_blocked and not is_short %}disabled{% endif %}>h</span>
@@ -311,6 +311,7 @@
     window.SHIFT_INDEX = {{ shift_index|tojson }};
     window.DAY_START_HOUR = {{ day_start_hour|tojson }};
     window.SHORT_PATTERN_HOURS = {{ short_pattern_hours|tojson }};
+    window.SHORT_SHIFT_HOURS = {{ short_shift_hours|tojson }};
     window.DEFAULT_SHIFT_HOURS = {{ default_shift_hours|tojson }};
 </script>
 <script src="/static/js/console_oee.js"></script>

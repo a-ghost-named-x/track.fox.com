@@ -16,6 +16,8 @@ const MAX_SHIFT_MINUTES = window.MAX_SHIFT_MINUTES || 720;
 const SHIFT_INDEX = window.SHIFT_INDEX || 0;
 const DAY_START_HOUR = window.DAY_START_HOUR === undefined ? 6 : window.DAY_START_HOUR;
 const SHORT_PATTERN_HOURS = window.SHORT_PATTERN_HOURS || 6;
+// Production is read every 2 hours, so a short day is 2, 4 or 6 hours.
+const SHORT_SHIFT_HOURS = window.SHORT_SHIFT_HOURS || [2, 4, 6];
 const DEFAULT_SHIFT_HOURS = window.DEFAULT_SHIFT_HOURS || 8;
 
 /** This machine's shift length in minutes, from its row (kept current by applyLength()). */
@@ -143,7 +145,7 @@ function chosenHours(row) {
     if (picked.value !== "short") return parseInt(picked.value, 10);
     const box = row.querySelector(".hours-short");
     const value = box ? Number(box.value) : NaN;
-    return Number.isInteger(value) && value >= 1 && value <= SHORT_PATTERN_HOURS ? value : null;
+    return SHORT_SHIFT_HOURS.includes(value) ? value : null;
 }
 
 /** Updates the row's downtime cap, minutes max and span line for a new length. */
@@ -248,12 +250,12 @@ if (setAllInput && setAllApply) {
     }
 
     const apply = () => {
-        const hours = Number(setAllInput.value);
-        const short = Number.isInteger(hours) && hours >= 1 && hours <= SHORT_PATTERN_HOURS;
+        const hours = Number(setAllInput.value.trim());
+        const short = SHORT_SHIFT_HOURS.includes(hours);
         if (!short && !longValues.has(String(hours))) {
+            const allowed = [...SHORT_SHIFT_HOURS, ...longValues];
             setAllResult.textContent =
-                `Type 1–${SHORT_PATTERN_HOURS}` +
-                (longValues.size ? `, or ${Array.from(longValues).join(", ")}` : "") + ".";
+                `Type ${allowed.slice(0, -1).join(", ")} or ${allowed[allowed.length - 1]}.`;
             return;
         }
         const skipped = [];

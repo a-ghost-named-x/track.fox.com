@@ -13,7 +13,7 @@ row for that cell and blank out the units entered earlier.
 
 Shift length
 ------------
-Each machine's shift can be 8, 10 or 12 hours, or 1-6 on a short day (see
+Each machine's shift can be 8, 10 or 12 hours, or 2, 4 or 6 on a short day (see
 "Shift length" in app/models.py). The length decides which checkpoints the
 shift has, how many minutes it is, and whether it exists at all (there is no
 3rd Shift after a 12-hour 2nd). On a short day the minutes are the scheduled

@@ -1445,7 +1445,7 @@ button.shift-option {
 
 /* More specific than `.oee-entry-grid input[type="number"]`. */
 .oee-entry-grid .hours-option-short .hours-short {
-    width: 2.8em;
+    width: 3.6em;
     padding: 0.1rem 0.2rem;
     font-size: 0.85rem;
     font-weight: 600;

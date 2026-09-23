@@ -17,7 +17,7 @@ What it checks:
      later shift can't be shorter than the one before, a 10/12h 2nd Shift is
      unticked by default and removes the same date's 3rd Shift row, and the
      downtime cap follows the machine's length.
-  5. Short days: the 1-6 hours box, which only counts with the short-day
+  5. Short days: the 2/4/6 hours box, which only counts with the short-day
      option picked, the 3rd Shift page offering a length only after a short
      2nd Shift, and /oee's 7/30-day Pareto.
 """
@@ -565,7 +565,7 @@ check("length changed on the same save is the cap",
       len(written["length"]) == 1 and len(written["downtime"]) == 1, res.text[:300])
 reset()
 
-print("\n== SHORT DAYS: typed hours, 1 to 6 ==")
+print("\n== SHORT DAYS: typed hours, 2, 4 or 6 ==")
 FIRST_URL = f"/console/oee?shift=1st%20Shift&entry_date={DAY.isoformat()}"
 SECOND_URL = f"/console/oee?shift=2nd%20Shift&entry_date={DAY.isoformat()}"
 THIRD_URL = f"/console/oee?shift=3rd%20Shift&entry_date={DAY.isoformat()}"
@@ -587,7 +587,8 @@ reset()
 first = client.get(FIRST_URL).text
 check("every row has the short-day option", first.count('value="short"') == 34,
       str(first.count('value="short"')))
-check("...with its hours box, 1 to 6", 'min="1" max="6"' in short_box(first, "C1"))
+check("...with its hours box, 2 to 6 in steps of 2",
+      'min="2" max="6" step="2"' in short_box(first, "C1"))
 check("the short day is open on the 1st Shift", not radio_disabled(first, "C1", "short"))
 check("the hint says the hours are SCHEDULED hours", "<em>scheduled</em>" in first
       and "Lack of Operator" in first)
@@ -604,10 +605,18 @@ check("short day with no hours writes nothing, and says so",
       written["length"] == [] and "no hours are typed" in res.text)
 reset()
 res = post({"hours_C1": "short", "short_hours_C1": "7"})
-check("7 is refused", written["length"] == [] and "1 to 6" in res.text)
+check("7 is refused", written["length"] == [] and "must be 2, 4 or 6" in res.text)
+for odd in ("1", "3", "5"):
+    reset()
+    res = post({"hours_C1": "short", "short_hours_C1": odd})
+    check(f"{odd} is refused: production is only read every 2 hours",
+          written["length"] == [] and "must be 2, 4 or 6" in res.text)
 reset()
 res = post({"hours_C1": "short", "short_hours_C1": "2.5"})
-check("a fraction is refused", written["length"] == [] and "whole number" in res.text)
+check("a fraction is refused", written["length"] == [] and "must be 2, 4 or 6" in res.text)
+reset()
+post({"hours_C1": "short", "short_hours_C1": "2"})
+check("2 is accepted", [w.shift_hours for w in written["length"]] == [2], str(written["length"]))
 reset()
 res = post({"hours_C1": "8", "short_hours_C1": "4"})
 check("hours typed next to 8h are a contradiction, not a guess",
@@ -659,11 +668,11 @@ check("inherited rows say they follow the 2nd", "follows 2nd" in third)
 
 reset()
 stored_lengths[("C1", "1st Shift")] = 4
-post_shift("3rd Shift", {"hours_C1": "short", "short_hours_C1": "5",
+post_shift("3rd Shift", {"hours_C1": "short", "short_hours_C1": "4",
                          "sched_present_C1": "1", "scheduled_C1": "1"})
-check("5 hours on the 3rd Shift saves as the 3rd Shift's",
+check("4 hours on the 3rd Shift saves as the 3rd Shift's",
       len(written["length"]) == 1 and written["length"][0].shift == "3rd Shift"
-      and written["length"][0].shift_hours == 5, str(written["length"]))
+      and written["length"][0].shift_hours == 4, str(written["length"]))
 check("with the evening crew ticked on",
       len(written["schedule"]) == 1 and written["schedule"][0].scheduled is True)
 

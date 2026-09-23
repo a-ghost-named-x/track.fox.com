@@ -30,7 +30,7 @@ Then a short Saturday (SAT), the 6-hour pattern with typed hours:
     FM1  6 hours on the 1st Shift at standard       -> 360 min, 3 slots, 0.75
          ...its 2nd and 3rd follow the 6-hour pattern, not scheduled
     FM2  4 hours, some downtime                     -> 240 min, still 0.75 OEE
-    FM3  6 / 6 / 5, all three crews ticked on       -> 12PM reset, 3rd to 12AM
+    FM3  6 / 6 / 4, all three crews ticked on       -> 12PM reset, 3rd to 12AM
     WS4  an ordinary 8h shift, downtime never entered
     WS5  a 6h morning, then an ordinary 8h 2nd Shift
 
@@ -169,15 +169,16 @@ add("FM2", [8100, 16200, None], slots=S1_SHORT, day=SAT)          # 6AM-10AM
 add("FM3", [8100, 16200, 24300], slots=S1_SHORT, day=SAT)
 # The 12PM crew starts its count from zero, like any shift change.
 add("FM3", [8100, 16200, 24300], slots=["2PM", "4PM", "6PM"], day=SAT)
-# A 5-hour 3rd Shift, 6PM-11PM: its 12AM box is filed under the next morning.
+# A 4-hour 3rd Shift, 6PM-10PM. The count was written into the 12AM box too
+# (unchanged), which the rounds file under the next morning.
 add("FM3", [8100, 16200], slots=["8PM", "10PM"], day=SAT)
-add("FM3", [20250], slots=["12AM"], day=SAT_AFTER)
+add("FM3", [16200], slots=["12AM"], day=SAT_AFTER)
 add("WS4", [9900, 19800, 29700, 39600], day=SAT)                   # no downtime entered
 
 sat_lengths = {
     ("FM1", "1st Shift"): 6,
     ("FM2", "1st Shift"): 4,
-    ("FM3", "1st Shift"): 6, ("FM3", "2nd Shift"): 6, ("FM3", "3rd Shift"): 5,
+    ("FM3", "1st Shift"): 6, ("FM3", "2nd Shift"): 6, ("FM3", "3rd Shift"): 4,
     ("WS5", "1st Shift"): 6, ("WS5", "2nd Shift"): 8,
 }
 sat_downtime = {
@@ -457,15 +458,17 @@ check("ppt is 360", ws2_night["shift"]["ppt_minutes"], 360)
 
 print("\n== SHORT DAYS: the 6-hour pattern, as geometry ==")
 from app.models import (  # noqa: E402
-    default_scheduled, resolve_day_lengths, shift_length_conflict, shift_plan, shift_span,
-    window_span,
+    SHORT_SHIFT_HOURS, default_scheduled, resolve_day_lengths, shift_length_conflict,
+    shift_plan, shift_span, window_span,
 )
 check("the 6-hour plan", shift_plan(6), {
     "1st Shift": ["8AM", "10AM", "12PM"],
     "2nd Shift": ["2PM", "4PM", "6PM"],
     "3rd Shift": ["8PM", "10PM", "12AM"],
 })
-check("1-5 hours sit in the same windows", shift_plan(4), shift_plan(6))
+check("a short day is 2, 4 or 6 hours, never odd", SHORT_SHIFT_HOURS, [2, 4, 6])
+check("2 and 4 hours sit in the same windows as 6",
+      (shift_plan(2), shift_plan(4)), (shift_plan(6), shift_plan(6)))
 check("4h on the 1st Shift is 6AM-10AM", shift_span("1st Shift", 4), "6AM-10AM")
 check("...inside the 6AM-12PM window", window_span("1st Shift", 4), "6AM-12PM")
 check("the 3rd Shift of a short day ends at midnight", shift_span("3rd Shift", 6), "6PM-12AM")
@@ -523,13 +526,13 @@ check("2nd Shift checkpoints", [c["slot"] for c in fm3_2nd["checkpoints"]], ["2P
 check("counted from zero at 12PM", fm3_2nd["shift"]["good"], 24300)
 check("2nd Shift oee", fm3_2nd["shift"]["oee"], 0.75)
 fm3_3rd = sat["shifts"]["3rd Shift"]["machines"]["FM3"]
-check("5-hour 3rd Shift is 6PM-11PM", fm3_3rd["span"], "6PM-11PM")
+check("4-hour 3rd Shift is 6PM-10PM", fm3_3rd["span"], "6PM-10PM")
 check("its checkpoints run to midnight, the last filed next morning",
       [(c["slot"], c["date"]) for c in fm3_3rd["checkpoints"]],
       [("8PM", "2026-09-12"), ("10PM", "2026-09-12"), ("12AM", "2026-09-13")])
-check("good is the 12AM reading from the next date", fm3_3rd["shift"]["good"], 20250)
-check("ppt is 300", fm3_3rd["shift"]["ppt_minutes"], 300)
-check("standard scaled to 5 hours stays whole", fm3_3rd["shift"]["standard"], 20250)
+check("good is the 12AM reading from the next date", fm3_3rd["shift"]["good"], 16200)
+check("ppt is 240", fm3_3rd["shift"]["ppt_minutes"], 240)
+check("standard scaled to 4 hours", fm3_3rd["shift"]["standard"], 16200)
 check("oee", fm3_3rd["shift"]["oee"], 0.75)
 check("3rd Shift rollup counts FM3 only",
       sat["shifts"]["3rd Shift"]["rollup"]["machines"], 1)

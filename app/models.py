@@ -195,8 +195,9 @@ PARETO_RANGE_DAYS: list[int] = [7, 30]
 # Short days
 # ----------
 # Some days (mostly Saturdays) run on 6-hour shifts: 1st 6AM-12PM, 2nd
-# 12PM-6PM, 3rd 6PM-12AM, nothing 12AM-6AM. The stored length is a whole
-# number of hours, 1 to 6, and it means two things:
+# 12PM-6PM, 3rd 6PM-12AM, nothing 12AM-6AM. The stored length is 2, 4 or 6
+# hours (production is only read every 2 hours, so an odd number would end
+# between two checkpoints), and it means two things:
 #
 #   - The shift sits in the 6-hour pattern (pattern_hours() returns 6). Every
 #     rule above works on the pattern: where the shift starts, which
@@ -231,9 +232,10 @@ SHIFT_LENGTH_HOURS: list[int] = [8, 10, 12]
 DEFAULT_SHIFT_HOURS: int = 8
 
 SHORT_PATTERN_HOURS: int = 6
-SHORT_SHIFT_HOURS: list[int] = list(range(1, SHORT_PATTERN_HOURS + 1))
+SHORT_SHIFT_HOURS: list[int] = list(range(2, SHORT_PATTERN_HOURS + 1, 2))
 
-# Every value machine_shift_length can hold. Must match its CHECK constraint.
+# Every value the app writes to machine_shift_length. Its CHECK constraint
+# must accept all of these.
 VALID_SHIFT_HOURS: list[int] = SHORT_SHIFT_HOURS + SHIFT_LENGTH_HOURS
 
 # Upper bound on one downtime reason's minutes, matching the CHECK on
@@ -252,8 +254,8 @@ NIGHT_SLOTS: list[str] = [
 
 
 def pattern_hours(shift_hours: int) -> int:
-    """The shift pattern a stored length belongs to: 6 for a short day's 1-6,
-    otherwise the length itself."""
+    """The shift pattern a stored length belongs to: 6 for a short day's
+    2, 4 or 6, otherwise the length itself."""
     return SHORT_PATTERN_HOURS if shift_hours <= SHORT_PATTERN_HOURS else shift_hours
 
 
@@ -266,7 +268,7 @@ def shift_slots(shift: str, shift_hours: int) -> list[str] | None:
         1st, 8h  -> 8AM..2PM      2nd, 8h  -> 4PM..10PM    3rd, 8h -> 12AM..6AM
         1st, 10h -> 8AM..4PM      2nd, 10h -> 6PM..2AM     3rd, 10h: none
         1st, 12h -> 8AM..6PM      2nd, 12h -> 8PM..6AM     3rd, 12h: none
-        1st, 1-6 -> 8AM..12PM     2nd, 1-6 -> 2PM..6PM     3rd, 1-6 -> 8PM..12AM
+        1st, 2/4/6 -> 8AM..12PM   2nd, 2/4/6 -> 2PM..6PM   3rd, 2/4/6 -> 8PM..12AM
 
     A short-day shift owns its whole 6-hour window whatever hours were
     entered, so it doesn't matter which of its boxes holds the final count.
@@ -494,7 +496,7 @@ class ScheduleCreate(BaseModel):
 class ShiftLengthCreate(BaseModel):
     """How many hours one shift ran on one machine on one production day.
 
-    `shift_hours` is 8, 10 or 12, or 1-6 for a short day. The as-long-or-
+    `shift_hours` is 8, 10 or 12, or 2, 4 or 6 for a short day. The as-long-or-
     longer rule is checked by the caller (shift_length_conflict()), since
     this model only sees one shift.
     """

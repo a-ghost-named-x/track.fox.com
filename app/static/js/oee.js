@@ -17,7 +17,7 @@ const WORLD_CLASS = 0.85;
 
 const QUICK_PICK_COUNT = 7;
 
-// A short day's shifts are 6 hours, and a stored length of 1-6 means one.
+// A short day's shifts are 6 hours, and a stored length of 2, 4 or 6 means one.
 const SHORT_PATTERN_HOURS = window.SHORT_PATTERN_HOURS || 6;
 
 /**

@@ -24,8 +24,8 @@ minutes.
 
 Shift length
 ------------
-Each shift's length is set on that shift's page: 8, 10 or 12 hours, or 1-6 on
-a short day (rules in "Shift length" in app/models.py). Options that would
+Each shift's length is set on that shift's page: 8, 10 or 12 hours, or 2, 4 or 6
+on a short day (rules in "Shift length" in app/models.py). Options that would
 overlap an earlier shift are disabled on the page and rejected on save by
 shift_length_conflict(). A 10 or 12-hour 2nd Shift defaults to not scheduled
 and leaves no 3rd Shift that night; that row shows "no 3rd shift" with no
@@ -135,7 +135,7 @@ def _blank_row() -> dict:
         "window_span": "",
         "shift_minutes": DEFAULT_SHIFT_HOURS * 60,
         # Shortest and longest pattern this shift may be, so the page can
-        # disable options that would overlap. A short day's 1-6 are all
+        # disable options that would overlap. A short day's 2, 4 or 6 are all
         # pattern 6.
         "min_pattern": SHORT_PATTERN_HOURS,
         "max_pattern": max(SHIFT_LENGTH_HOURS),
@@ -280,6 +280,7 @@ def _context(
         # short-day option is on every page.
         "shift_length_options": long_length_options(shift),
         "short_shift_hours": SHORT_SHIFT_HOURS,
+        "short_hours_text": SHORT_HOURS_TEXT,
         "short_pattern_hours": SHORT_PATTERN_HOURS,
         "default_shift_hours": DEFAULT_SHIFT_HOURS,
         # Page-level flags, used for the hint text.
@@ -370,15 +371,21 @@ def _collect_reasons(form, machine_id: str, reasons: dict) -> tuple[list, list[s
     return collected, errors
 
 
+def _or_list(values) -> str:
+    """[2, 4, 6] -> "2, 4 or 6"."""
+    items = [str(v) for v in values]
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} or {items[-1]}"
+
+
+# "2, 4 or 6", for the page's hint text and the error messages.
+SHORT_HOURS_TEXT = _or_list(SHORT_SHIFT_HOURS)
+
+
 def _length_menu(shift: str) -> str:
     """The lengths `shift` can take, as a sentence for error messages:
-    "8, 10 or 12 hours, or 1-6 on a short day" (just "8 hours, ..." on the
-    3rd Shift)."""
-    options = [str(h) for h in long_length_options(shift)]
-    listed = options[0] if len(options) == 1 else f"{', '.join(options[:-1])} or {options[-1]}"
-    return (
-        f"{listed} hours, or {SHORT_SHIFT_HOURS[0]}-{SHORT_SHIFT_HOURS[-1]} on a short day"
-    )
+    "8, 10 or 12 hours, or a short day of 2, 4 or 6" (just "8 hours, ..." on
+    the 3rd Shift)."""
+    return f"{_or_list(long_length_options(shift))} hours, or a short day of {SHORT_HOURS_TEXT}"
 
 
 def _parse_length(raw_choice: str | None, raw_short: str, shift: str) -> tuple[int | None, str | None]:
@@ -393,16 +400,18 @@ def _parse_length(raw_choice: str | None, raw_short: str, shift: str) -> tuple[i
     if raw_choice is None:
         return None, None
 
-    short_range = f"{SHORT_SHIFT_HOURS[0]} to {SHORT_SHIFT_HOURS[-1]}"
     if raw_choice == "short":
         if not raw_short:
-            return None, f"Short day is picked but no hours are typed - enter {short_range}."
+            return None, f"Short day is picked but no hours are typed - enter {SHORT_HOURS_TEXT}."
         try:
             hours = int(raw_short)
         except ValueError:
-            return None, f"Short-day hours must be a whole number from {short_range}."
+            hours = None
         if hours not in SHORT_SHIFT_HOURS:
-            return None, f"Short-day hours must be a whole number from {short_range}."
+            return None, (
+                f"Short-day hours must be {SHORT_HOURS_TEXT}, since production "
+                "is only read every 2 hours."
+            )
         return hours, None
 
     if raw_short:
