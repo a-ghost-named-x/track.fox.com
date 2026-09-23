@@ -1,20 +1,18 @@
 """Verifies the pure OEE arithmetic in app/db/oee.py.
 
-Run it directly — there's no test framework in this project:
+Run it directly (there's no test framework):
 
     python tests/test_oee_math.py
 
-Exits non-zero with a list of failures, so it works as a pre-push check.
+Exits non-zero on any failure.
 
-The single most important assertion in here is that A x P x Q equals OEE
-computed the short way (good / (ideal rate x PPT)) at BOTH the machine and the
-rollup level. That identity is what caught the capacity-vs-clock-time
-availability bug; if it fails again, the aggregation is wrong.
+The key assertion is that A x P x Q equals OEE computed the short way
+(good / (ideal rate x PPT)) for both single machines and rollups. If that
+fails, the aggregation is wrong.
 
-Nothing here touches a database. Only pure functions are exercised — but
-importing them pulls in app.db.postgres, which imports psycopg at module scope
-and needs a password from config, hence the two shims. The psycopg shim only
-fires if the real driver is absent, so it cannot shadow the genuine module.
+No database is touched. Importing the functions pulls in app.db.postgres,
+which needs psycopg and a password, hence the two shims. The psycopg shim only
+applies if the real driver isn't installed.
 """
 import os
 import sys
@@ -106,9 +104,9 @@ check_eq("clean ramp",
          _cumulative_deltas(readings(11700, 23400, 35100, 46800), SLOTS, elapsed=ALL),
          {"8AM": 11700, "10AM": 11700, "12PM": 11700, "2PM": 11700})
 
-# C2, 2026-09-03. Operator moved to WS at 12PM, so 2PM was left blank because
-# the number hadn't moved. Treating that as unknown scored the machine 33.7%
-# when the truth is 25.2% — and flattered it precisely because it had a bad day.
+# A real shift: operator moved at 12PM, so 2PM was left blank because the
+# count hadn't changed. Treating the blank as unknown gives 33.7%; counting it
+# as zero gives the correct 25.2%.
 check_eq("trailing blank produces zero, not unknown",
          _cumulative_deltas(readings(10500, 15750, 15750, None), SLOTS, elapsed=ALL),
          {"8AM": 10500, "10AM": 5250, "12PM": 0, "2PM": 0})
@@ -119,11 +117,11 @@ check_eq("interior blank absorbed, later reading still correct",
          _cumulative_deltas(readings(11700, None, 35100, 46800), SLOTS, elapsed=ALL),
          {"8AM": 11700, "10AM": 0, "12PM": 23400, "2PM": 11700})
 
-# GUARD 1: total silence is not a claim of zero production.
+# Guard 1: a shift with no readings is unknown, not zero.
 check_eq("a shift with no readings stays unknown",
          _cumulative_deltas({}, SLOTS, elapsed=ALL),
          {"8AM": None, "10AM": None, "12PM": None, "2PM": None})
-# GUARD 2: "unchanged" is meaningless for hours that haven't happened.
+# Guard 2: slots that haven't happened yet are unknown.
 check_eq("mid-shift, un-elapsed slots stay unknown rather than zero",
          _cumulative_deltas(readings(11700, 23400, None, None), SLOTS,
                             elapsed={"8AM", "10AM"}),
@@ -141,17 +139,15 @@ for label, values in (
     d = _cumulative_deltas(r, SLOTS, elapsed=ALL)
     check(f"total survives a {label}", _summarise_production(r, d, SLOTS)["good"], 15750)
 
-# A checkpoint typed low that a LATER reading recovers from: the reading needs
-# fixing, but the shift total is the last one and is still right, so it warns
-# rather than excluding a whole shift over a mid-shift typo.
+# A low mid-shift reading that a later one recovers from: the total is still
+# right, so it warns rather than excluding the shift.
 r = readings(11700, 23400, 20000, 46800)
 p = _summarise_production(r, _cumulative_deltas(r, SLOTS, elapsed=ALL), SLOTS)
 check_eq("mid-shift typo warns", p["warnings"], ["units_went_backwards"])
 check_eq("mid-shift typo is NOT a hard flag", p["flags"], [])
 check("...and the shift total is still the last reading", p["good"], 46800)
 
-# A LAST reading below an earlier one is different in kind: the shift total
-# itself is understated, so nothing derived from it can be trusted.
+# A last reading below an earlier one makes the total wrong, so it's excluded.
 r = readings(11700, 23400, 35100, 20000)
 p = _summarise_production(r, _cumulative_deltas(r, SLOTS, elapsed=ALL), SLOTS)
 check_eq("final reading low is a hard flag", p["flags"], ["final_reading_low"])
@@ -181,8 +177,7 @@ check("quality", c2["quality"], 15750 / 16000)
 check("A x P x Q == oee", c2["oee_from_factors"], c2["oee"])
 
 print("\n== planned downtime comes OUT of the denominator ==")
-# No planned reason codes exist today, but the arithmetic must still hold so
-# that adding one later needs no change to the maths.
+# No reason codes are planned today, but the arithmetic must still handle it.
 p = shift_of(good=24000, scrap=0, unplanned=60, planned=120)
 check("ppt excludes planned", p["ppt_minutes"], 360)
 check("run excludes both", p["run_minutes"], 300)
@@ -213,16 +208,15 @@ check("rollup oee is component-summed", rollup["oee"], correct)
 print(f"        (naive mean would have been {naive_mean:.4f} vs correct {correct:.4f})")
 check_eq("rollup differs from the mean", abs(rollup["oee"] - naive_mean) > 0.01, True)
 
-# The whole reason availability is capacity-weighted rather than clock-based:
-# with mixed rates a clock-time availability makes the three factors multiply
-# out to something that is not the rollup's OEE.
+# Why availability is capacity-weighted: with mixed rates, clock-time
+# availability makes A x P x Q differ from the rollup's OEE.
 check("rollup A x P x Q == oee", rollup["oee_from_factors"], rollup["oee"])
 check("rollup availability is capacity-weighted",
       rollup["availability"], (130 * 480 + 28 * 240) / (130 * 480 + 28 * 480))
 check("rollup uptime is clock-based and differs", rollup["uptime"], 720 / 960)
 check_eq("the two availabilities diverge on a rollup",
          abs(rollup["availability"] - rollup["uptime"]) > 0.01, True)
-# ...and must NOT diverge for a single machine, where the rate cancels.
+# ...but for a single machine the two are the same.
 check("single machine: availability == uptime", slow["availability"], slow["uptime"])
 
 print("\n== _machine_warnings ==")
@@ -253,7 +247,7 @@ check_eq("future date -> none",
 check_eq("today mid-shift -> only closed windows",
          elapsed_slots("1st Shift", date(2026, 9, 3), datetime(2026, 9, 3, 11, 30)),
          ["8AM", "10AM"])
-# The date is the PRODUCTION day: 3rd Shift of 9/3 is 9/3 10PM -> 9/4 6AM.
+# The date is the production day: 3rd Shift of 9/3 is 9/3 10PM -> 9/4 6AM.
 check_eq("today at 11:30, tonight's 3rd shift hasn't started",
          elapsed_slots("3rd Shift", date(2026, 9, 3), datetime(2026, 9, 3, 11, 30)), [])
 check_eq("3rd shift of 9/2 landed this morning",
@@ -282,7 +276,7 @@ check_eq("nothing set -> 8/8/8", resolve_day_lengths({}),
          {"1st Shift": 8, "2nd Shift": 8, "3rd Shift": 8})
 check_eq("1st = 12 -> the night follows", resolve_day_lengths({"1st Shift": 12}),
          {"1st Shift": 12, "2nd Shift": 12, "3rd Shift": 12})
-# The manager's case: 8-hour 1st Shift, idle 2PM-6PM, a 12-hour crew at 6PM.
+# 8-hour 1st Shift, idle 2PM-6PM, then a 12-hour crew at 6PM.
 check_eq("2nd = 12 on its own", resolve_day_lengths({"2nd Shift": 12}),
          {"1st Shift": 8, "2nd Shift": 12, "3rd Shift": 12})
 check_eq("...so 1st is 6AM-2PM and 2nd is 6PM-6AM",
@@ -306,8 +300,7 @@ check_eq("a 3rd Shift explicitly shorter than a long 2nd is caught",
          True)
 
 print("\n== the production day and the rounds' calendar dates ==")
-# Every overnight shift's 12AM-6AM checkpoints carry the NEXT calendar date,
-# because that is how the 2-hour rounds file them.
+# 12AM-6AM checkpoints carry the next calendar date, as the rounds file them.
 check_eq("3rd Shift of 9/18 lands on 9/19",
          shift_slot_dates("3rd Shift", date(2026, 9, 18)),
          [(s, date(2026, 9, 19)) for s in ("12AM", "2AM", "4AM", "6AM")])

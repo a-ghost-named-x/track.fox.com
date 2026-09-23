@@ -1,49 +1,18 @@
-# Local development override — Compose auto-merges this with
-# docker-compose.yml whenever you run `docker compose up` in this
-# directory, no extra flags needed.
+# Local development override. Compose merges this with docker-compose.yml
+# automatically on `docker compose up`. The deploy workflow only copies
+# docker-compose.yml, so nothing here reaches production.
 #
-# Safe to commit: the deploy workflow (.github/workflows/deploy.yml) only
-# ever copies the file literally named docker-compose.yml to
-# /opt/track-fox-com/ on lost-woods — this file isn't part of that copy, so
-# it has zero effect on production no matter what's in it.
-#
-# What this changes vs. the production compose file:
-#   - Builds the `app` image from the local Dockerfile instead of pulling
-#     ghcr.io/.../track.fox.com:latest, tagged distinctly (track-fox-com:dev)
-#     so it can never be confused with the real image.
-#   - Bind-mounts ./app into the container, so edits made on the host (e.g.
-#     in VS Code) show up inside the container immediately — no rebuild.
-#   - Adds uvicorn --reload for .py changes (routers, models, etc.).
-#     CSS/JS/template changes don't even need that: StaticFiles reads files
-#     from disk per request, and Jinja2's default auto_reload picks up
-#     template edits — just save and refresh the browser.
-#   - Sets TZ explicitly. Production gets the real host timezone via the
-#     /etc/localtime bind mount in docker-compose.yml because lost-woods is
-#     a real Linux host — but that same mount, run through Docker Desktop on
-#     Windows, resolves against Docker Desktop's own internal Linux VM
-#     instead (commonly UTC), not your actual Windows clock/timezone. TZ
-#     takes precedence over that, so it's the reliable fix here. Change this
-#     if the floor's actual timezone is ever different from Central.
-#   - Replaces the port mapping with 8000:8000. Production moved to host port
-#     80 (docker-compose.yml) for its DNS record; Compose merges "ports" by
-#     concatenating lists rather than replacing, so without overriding it,
-#     local dev would try to bind host port 80 too — which commonly
-#     conflicts with something already using it on Windows (IIS, Skype,
-#     etc). !override replaces the inherited list with this one instead of
-#     concatenating with it. (Note: !reset does NOT do this — !reset clears
-#     an attribute entirely regardless of what value follows it, which is
-#     why this was silently producing an app service with no ports at all.)
-#   - Makes the `ingress` network local/real instead of `external: true`.
-#     Production's `ingress` network is created by a separate Traefik
-#     project on lost-woods — nothing on your workstation creates it, so
-#     without this override `docker compose up` here would fail outright
-#     looking for a network that doesn't exist locally. This isn't a
-#     special tag override like `ports` above needs (`external` is a plain
-#     scalar field, not a list, so Compose's normal merge — last file
-#     wins — already replaces it without needing !override). The app
-#     container ends up attached to a real, empty local bridge network;
-#     you still reach it directly via localhost:8000 above, Traefik isn't
-#     part of the local dev loop at all.
+# Differences from production:
+#   - Builds the image from the local Dockerfile (tagged track-fox-com:dev)
+#     instead of pulling from GHCR.
+#   - Bind-mounts ./app and runs uvicorn with --reload, so Python, template,
+#     CSS and JS edits show up without a rebuild.
+#   - Sets TZ. On Docker Desktop the /etc/localtime mount resolves against
+#     Docker's own Linux VM (usually UTC), not your machine's clock.
+#   - Publishes port 8000. `!override` replaces the inherited ports list
+#     instead of appending to it (`!reset` would clear it entirely).
+#   - Creates the `ingress` network locally, since the Traefik project that
+#     normally creates it doesn't run on a dev machine.
 services:
   app:
     build: .

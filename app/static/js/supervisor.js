@@ -1,14 +1,9 @@
 /**
- * /supervisor — historical shift review.
+ * /supervisor: historical shift review.
  *
- * Fetches one whole production date at a time (all 12 time slots) from
- * /api/supervisor-data, then switches between shifts entirely client-side by
- * showing and hiding columns. Only changing the DATE hits the network; the
- * shift toggle never does, which is what makes it feel instant.
- *
- * Deliberately does NOT poll, unlike dashboard.js — a fixed past date has
- * nothing to poll for. See the module docstring in app/routers/supervisor.py
- * for the full list of differences from the live dashboard.
+ * Fetches a whole production day (all 12 slots) from /api/supervisor-data
+ * and switches shifts by showing and hiding columns, so only a date change
+ * makes a request. Doesn't poll.
  */
 
 const ALL_DAY = window.ALL_DAY_LABEL;
@@ -16,9 +11,7 @@ const SHIFT_SLOTS = window.SHIFT_SLOTS;
 const TIME_SLOTS = window.TIME_SLOTS;
 const SHIFT_ORDER = window.SHIFT_ORDER;
 
-// How many recent dates get a one-click button. Enough to cover "yesterday"
-// and "sometime last week" without the row wrapping across the page; anything
-// older is a calendar trip.
+// How many recent dates get a one-click button.
 const QUICK_PICK_COUNT = 7;
 
 const container = document.getElementById("supervisor");
@@ -37,12 +30,9 @@ let currentShift =
         : SHIFT_ORDER[0];
 
 /**
- * Parses "2026-09-01" into a LOCAL-midnight Date.
- *
- * Deliberately not `new Date(iso)`, which treats a bare YYYY-MM-DD as UTC
- * midnight — west of Greenwich that renders as the previous day, so every
- * date on the page would silently read one off. Only used for display
- * formatting; the ISO string itself stays the source of truth everywhere else.
+ * Parses "2026-09-01" into a local-midnight Date, for display only.
+ * `new Date(iso)` would give UTC midnight, which shows as the previous day
+ * in US timezones.
  */
 function parseISODate(iso) {
     const [year, month, day] = iso.split("-").map(Number);
@@ -70,9 +60,7 @@ function slotsFor(shift) {
     return shift === ALL_DAY ? TIME_SLOTS : SHIFT_SLOTS[shift] || [];
 }
 
-// Shows only the selected shift's slot columns (header + cells), hiding the
-// rest — the same approach dashboard.js uses, since both grids render all 12
-// columns server-side and narrow down with CSS.
+// Shows only the selected shift's slot columns, as dashboard.js does.
 function applyActiveSlots(slots) {
     const activeSet = new Set(slots);
     document.querySelectorAll("[data-slot]").forEach((el) => {
@@ -81,10 +69,8 @@ function applyActiveSlots(slots) {
 }
 
 /**
- * Keeps the URL in step with the controls so a particular view can be
- * bookmarked or pasted to someone. replaceState rather than pushState — the
- * back button should leave /supervisor, not walk back through every shift
- * button the user happened to click.
+ * Keeps the URL in step with the controls so a view can be bookmarked.
+ * replaceState, so Back leaves the page instead of undoing each click.
  */
 function syncUrl() {
     if (!payload) return;
@@ -94,10 +80,8 @@ function syncUrl() {
 }
 
 function renderShiftNote() {
-    // The date is the day the shift STARTED. 3rd Shift's four slots (12AM-6AM)
-    // land the next morning — and the rounds file them under that morning's
-    // date — so say on-screen which night this is, or the date reads as the
-    // morning the crew clocked out.
+    // The date is the day the shift started. 3rd Shift runs into the next
+    // morning, so spell out which night it is.
     if (!payload) {
         shiftNote.hidden = true;
         return;
@@ -153,8 +137,7 @@ function fillGrid() {
     clearGrid();
     if (!payload) return;
 
-    // Every slot is filled, not just the visible shift's — the hidden columns
-    // are already correct when the toggle switches, so no refill is needed.
+    // Fill all 12 slots so switching shifts needs no refill.
     for (const entry of payload.entries) {
         const row = document.querySelector(`.review-grid tr[data-machine="${entry.machine_id}"]`);
         if (!row) continue; // machine not in any zone's roster
@@ -166,20 +149,13 @@ function fillGrid() {
             entry.units_produced.toLocaleString("en-US");
         cell.setAttribute("data-status", entry.status);
 
-        // Corner flag on the slot whose entry reported an issue. Marked on
-        // all 12 slots, not just the visible shift's, which is what makes it
-        // useful in All Day mode: the Issue column is hidden there, but the
-        // markers still show which slots across the whole day had trouble.
+        // Corner flag on the slot that reported an issue. Still visible in
+        // All Day mode, where the Issue column is hidden.
         if (entry.issue) cell.setAttribute("data-has-issue", "");
     }
 
-    // Operator and issues are per-shift values (get_shift_activity is scoped
-    // to one shift's four slots), so they can't be shown in All Day mode —
-    // three shifts' worth of operators don't fit one cell. The CSS hides both
-    // columns there instead of showing a misleading single value. (Now that
-    // every issue line carries its own slot label, the Issue column alone
-    // COULD survive All Day — it would need a 12-slot get_shift_activity()
-    // call, which is a separate change and isn't made here.)
+    // Operator and issues are per shift, so the CSS hides both columns in
+    // All Day mode.
     if (currentShift === ALL_DAY) return;
 
     const activity = (payload.shift_activity || {})[currentShift] || {};
@@ -190,8 +166,7 @@ function fillGrid() {
         const operatorEl = row.querySelector(".operator");
         if (operatorEl) operatorEl.textContent = machineActivity.operator || "";
 
-        // No line cap here, unlike the boards — a desk monitor scrolls, and a
-        // supervisor reviewing a bad shift wants all four lines.
+        // No line cap here, unlike the floor screens.
         const issueEl = row.querySelector(".issue-col");
         if (issueEl) renderIssueCell(issueEl, machineActivity.issues, 0);
     }
@@ -229,9 +204,7 @@ async function load(isoDate) {
 
         dateInput.value = payload.date;
         if (payload.available_dates.length) {
-            // available_dates is newest-first, so the ends of the range are
-            // its first and last elements. Clamping here is what makes a date
-            // with no possible data unpickable in the calendar itself.
+            // available_dates is newest-first. Clamp the picker to that range.
             dateInput.max = payload.available_dates[0];
             dateInput.min = payload.available_dates[payload.available_dates.length - 1];
         }
@@ -266,7 +239,7 @@ shiftToggle.addEventListener("click", (event) => {
     const button = event.target.closest(".shift-option");
     if (!button) return;
     currentShift = button.dataset.shift;
-    render(); // no fetch — the whole day is already loaded
+    render(); // the whole day is already loaded
 });
 
 load(window.INITIAL_DATE || null);

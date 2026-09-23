@@ -10,8 +10,8 @@
     <div class="supervisor-controls">
         <div class="control-group">
             <label class="control-label" for="review-date">Date</label>
-            {# min/max are set by supervisor.js from the real first/last day of
-               data, so dates that can't possibly have entries aren't pickable. #}
+            {# min/max are set by supervisor.js from the first and last day
+               with data. #}
             <input type="date" id="review-date" class="review-date">
         </div>
 
@@ -44,11 +44,8 @@
 
             <table class="review-grid">
                 <thead>
-                    {# Shift banding row, shown only in All Day mode. The colspans
-                       assume TIME_SLOTS is the three shifts' slots concatenated in
-                       SHIFT_ORDER order — which it is (8AM-2PM | 4PM-10PM |
-                       12AM-6AM). If either list is ever reordered, this row is what
-                       breaks first. #}
+                    {# Shift band row, shown in All Day mode. Assumes
+                       TIME_SLOTS is the three shifts' slots in SHIFT_ORDER. #}
                     <tr class="shift-group-row">
                         <th class="machine-col"></th>
                         {% for label in shift_order %}
@@ -65,9 +62,8 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {# Every machine in the zone renders a row, including ones that
-                       never reported — unlike /dashboard, which hides those. A blank
-                       row here is the finding, not clutter. #}
+                    {# Every machine gets a row, including ones that never
+                       reported. #}
                     {% for machine in zone.machine_ids %}
                     <tr data-machine="{{ machine }}">
                         <td class="machine-col">

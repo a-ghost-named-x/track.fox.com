@@ -9,9 +9,8 @@
         <a href="/oee">View OEE</a>
     </p>
 
-    {# Shift toggle. Plain links rather than form controls so it works with no
-       JS at all: each one reloads the page for that shift, carrying the date
-       along. #}
+    {# Shift toggle. Plain links so it works without JS; each reloads the page
+       for that shift, keeping the date. #}
     <div class="shift-picker">
         <span class="shift-picker-label">Logging for</span>
         <div class="shift-toggle" role="group" aria-label="Shift">
@@ -23,8 +22,8 @@
         </div>
     </div>
 
-    {# The date is the day the shift STARTED. Spelled out with both dates for
-       3rd Shift, which lands the next morning and is usually entered then. #}
+    {# The date is the day the shift started. 3rd Shift shows both dates
+       because it's usually entered the next morning. #}
     <p class="shift-span-line">
         <strong>{{ shift }}</strong> of <strong>{{ day_label }}</strong>
         {%- if crosses_midnight %}: {{ default_span.split('-')[0] }} {{ day_label }} to {{ default_span.split('-')[1] }} {{ next_day_label }}
@@ -61,10 +60,8 @@
         <div class="batch-shared-fields">
             <label>
                 Date
-                {# The date that gets saved is whatever is in this box at submit
-                   time. It is the day the shift STARTED — for 3rd Shift,
-                   entered the next morning, that is yesterday, which is what
-                   the page defaults to before noon. #}
+                {# This box is what gets saved: the day the shift started. For
+                   3rd Shift opened before noon it defaults to yesterday. #}
                 <input type="date" name="entry_date" id="entry-date" required value="{{ entry_date }}">
             </label>
 
@@ -78,30 +75,27 @@
 
         <p class="oee-entry-hint">
             Every box is pre-filled with what's already recorded for this shift.
-            Change what needs changing and save — machines you don't touch are left alone.
+            Change what needs changing and save. Machines you don't touch are left alone.
             {% if is_first_shift %}
-            <strong>Shift length</strong> — pick 10h or 12h for a machine that ran long, and OEE judges
+            <strong>Shift length:</strong> pick 10h or 12h for a machine that ran long, and OEE judges
             it against 600 or 720 minutes. The 2nd Shift follows this length unless it is set on its own
-            page; on a 10h/12h night the 2nd Shift starts unticked — tick it there if a crew ran.
+            page. On a 10h/12h night the 2nd Shift starts unticked, so tick it there if a crew ran.
             {% elif not is_last_shift %}
-            <strong>Shift length</strong> — a 12h 2nd Shift is 6PM–6AM and a 10h one is 4PM–2AM,
+            <strong>Shift length:</strong> a 12h 2nd Shift is 6PM–6AM and a 10h one is 4PM–2AM,
             whatever the 1st Shift was. It can't be shorter than the 1st Shift (it would start inside it).
             Picking 10h or 12h ticks Scheduled, since you're saying a crew ran; untick it if not.
             {% else %}
-            <strong>Shift length</strong> — a 3rd Shift is 8h, 10PM–6AM, unless the 2nd Shift was a short
+            <strong>Shift length:</strong> a 3rd Shift is 8h, 10PM–6AM, unless the 2nd Shift was a short
             day (then it's 6PM–12AM and you type its hours here). A machine whose 2nd Shift ran 10h or 12h
             has no 3rd Shift; its night is on the 2nd Shift page.
             {% endif %}
             <button type="button" class="link-button" id="mark-all-clean">Tick “no downtime” on every untouched machine</button>
         </p>
 
-        {# The short day is its own paragraph because the rule in its last
-           sentence is the one that decides whether OEE tells the truth: the
-           hours are what was SCHEDULED. Typing fewer to cover a no-show would
-           erase that loss from OEE, the way unticking Scheduled erases a
-           whole shift. #}
+        {# Scheduled hours, not hours run: typing fewer to cover a no-show
+           would hide that loss from OEE. #}
         <p class="oee-entry-hint">
-            <strong>Short day</strong> — type the hours ({{ short_shift_hours[0] }}–{{ short_shift_hours[-1] }})
+            <strong>Short day:</strong> type the hours ({{ short_shift_hours[0] }}–{{ short_shift_hours[-1] }})
             a machine was <em>scheduled</em> for in the box after 12h, and its day runs on 6-hour shifts:
             1st 6AM–12PM, 2nd 12PM–6PM, 3rd 6PM–12AM. OEE judges it against that many hours.
             {% if not is_first_shift %}After a short 1st Shift this shift starts unticked, since usually
@@ -152,9 +146,8 @@
                         </td>
 
                         {% if not row.shift_exists %}
-                        {# After a 10 or 12-hour 2nd Shift there is no 3rd: the
-                           night is on the 2nd Shift page. No inputs, so
-                           nothing posts for this row. #}
+                        {# No 3rd Shift after a 10 or 12-hour 2nd. No inputs,
+                           so nothing posts for this row. #}
                         <td class="shift-absent" colspan="5">
                             No {{ shift.split(' ')[0] }} shift — {{ row.covered_by.shift }} ran {{ row.covered_by.hours }}h ({{ row.covered_by.span }}), so the night is entered there.
                         </td>
@@ -162,15 +155,12 @@
 
                         <td class="hours-col">
                             {% if row.length_editable %}
-                            {# A radio group: the browser always posts the
-                               checked value, so absence in a POST can only
-                               mean the control wasn't on the page. Options
-                               that would overlap a neighbouring shift are
-                               disabled, and the server re-checks.
-
-                               The short day is the fourth radio, with the
-                               number box inside it — the box only counts
-                               when that radio is the one picked. #}
+                            {# A radio group always posts its checked value, so
+                               absence in the POST means the control wasn't on
+                               the page. Overlapping options are disabled here
+                               and re-checked on the server. The short day is
+                               the fourth radio; its number box only counts
+                               when that radio is picked. #}
                             {% set is_short = row.shift_hours <= short_pattern_hours %}
                             {% set short_blocked = row.min_pattern > short_pattern_hours %}
                             <div class="hours-toggle" role="group" aria-label="Shift length for {{ machine }}">
@@ -199,9 +189,8 @@
                                                  {% if short_blocked and not is_short %}disabled{% endif %}>h</span>
                                 </label>
                             </div>
-                            {# The part of the day this length means, for
-                               anything but an ordinary 8 hours. Kept in step
-                               by the JS when the choice changes. #}
+                            {# The clock span for any length other than 8
+                               hours. Updated by the JS. #}
                             <span class="hours-span-line"{% if row.shift_hours == default_shift_hours %} hidden{% endif %}>{{ row.span }}</span>
                             {% if not is_first_shift and not row.hours_explicit %}
                             <span class="hours-inherited" title="No length set for this shift; it follows the {{ previous_shift }} Shift.">follows {{ previous_shift }}</span>
@@ -216,17 +205,11 @@
                         </td>
 
                         <td class="sched-col">
-                            {# Absence of a machine_schedule row already means
-                               scheduled, so this starts ticked and only a real
-                               CHANGE writes anything. Unticking excludes the
-                               machine from this shift's OEE rollup entirely —
-                               not 0%, absent.
-
-                               The hidden field matters: an unticked checkbox and
-                               an absent one look identical in a POST, and
-                               treating absence as "unticked" would mark every
-                               machine not on the submitted form as
-                               not-scheduled. #}
+                            {# Only a change from the default writes a row.
+                               Unticking leaves the machine out of this shift's
+                               OEE rollup (not 0%). The hidden field is needed
+                               because an unticked checkbox and a missing one
+                               look the same in a POST. #}
                             <input type="hidden" name="sched_present_{{ machine }}" value="1">
                             <input type="checkbox" name="scheduled_{{ machine }}" value="1"
                                    {% if row.scheduled %}checked{% endif %}
@@ -240,10 +223,8 @@
                         </td>
 
                         <td class="dt-cell">
-                            {# A native <details> rather than a custom dropdown:
-                               14 reasons x 34 machines is 476 controls, and
-                               collapsing them keeps the page scannable while
-                               still working with JS disabled. #}
+                            {# A native <details> keeps 14 reasons x 34
+                               machines collapsed and still works without JS. #}
                             <details class="dt-details"{% if row.minutes %} open{% endif %}>
                                 <summary class="dt-summary">
                                     {%- if row.ran_clean -%}
@@ -255,11 +236,10 @@
                                     {%- endif -%}
                                 </summary>
 
-                                {# Ticking this is a real statement — it records
-                                   100% availability for the shift. A machine
-                                   nobody entered and one that ran clean must not
-                                   look the same to OEE, which is why there is a
-                                   box for it rather than "blank means fine". #}
+                                {# Ticking this records "ran clean" (100%
+                                   availability). It's an explicit box so an
+                                   unentered machine doesn't look like a clean
+                                   one. #}
                                 <label class="dt-none">
                                     <input type="checkbox" class="dt-none-box"
                                            name="dt_none_{{ machine }}" value="1"
@@ -282,13 +262,9 @@
                                 </div>
                                 {% endfor %}
 
-                                {# A code that has been retired since this shift
-                                   was entered. Shown only because this shift
-                                   already has it on record — leaving it off
-                                   would make the next save drop its minutes,
-                                   since the newest header wins wholesale. Same
-                                   controls as the rows above, so it either
-                                   carries forward or gets unticked on purpose. #}
+                                {# A retired code, shown only because this
+                                   shift already has it. Leaving it off would
+                                   drop its minutes on the next save. #}
                                 {% for reason in row.retired %}
                                 <div class="dt-reason-row dt-reason-retired">
                                     <label class="dt-reason-label">
@@ -331,9 +307,7 @@
 
 <script>
     window.MAX_SHIFT_MINUTES = {{ max_shift_minutes|tojson }};
-    // For the span shown under a machine's length control, recomputed in
-    // the browser when the choice changes: the Nth shift of an L-hour
-    // pattern starts at DAY_START_HOUR + N x L (app/models.py, shift_span).
+    // Used by the JS to recompute a row's clock span (see shift_span()).
     window.SHIFT_INDEX = {{ shift_index|tojson }};
     window.DAY_START_HOUR = {{ day_start_hour|tojson }};
     window.SHORT_PATTERN_HOURS = {{ short_pattern_hours|tojson }};

@@ -1,51 +1,23 @@
-"""Routes for /console — the manual data-entry form.
+"""Routes for /console, the 2-hour production entry forms.
 
-Gated only by URL obscurity, not credentials, per the architecture doc's
-access-model decision. Do not add auth logic here without revisiting that
-decision deliberately.
+There's no login; access is by URL only.
 
-Two entry modes live here:
-  - /console: one machine per submit. Kept around for one-off entries and
-    corrections (append a new row for a machine+slot already logged).
-  - /console/<zone> (added later, see console_batch_page/console_batch_submit
-    below): employee number and time slot entered once, then every machine
-    in that zone on one page with a units-produced box each, saved together.
-    Built specifically because routine zone-by-zone entry through the
-    one-machine-at-a-time form was taking ~40 minutes for a 14-machine zone
-    — almost entirely retyping the same employee number and reselecting the
-    same time slot over and over.
-    Operator is deliberately NOT a shared field here, even though everything
-    else is — machines in the same zone can have different operators
-    running them, and operators rotate mid-shift. It's stored fresh per
-    entry (see app/db/entries.py: nothing carries an operator value forward
-    automatically on the *save* side, on this form or the single-entry one),
-    so it has to stay a per-machine field here.
+  - /console: one machine per submit, for one-off entries and corrections.
+    A correction is a new row for a machine and slot already logged.
+  - /console/<zone>: employee number, date, shift and time slot entered once,
+    then every machine in the zone on one page, saved together.
 
-    It IS pre-filled on the *load* side, though: console_batch_page (GET)
-    seeds each row's operator box with whoever was most recently logged for
-    that machine so far this shift, via get_shift_activity() — the same
-    lookup the dashboard's operator column already uses. So in the common
-    case (same operator all shift) it only needs typing once, at whichever
-    slot is entered first; every later round in the shift shows it already
-    filled in, still editable if someone rotated onto that machine.
+Operator is a per-machine field on the batch form because operators differ
+between machines and rotate mid-shift. The GET pre-fills it with whoever was
+last logged on that machine this shift, so it usually only needs typing once
+per shift.
 
-Which shift and date the batch form is logging against are the user's to
-pick, not the clock's. Both pages used to derive everything from
-datetime.now(), which was fine for the dashboard but wrong here: the
-dashboard's one-hour changeover delay (SHIFT_DISPLAY_DELAY_HOURS) rolls the
-display to 2nd Shift at 3PM, and because this form read the same
-get_current_shift(), 1st Shift's time slots vanished from its dropdown at
-3PM too — locking people out of entering 1st Shift numbers that routinely
-aren't collected until 4PM. The shift toggle and date box on
-console_batch.html fix that; they default to the current shift and today,
-so the common case is unchanged, and resolve_shift() in app/models.py keeps
-the console's choice independent of the dashboard's display rule.
-
-The date box matters most for 3rd Shift, whose slots (12AM-6AM) fall on the
-calendar day *after* the shift starts — and for anyone correcting the
-previous day's numbers the next morning. entry_date is what /dashboard
-filters on, so the date in that box decides which day's grid an entry lands
-on.
+The batch form's shift and date are chosen by the user, defaulting to the
+current shift and today. The form must not follow the dashboard's display
+delay, which rolls to 2nd Shift at 3PM while 1st Shift numbers are often
+still being entered. The date box is mainly for 3rd Shift (whose slots fall
+on the next calendar day) and next-morning corrections. entry_date decides
+which day's grid an entry appears on.
 """
 from datetime import date, datetime
 
@@ -74,10 +46,8 @@ templates = Jinja2Templates(directory="app/templates")
 def _parse_entry_date(raw: str | None) -> date | None:
     """Parses the date box's value, or None if it's missing/unparseable.
 
-    Callers decide what to do with None: the GET page quietly falls back to
-    today (a junk date in a URL shouldn't 500 a floor tablet), while the POST
-    handler turns it into a visible error rather than silently filing the
-    entries under the wrong day.
+    The GET page falls back to today; the POST shows an error rather than
+    filing entries under a guessed day.
     """
     if not raw:
         return None
@@ -134,10 +104,8 @@ def console_submit(
         )
         create_entry(payload)
     except (StandardNotFoundError, ValidationError) as exc:
-        # StandardNotFoundError messages are already human-readable (see
-        # app/db/entries.py). ValidationError's default text is Pydantic
-        # internals (field names, type codes) — not something a floor
-        # operator should have to parse, so it gets a generic message instead.
+        # StandardNotFoundError messages are readable as-is. Pydantic's
+        # ValidationError text isn't, so it gets a generic message.
         error_message = (
             str(exc) if isinstance(exc, StandardNotFoundError)
             else "Couldn't save that entry — please check the form and try again."
@@ -148,9 +116,7 @@ def console_submit(
             context={
                 "machine_ids": MACHINE_IDS,
                 "time_slots": TIME_SLOTS,
-                # Echo back the date they picked rather than resetting to
-                # today — otherwise correcting an unrelated field silently
-                # re-points the entry at the wrong day.
+                # Keep the date they picked rather than resetting to today.
                 "entry_date": entry_date,
                 "error": error_message,
                 "zones": _zone_links(),
@@ -172,24 +138,11 @@ def _batch_context(
     time_slot: str = "",
     top_error: str | None = None,
 ):
-    """Shared context-builder for the batch page's GET (fresh form) and POST
-    (re-rendered with per-row results) responses — keeps both in sync on
-    what the template expects.
+    """Template context for the batch page, shared by the GET and the POST.
 
-    `shift` and `entry_date` are resolved by the caller and passed in rather
-    than recomputed from the clock here: both are user-controlled now (the
-    shift toggle and the date box), and this function runs on the POST path
-    too, where quietly re-deriving either one from datetime.now() would mean
-    a page that saved 1st Shift's 2PM numbers at 4PM re-rendered itself as
-    2nd Shift.
-
-    current_shift goes into the context alongside the selected one purely so
-    the template can point out when they differ.
-
-    saved_count/failed_rows are pre-computed here (rather than in the
-    template via Jinja filters) since dict.items() tuples don't support the
-    attribute-style access selectattr() needs — plain Python is simpler and
-    less fragile for this than a filter chain would be.
+    `shift` and `entry_date` come from the caller (the user's choice), never
+    from the clock. current_shift is included so the template can point out
+    when the two differ.
     """
     saved_count = 0
     failed_rows: list[tuple[str, dict]] = []
@@ -220,28 +173,14 @@ def _batch_context(
 
 @router.get("/console/{zone}", response_class=HTMLResponse)
 def console_batch_page(request: Request, zone: str, shift: str | None = None, entry_date: str | None = None):
-    """Fresh batch entry form for one zone (e.g. /console/b3) — one row per
-    machine in that zone with its own operator field, employee number/time
-    slot entered once for the whole page. 404s on an unrecognized zone slug,
-    same as the matching /dashboard/{zone} route.
+    """Batch entry form for one zone (e.g. /console/b3).
 
-    `shift` and `entry_date` are what the page's shift toggle and date box
-    put in the URL (e.g. /console/b3?shift=1st+Shift&entry_date=2026-07-28).
-    Both are optional and both fall back to "right now" when absent or
-    unparseable, so a bare /console/b3 still opens on the shift in progress
-    and today's date exactly like it did before the toggle existed.
+    `shift` and `entry_date` come from the page's shift toggle and date box
+    (e.g. ?shift=1st+Shift&entry_date=2026-07-28) and default to now. The
+    selected shift drives the time-slot dropdown.
 
-    Whichever shift is selected drives the time-slot dropdown, so 1st
-    Shift's slots stay reachable after the 3PM dashboard changeover — the
-    lockout this toggle exists to fix.
-
-    Each row's operator box is pre-filled from get_shift_activity() — "who
-    was most recently entered for this machine, anywhere in the *selected*
-    shift on the selected date" — so the second, third, and fourth round of
-    entries in a shift start with the operator already in place instead of
-    blank. First round of a shift has nothing to pull from yet, so it
-    renders blank as before. Units/issue are never pre-filled — only
-    operator carries this way.
+    Each operator box is pre-filled with the last operator logged for that
+    machine in the selected shift. Units and issue are never pre-filled.
     """
     machine_ids = DASHBOARD_ZONES.get(zone)
     if machine_ids is None:
@@ -272,21 +211,14 @@ def console_batch_page(request: Request, zone: str, shift: str | None = None, en
 
 @router.post("/console/{zone}", response_class=HTMLResponse)
 async def console_batch_submit(request: Request, zone: str):
-    """Saves every machine row that has a units-produced value filled in,
-    sharing one employee number/time slot/date across all of them — but
-    NOT operator, which is entered per machine (see module docstring for why).
+    """Saves every machine row with a units value, sharing one employee
+    number, time slot and date.
 
-    Per-machine fields arrive as dynamically-named form fields (operator_<id>,
-    units_<id>, issue_<id>) rather than fixed Form(...) parameters, since the
-    set of machines varies by zone — read via request.form() instead.
+    Per-machine fields are named operator_<id>, units_<id> and issue_<id>,
+    so they're read from request.form().
 
-    Each row is saved independently rather than as one all-or-nothing
-    transaction: a machine with no standard yet (a newly added machine
-    listed in MACHINE_IDS before its standards rows are seeded), or one
-    that's simply missing its operator name, shouldn't block the other
-    machines in the zone from saving. Blank rows (no units entered) are
-    just skipped, not treated as errors — it's normal for a machine to
-    have nothing to report yet.
+    Each row is saved on its own, so one bad row (no operator, no standard)
+    doesn't block the rest. Rows with no units are skipped, not errors.
     """
     machine_ids = DASHBOARD_ZONES.get(zone)
     if machine_ids is None:
@@ -296,21 +228,17 @@ async def console_batch_submit(request: Request, zone: str):
     entered_by = (form.get("entered_by") or "").strip()
     time_slot = (form.get("time_slot") or "").strip()
 
-    # Which shift the page was showing when it was submitted, carried in a
-    # hidden field. Re-resolved rather than trusted so a tampered/stale value
-    # can't index SHIFT_SLOTS with something that isn't a shift.
+    # The shift the page was showing, from a hidden field. Re-resolved so an
+    # invalid value can't index SHIFT_SLOTS.
     selected_shift = resolve_shift((form.get("shift") or "").strip(), datetime.now())
     selected_date = _parse_entry_date(form.get("entry_date"))
 
-    # Validate the shared fields once up front — if these are missing,
-    # every row would fail with the same identical error, which is noise,
-    # not information. One clear message instead.
+    # Check the shared fields once, so a missing one gives one message rather
+    # than the same error on every row.
     #
-    # The time_slot/shift cross-check matters more than it looks: the two are
-    # picked from separate controls, and saving a slot against the wrong
-    # shift would file real production numbers under a slot nobody looks at
-    # on that shift's grid. The dropdown only ever offers the selected
-    # shift's slots, so this only trips on a stale form or a hand-built POST.
+    # The slot must belong to the selected shift, or the numbers would land
+    # on a column nobody looks at for that shift. The dropdown prevents this,
+    # so it only trips on a stale form or a hand-built POST.
     if selected_date is None:
         top_error = "Enter a valid date before saving."
     elif not entered_by or not time_slot:

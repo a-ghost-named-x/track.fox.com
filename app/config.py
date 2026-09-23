@@ -1,4 +1,4 @@
-"""Centralized app configuration, loaded from environment variables / .env."""
+"""App configuration, loaded from environment variables / .env."""
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -10,22 +10,15 @@ class Settings(BaseSettings):
     postgres_host: str = "db"
     postgres_port: int = 5432
     postgres_db: str = "trackfox"
-    # The app connects as the dedicated low-privilege role created by
-    # sql/01_roles.sh. docker-compose.yml passes that role's credentials to
-    # the init script (and thus to .env) as APP_DB_USER / APP_DB_PASSWORD —
-    # a deliberately different name from POSTGRES_USER/POSTGRES_PASSWORD,
-    # which .env reserves for the Postgres *superuser* bootstrap identity.
-    # These aliases point the app at the correct variables.
+    # The app connects as a low-privilege role, never the superuser. The env
+    # names are APP_DB_* so they can't be confused with POSTGRES_USER /
+    # POSTGRES_PASSWORD, which the postgres image uses for its superuser.
     postgres_user: str = Field(default="trackfox_app", validation_alias="APP_DB_USER")
-    # No default — the app should refuse to start rather than silently
-    # connect with a placeholder password if .env is missing or misconfigured.
+    # No default: refuse to start rather than connect with a placeholder.
     postgres_password: str = Field(validation_alias="APP_DB_PASSWORD")
 
-    # MSSQL (existing production server, read-only)
-    # Left with defaults, not required, since MSSQL querying isn't wired into
-    # the app yet (see TODO in dashboard.py) — nothing reads these values in
-    # production today, so they shouldn't be able to block app startup.
-    # Revisit making these required once the MSSQL read query is implemented.
+    # MSSQL (existing production server, read-only). Not required yet because
+    # nothing queries it (see the TODO in dashboard.py).
     mssql_host: str = "your-mssql-host"
     mssql_port: int = 1433
     mssql_db: str = "ProductionDB"

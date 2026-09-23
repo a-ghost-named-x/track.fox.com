@@ -1,62 +1,34 @@
 """Data access and OEE computation for /oee.
 
-OEE = Availability x Performance x Quality, computed per machine per SHIFT.
+OEE = Availability x Performance x Quality, computed per machine per shift.
 
-WHY SHIFT GRAIN
----------------
-Downtime and scrap used to be captured every two hours alongside production.
-Per the floor (2026-09-09) that was adding work to the rounds, so one person now
-enters the whole shift's OEE data in a single sitting at the end of it, on
-/console/oee. The 2-hour rounds went back to good units only.
+Downtime and scrap are entered once per shift on /console/oee, while good
+units come from the 2-hour rounds. Judging at shift level also smooths out
+reading-time noise: a checkpoint written late borrows units from its
+neighbour, but a shift is the same length however the readings fell.
 
-That is a better fit for the metric as well as for the people. A per-slot delta
-is the gap between two hand-taken readings, so a reading logged late borrows
-units from its neighbour — noise that produced false "impossible value" alarms
-on WS1 and C8 in the first week of use. A shift is 480 minutes no matter when
-anyone wrote anything down, so the noise cancels completely.
+The OEE tables are separate from `entries` because the grid resolves each
+cell with "newest row wins". A scrap row on `entries` would become the newest
+row for that cell and blank out the units entered earlier.
 
-WHY THESE TABLES ARE SEPARATE FROM `entries`
----------------------------------------------
-Production and OEE data are entered by different people at different times.
-get_latest_entries_for_date() resolves the dashboard grid with DISTINCT ON
-(machine_id, time_slot) ORDER BY created_at DESC — the newest ROW wins
-wholesale — so a scrap submission landing on `entries` would become the newest
-row for that cell and blank the units the production person entered hours
-earlier. Separate tables let both write freely and never collide.
-
-SHIFT LENGTH
+Shift length
 ------------
-A shift is 480 minutes on a normal day — but with the current staffing a
-machine is often run for 10 or 12 hours by one crew (production manager,
-2026-09-16), and OEE must judge it against the minutes it actually ran or a
-12-hour machine "beats its maximum" every day. The length is set per machine,
-per production day, PER SHIFT on /console/oee (`machine_shift_length`; a
-shift with no row inherits the one before it, the 1st defaults to 8) and
-decides three things here: which checkpoints the shift has, how many minutes
-it is, and whether the shift exists at all — after a 12-hour 2nd Shift there
-is no 3rd. The geometry and the as-long-or-longer rule live in app/models.py
-(shift_slots, resolve_day_lengths, shift_slot_dates); this module just asks.
-The 2-hour rounds and the floor screens stay 8-hour.
+Each machine's shift can be 8, 10 or 12 hours, or 1-6 on a short day (see
+"Shift length" in app/models.py). The length decides which checkpoints the
+shift has, how many minutes it is, and whether it exists at all (there is no
+3rd Shift after a 12-hour 2nd). On a short day the minutes are the scheduled
+hours x 60, not checkpoints x 120.
 
-A short day (2026-09-23, mostly Saturdays) runs 6-hour shifts, and the
-length stored for one is the 1-6 hours the machine was scheduled for. Its
-checkpoints are the whole 6-hour window's, but its minutes are the hours
-typed — the one place a shift's minutes are not its checkpoints x 120. See
-"SHORT DAYS" in app/models.py.
-
-THE PRODUCTION DAY
+The production day
 ------------------
-compute_oee_report(D) is the day that STARTED at 6AM on D: 1st Shift, 2nd
-Shift, and the 3rd Shift running D 10PM -> D+1 6AM. Scrap, downtime,
-scheduling and shift-length rows are all filed under D. Production
-checkpoints are not — the rounds date the 12AM-6AM readings by the morning
-they land on — so this module always reads D's and D+1's entries and lets
-shift_slot_dates() say which date each checkpoint carries.
+compute_oee_report(D) covers the day that starts at 6AM on D, including the
+3rd Shift from D 10PM to D+1 6AM. OEE rows are filed under D, but the rounds
+file 12AM-6AM readings under D+1, so both dates are read and
+shift_slot_dates() says which date each checkpoint carries.
 
-THE FORMULAS
-------------
-Per machine per shift (elapsed minutes = 480 for a completed 8-hour shift,
-600 or 720 for a 10 or 12-hour one, 60 x the hours typed on a short day):
+Formulas
+--------
+Per machine per shift (elapsed minutes = 480 for a finished 8-hour shift):
 
     good        = last production reading in the shift (see _cumulative_deltas)
     total       = good + scrap
@@ -68,39 +40,31 @@ Per machine per shift (elapsed minutes = 480 for a completed 8-hour shift,
     Quality      = good / total
     OEE          = A x P x Q
 
-Run time cancels out of that product entirely, giving a second route to the
-same number:
+Run time cancels out of the product, so there's a second route to the same
+number:
 
     OEE = good / (ideal rate x PPT)
 
-Both are computed for every result — `oee` takes the short route,
-`oee_from_factors` the long one — and they must agree. tests/test_oee_math.py
-asserts the identity at machine AND rollup level; it is what caught the
-capacity-weighted availability bug.
+`oee` uses the short route and `oee_from_factors` the long one.
+tests/test_oee_math.py asserts they agree for single machines and rollups.
 
-Rolling up across machines, Availability switches from clock minutes to
-capacity, because 34 machines run at 8 different rates and a minute on AS1 is
-not worth a minute on C1. See _aggregate().
+Across machines, Availability is weighted by capacity rather than clock
+minutes, because machines run at different rates. See _aggregate().
 
-WHAT EACH NUMBER NEEDS
+What each number needs
 ----------------------
-Because scrap cancels out of A x P x Q, OEE does NOT need scrap:
+Scrap cancels out of A x P x Q, so OEE doesn't need it:
 
     production + downtime            -> OEE and Availability
     production + downtime + scrap    -> the full A / P / Q split
 
-So a shift missing its scrap still yields a real OEE, with Performance and
-Quality reported as N/A rather than guessed.
-
-WHAT IS NEVER DONE
-------------------
-- No defaulting. A missing downtime submission does NOT mean zero downtime, and
-  missing scrap does NOT mean perfect quality. Both yield None, and None
-  propagates to an "N/A" on the page. (A blank PRODUCTION checkpoint is
-  different and does mean zero — see _cumulative_deltas.)
-- No averaging of percentages. Every rollup sums the underlying counts and
-  minutes and divides once.
-- No clamping. A Performance over 100% is surfaced, not squashed.
+Rules
+-----
+- No defaulting. Missing downtime isn't zero downtime and missing scrap isn't
+  perfect quality; both become None and show as N/A. (A blank production
+  checkpoint is different and does mean zero; see _cumulative_deltas.)
+- No averaging of percentages. Rollups sum counts and minutes, then divide.
+- No clamping. A Performance over 100% is shown as-is.
 """
 from __future__ import annotations
 
@@ -130,32 +94,19 @@ from app.models import (
 
 
 class UnknownReasonCodeError(Exception):
-    """Raised when a downtime submission names a code that isn't active.
-
-    A real "we can't classify this" situation: without is_planned we cannot
-    tell whether the minutes belong in the OEE denominator, so the submission
-    is rejected rather than guessed at.
-    """
+    """A downtime submission names a code that doesn't exist. Without its
+    is_planned flag the minutes can't be classified, so it's rejected."""
 
 
 class DowntimeExceedsShiftError(Exception):
-    """Raised when a shift's downtime minutes sum past the shift's length.
-
-    An 8-hour shift cannot contain 500 minutes of downtime (a 12-hour one
-    can). Caught at write time because the alternative is a negative run time
-    that quietly poisons every rollup it touches.
-    """
+    """A shift's downtime minutes add up to more than the shift's length.
+    Rejected at write time because it would give a negative run time."""
 
 
-# How far past its derived ceiling a shift has to be before its production is
-# treated as broken rather than merely surprising.
-#
-# The ceiling is standard / 0.75, so it carries real uncertainty: a machine
-# whose standard is actually 85% of maximum will legitimately exceed it. That
-# is a warning, not an exclusion — the ceiling is the less trustworthy of the
-# two numbers, and an earlier version of this file discarded genuine production
-# on seven machines by assuming otherwise. Doubling it, though, is not a rate
-# disagreement: it is a transposed digit.
+# How far past its ideal-rate ceiling a shift's production must be before
+# it's treated as a typo and excluded. The ceiling is derived from standard /
+# 0.75, which is itself an estimate, so merely beating it is only a warning.
+# Double the ceiling is more likely a transposed digit.
 IMPLAUSIBLE_CEILING_MULTIPLE: float = 2.0
 
 
@@ -164,15 +115,10 @@ IMPLAUSIBLE_CEILING_MULTIPLE: float = 2.0
 # ---------------------------------------------------------------------------
 
 def get_downtime_reasons(*, active_only: bool = True) -> dict[str, dict]:
-    """Reason codes keyed by code, ordered as the entry form should show them.
+    """Reason codes keyed by code, in sort_order (the order the form shows).
 
-    Python dicts preserve insertion order, so ORDER BY sort_order here is what
-    orders the form — the template iterates without re-sorting, and sort_order
-    is maintained to match the floor's paper sheet.
-
-    `active_only=False` is for LABELLING history: codes retired by
-    12_seed_shift_downtime_reasons.sql are still referenced by migrated rows
-    and must still resolve to a human name on /oee.
+    `active_only=False` includes retired codes, which older rows still
+    reference and which still need a label on /oee.
     """
     query = "SELECT code, label, is_planned, sort_order FROM downtime_reasons"
     if active_only:
@@ -191,12 +137,9 @@ def get_downtime_reasons(*, active_only: bool = True) -> dict[str, dict]:
 def get_ideal_rates() -> dict[str, float]:
     """Per-machine theoretical maximum, in units per hour.
 
-    Seeded by docs/sql/08_seed_ideal_rates.sql as standard / 0.75. A machine
-    missing from this table gets no OEE at all rather than a guessed rate —
-    the same "refuse rather than assume" stance get_standard() takes.
-
-    Cast to float on the way out: psycopg returns Decimal for NUMERIC, which
-    isn't JSON-serialisable, and these are values like 7800.00.
+    Seeded as standard / 0.75. A machine missing from this table gets no OEE
+    rather than a guessed rate. Values are cast to float because psycopg
+    returns NUMERIC as Decimal, which isn't JSON-serialisable.
     """
     with get_pg_connection() as conn:
         rows = conn.execute(
@@ -208,9 +151,8 @@ def get_ideal_rates() -> dict[str, float]:
 def get_shift_standards() -> dict[tuple[str, str], int]:
     """Target good units per (machine_id, shift).
 
-    `standards` is cumulative and resets every shift, so a shift's whole target
-    is simply the value at its LAST slot — 46,800 at 2PM for C1, and the same
-    number again at 10PM and 6AM.
+    `standards` is cumulative and resets every shift, so a shift's target is
+    the value at its last slot (46,800 at 2PM for C1).
     """
     with get_pg_connection() as conn:
         rows = conn.execute(
@@ -231,11 +173,8 @@ def get_shift_standards() -> dict[tuple[str, str], int]:
 # ---------------------------------------------------------------------------
 
 def create_shift_scrap(payload: ShiftScrapCreate) -> int:
-    """Appends a scrap submission for one machine for one shift.
-
-    Append-only: a correction is a new row with a later created_at, and the
-    reader takes the newest per (machine, date, shift).
-    """
+    """Appends a scrap submission for one machine for one shift. A correction
+    is a new row; the reader takes the newest per (machine, date, shift)."""
     with get_pg_connection() as conn:
         row = conn.execute(
             """
@@ -261,31 +200,21 @@ def create_shift_downtime(
 ) -> int:
     """Appends a downtime submission (header plus one row per reason).
 
-    `shift_minutes` is how long THIS machine's shift was on THIS day — 480,
-    600 or 720, or as little as 60 on a short day — and caps the total. The caller (/console/oee) knows it
-    because the same page shows the shift length; the default is the 8-hour
-    day so nothing else that writes downtime has to care.
+    `shift_minutes` is this machine's shift length on this day (480, 600,
+    720, or as little as 60 on a short day) and caps the total.
 
-    An empty `payload.reasons` writes a header with no children, which is how
-    "ran clean, no downtime" is recorded — a materially different statement
-    from no submission at all, and the reason this is two tables rather than a
-    nullable column pair.
+    An empty `payload.reasons` writes a header with no children, which records
+    "ran clean". That's why downtime is a header table plus children rather
+    than a nullable column: no header means nobody has entered the shift.
 
-    `was_planned` is SNAPSHOTTED onto each child from the code's current
-    is_planned, deliberately duplicating reference data. Every code the floor
-    uses is unplanned today, but if that ever changes, historical OEE must not
-    silently re-rate itself.
+    `was_planned` is copied onto each child from the code's current
+    is_planned, so changing a code later doesn't re-rate historical OEE.
 
-    Header and children go in one transaction: a header with a missing child
-    would understate downtime and overstate availability, which is worse than
-    the write failing outright.
+    Header and children are written in one transaction.
 
-    Codes are validated against the FULL table, retired ones included. Retiring
-    a code (docs/sql/13_split_operator_adjustments.sql) is meant to stop NEW
-    use, which the form handles by not offering it — but a correction to a
-    shift entered before the retirement must be able to carry the old code
-    forward, or the newest-header-wins rule would drop those minutes on the
-    next save. Only a code that doesn't exist at all is rejected here.
+    Codes are checked against the full table, retired ones included. The form
+    only offers retired codes on shifts that already have them, so a
+    correction to an older shift keeps those minutes instead of dropping them.
     """
     reasons = get_downtime_reasons(active_only=False)
 
@@ -342,12 +271,10 @@ def create_shift_downtime(
 
 
 def create_schedule_exception(payload: ScheduleCreate) -> int:
-    """Appends a scheduling record for one machine+date+shift.
+    """Appends a scheduling record for one machine, date and shift.
 
-    Only exceptions need writing — absence of a row means scheduled — but a row
-    saying scheduled=true is still accepted, since that is how someone undoes a
-    not-scheduled mark made by mistake (append-only, so the correction is a new
-    row rather than an UPDATE).
+    Usually only exceptions are written, but scheduled=true is accepted too,
+    which is how a mistaken not-scheduled mark is undone.
     """
     with get_pg_connection() as conn:
         row = conn.execute(
@@ -371,13 +298,8 @@ def create_schedule_exception(payload: ScheduleCreate) -> int:
 
 def create_shift_length(payload: ShiftLengthCreate) -> int:
     """Appends a shift-length record for one machine, production day and
-    shift.
-
-    Same shape as create_schedule_exception(): only a length that differs
-    from what the shift would inherit needs a row, but any value is accepted
-    so a wrong 12 can be undone with a newer row. The as-long-or-longer rule
-    is the caller's to check (shift_length_conflict) — it needs the other
-    shifts' lengths, which this function doesn't see.
+    shift. The caller checks shift_length_conflict(), since that needs the
+    other shifts' lengths.
     """
     with get_pg_connection() as conn:
         row = conn.execute(
@@ -403,11 +325,9 @@ def create_shift_length(payload: ShiftLengthCreate) -> int:
 # Reads
 # ---------------------------------------------------------------------------
 
-# Each OEE table is read by ONE query, over a range of production days. The
-# single-day readers below are that query with start == end, keyed without
-# the date — which is all /oee's one-day report and /console/oee need, and
-# means the "newest row wins" SQL exists once per table, not once per caller.
-# The range form is what the 7/30-day Pareto reads (compute_pareto_range).
+# Each OEE table has one query, over a range of production days. The
+# single-day readers call it with start == end and drop the date from the key.
+# The 7/30-day Pareto reads ranges so it doesn't open a connection per day.
 
 def get_shift_lengths_for_range(
     start: date_type, end: date_type
@@ -430,8 +350,8 @@ def get_shift_lengths_for_range(
 
 def get_shift_lengths(entry_date: date_type) -> dict[tuple[str, str], int]:
     """Latest explicitly-set shift length per (machine_id, shift) for one
-    production day. A missing key means "inherit" — resolve with
-    machine_day_lengths() rather than reading this directly.
+    production day. A missing key means inherit; resolve with
+    machine_day_lengths().
     """
     return {
         (machine_id, shift): hours
@@ -472,18 +392,11 @@ def get_downtime_for_range(
     """Latest downtime submission per (machine_id, production day, shift),
     for every day from `start` to `end` inclusive.
 
-    Resolution is per SUBMISSION, not per reason: the newest header for a shift
-    wins and older ones are ignored entirely, children and all. That is what
-    lets a correction REMOVE a reason entered by mistake — resolving per-reason
-    would hit the dead end entries.issue has, where a blank correction can't
-    retract an earlier value.
+    The newest header for a shift wins along with all its reasons, which is
+    what lets a correction remove a reason entered by mistake.
 
-    LEFT JOIN, not JOIN: a header with no children means "ran clean" and has to
-    come back as a present-but-empty record. An inner join would drop it and
-    make a clean shift indistinguishable from an unentered one.
-
-    Labels come from the FULL code table, retired codes included, so rows
-    migrated from the old slot-grain set still resolve to a human name.
+    LEFT JOIN because a header with no reasons means "ran clean" and must
+    come back as a present-but-empty record.
     """
     with get_pg_connection() as conn:
         rows = conn.execute(
@@ -513,7 +426,7 @@ def get_downtime_for_range(
             {"note": note, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0},
         )
         if reason_code is None:
-            continue  # header with no children — the "ran clean" case
+            continue  # header with no reasons: "ran clean"
         record["reasons"].append(
             {
                 "code": reason_code,
@@ -544,11 +457,8 @@ def get_schedule_for_range(
     start: date_type, end: date_type
 ) -> dict[tuple[str, date_type, str], bool]:
     """Latest scheduling record per (machine_id, production day, shift), for
-    every day from `start` to `end` inclusive.
-
-    Only exceptions are stored, so a key missing from this map means the
-    shift's default — default_scheduled(), which depends on its length.
-    """
+    every day from `start` to `end` inclusive. A missing key means the
+    default from default_scheduled()."""
     with get_pg_connection() as conn:
         rows = conn.execute(
             """
@@ -567,11 +477,7 @@ def get_schedule_for_range(
 
 
 def get_schedule_for_date(entry_date: date_type) -> dict[tuple[str, str], bool]:
-    """Latest scheduling record per (machine_id, shift) for one date.
-
-    Only exceptions are stored, so a key missing from this map means the
-    shift's default — default_scheduled(), which depends on its length.
-    """
+    """Latest scheduling record per (machine_id, shift) for one date."""
     return {
         (machine_id, shift): scheduled
         for (machine_id, _, shift), scheduled
@@ -591,33 +497,19 @@ def _cumulative_deltas(
 ) -> dict[str, int | None]:
     """Turns a shift's cumulative production checkpoints into per-slot amounts.
 
-    Applies to PRODUCTION UNITS only. Scrap is a single shift total now and has
-    nothing to accumulate against.
+    A blank checkpoint means the count hasn't changed, not that it's unknown.
+    The floor leaves a box empty when there's nothing new to write (machine
+    down, operator moved), so a blank slot produced zero and a blank first
+    slot means the counter was still at zero.
 
-    A BLANK CHECKPOINT MEANS UNCHANGED, NOT UNKNOWN
-    -----------------------------------------------
-    Per the floor, a checkpoint is left empty when the number hasn't moved. A
-    machine waiting on a delivery, or whose operator got pulled to another line,
-    has nothing new to write. So a blank slot produced zero, and a blank FIRST
-    slot means the counter was still at zero when the shift started.
+    Treating blanks as unknown would flatter OEE, since blanks are a machine's
+    worst slots. A shift reading 10500 / 15750 / 15750 / blank scores 25.2%
+    with the blank counted as zero, but 33.7% if it's dropped.
 
-    Discarding that is actively harmful, because the blanks are a machine's
-    WORST slots. C2 on 2026-09-03 read 10500 / 15750 / 15750 / blank, with
-    "operator moved to WS" logged at 12PM:
-
-        blank treated as unknown  ->  15750 / (130 x 360 min) = 33.7%
-        blank treated as zero     ->  15750 / (130 x 480 min) = 25.2%
-
-    25.2% is the truth. The earlier reading was too kind, and too kind
-    *because* the machine had a bad shift.
-
-    TWO GUARDS
-    ----------
-    1. A shift with NO readings stays entirely unknown. Silence means nobody
-       logged it, not that the machine made nothing for eight hours. A machine
-       that genuinely didn't run is recorded with the not-scheduled checkbox.
-    2. Slots that have not ELAPSED are unknown, never zero. "Unchanged" is
-       meaningless for hours that haven't happened.
+    Two guards:
+    1. A shift with no readings at all stays unknown. That means nobody
+       logged it; a machine that didn't run is marked not scheduled instead.
+    2. Slots that haven't elapsed yet are unknown, never zero.
     """
     countable = [s for s in slots if elapsed is None or s in elapsed]
     if all(cumulative.get(slot) is None for slot in countable):
@@ -631,7 +523,7 @@ def _cumulative_deltas(
             continue
         current = cumulative.get(slot)
         if current is None:
-            deltas[slot] = 0  # carried forward: nothing reported, nothing made
+            deltas[slot] = 0  # blank: count unchanged
         else:
             deltas[slot] = current - last_known
             last_known = current
@@ -639,12 +531,8 @@ def _cumulative_deltas(
 
 
 def _safe_divide(numerator: float | None, denominator: float | None) -> float | None:
-    """Division that returns None instead of raising or defaulting.
-
-    Any unknown input, or a zero denominator, means the ratio is genuinely
-    unknowable. Inventing a 0% or 100% for it would be a lie that averages into
-    every rollup above it.
-    """
+    """Division that returns None for an unknown input or a zero denominator,
+    rather than inventing a 0% or 100%."""
     if numerator is None or denominator is None or denominator == 0:
         return None
     return numerator / denominator
@@ -662,29 +550,20 @@ def _aggregate(
     ideal_at_ppt: float,
     ideal_at_run: float,
 ) -> dict:
-    """Combines summed components into the four ratios.
+    """Combines summed components into the ratios.
 
-    Sums first, divides once — never an average of percentages, so a machine
-    that ran 20 minutes cannot weigh the same as one that ran all shift.
+    Inputs are sums, and each ratio is divided once, so a machine that ran 20
+    minutes doesn't weigh the same as one that ran all shift.
 
-    The two ideal figures are accumulated by the CALLER as
-    `ideal_per_minute x minutes`, rather than passed as a rate. That is what
-    makes this work unchanged for one machine and for a whole zone: 34 machines
-    run at 8 different rates, so there is no floor-wide units-per-minute, but
-    there is very much a floor-wide count of units it could have made.
+    The ideal figures are passed as units (ideal_per_minute x minutes), not
+    a rate. Machines run at different rates, so a zone has no single rate but
+    does have a total number of units it could have made.
 
-    ON THE TWO AVAILABILITIES
-    -------------------------
-    `availability` is computed on CAPACITY (ideal units at run time over ideal
-    units at PPT), not clock minutes. For a single machine the two are
-    identical, since its rate cancels. Across machines they diverge, and
-    capacity is the correct one: A x P x Q only telescopes back into OEE when
-    every factor is weighted the same way, and summing raw minutes treats a
-    minute on AS1 (1,680/hr) as worth a minute on C1 (7,800/hr).
-
-    `uptime` keeps the clock-time ratio, because "we ran 91% of the minutes we
-    were scheduled for" is a real and useful sentence — it just isn't the OEE
-    factor.
+    `availability` is weighted by capacity (ideal units at run time over
+    ideal units at PPT). For one machine that equals run / PPT. Across
+    machines it's the only weighting under which A x P x Q still equals OEE,
+    since a minute on AS1 (1,680/hr) isn't worth a minute on C1 (7,800/hr).
+    `uptime` keeps the plain clock-minutes ratio for display.
     """
     total = good + scrap if scrap is not None else None
     availability = _safe_divide(ideal_at_run, ideal_at_ppt)
@@ -709,9 +588,7 @@ def _aggregate(
         "quality": quality,
         "oee": oee,
         "pct_of_standard": _safe_divide(good, standard),
-        # A x P x Q by the long route. Must equal `oee`, which took the short
-        # one. Kept in the payload so the identity is checkable rather than
-        # merely asserted in a comment.
+        # A x P x Q by the long route. Must equal `oee`; tests check this.
         "oee_from_factors": (
             availability * performance * quality
             if None not in (availability, performance, quality)
@@ -721,12 +598,7 @@ def _aggregate(
 
 
 def _new_accumulator() -> dict:
-    """A zeroed set of the summable components a rollup needs.
-
-    Everything here is additive, which is the point: percentages are never
-    combined, only the counts and minutes underneath them, and the division
-    happens once at the end in _aggregate().
-    """
+    """A zeroed set of the summable components a rollup needs."""
     return {
         "good": 0, "scrap": 0, "standard": 0,
         "ppt": 0.0, "run": 0.0, "planned": 0.0, "unplanned": 0.0,
@@ -750,11 +622,7 @@ def _accumulate(acc: dict, result: dict, *, with_scrap: bool = False) -> None:
 
 
 def _accumulator_args(acc: dict) -> dict:
-    """Maps an accumulator onto _aggregate's keyword names.
-
-    Exists only so the two rollup calls can't drift over which key feeds which
-    argument.
-    """
+    """Maps an accumulator onto _aggregate's keyword arguments."""
     return {
         "good": acc["good"], "standard": acc["standard"],
         "ppt": acc["ppt"], "run": acc["run"],
@@ -764,21 +632,15 @@ def _accumulator_args(acc: dict) -> dict:
 
 
 def _build_rollup(machines: dict[str, dict], machine_ids: list[str]) -> dict | None:
-    """Combines a set of machines' shift results into one rollup.
+    """Combines a set of machines' shift results into one rollup (a zone or
+    the whole floor).
 
-    Used for the floor total and for every zone, so there is exactly one
-    implementation of the aggregation rules.
+    Machines that weren't scheduled or have nothing countable are skipped.
 
-    Unscheduled machines are skipped, and so are machines with nothing
-    countable: their time isn't production time, and folding either in would
-    drag a zone's numbers down over a machine nobody expected to run.
-
-    Two accumulators, because the factors have different populations. OEE and
-    Availability need production and downtime, which most machines will have;
-    Performance and Quality additionally need scrap. Rolling them together
-    would discard a machine's perfectly good OEE because its scrap was missing,
-    so both machine counts ship in the result and the page labels a partial
-    figure as partial.
+    There are two accumulators because the factors cover different machines.
+    OEE and Availability need production and downtime; Performance and
+    Quality also need scrap. Both machine counts are returned so the page can
+    label a partial figure.
     """
     roll = _new_accumulator()
     split = _new_accumulator()
@@ -804,11 +666,8 @@ def _build_rollup(machines: dict[str, dict], machine_ids: list[str]) -> dict | N
         rollup["quality"] = subset["quality"]
         rollup["scrap"] = split["scrap"]
         rollup["total"] = subset["total"]
-        # A x P x Q only reconstructs THIS rollup's OEE when all three factors
-        # describe the same machines. Performance and Quality come from the
-        # scrap-complete subset, so when that is narrower the product mixes two
-        # populations and reconstructs nothing. Reported as None rather than
-        # shipped as a number that fails its own identity check.
+        # A x P x Q only equals this rollup's OEE when all three factors cover
+        # the same machines. If some are missing scrap, report None.
         rollup["oee_from_factors"] = (
             subset["oee_from_factors"]
             if split["machines"] == roll["machines"] else None
@@ -821,10 +680,8 @@ def _build_rollup(machines: dict[str, dict], machine_ids: list[str]) -> dict | N
 def _build_pareto(machines: dict[str, dict], machine_ids: list[str]) -> list[dict]:
     """Downtime minutes by reason across a set of machines for one shift.
 
-    Counts every machine that has a downtime submission, whether or not its OEE
-    was computable — a reported 20 minutes of material wait is a real 20
-    minutes even if the production side is missing. Unscheduled machines are
-    excluded, since their downtime isn't production downtime.
+    Includes every scheduled machine with a downtime submission, even if its
+    OEE couldn't be computed.
     """
     pareto: dict[str, dict] = {}
     for machine_id in machine_ids:
@@ -848,13 +705,8 @@ def _build_pareto(machines: dict[str, dict], machine_ids: list[str]) -> list[dic
 
 
 def _rank_pareto(pareto: dict[str, dict]) -> list[dict]:
-    """Downtime minutes by reason, biggest first, with each one's share.
-
-    Planned reasons stay in the list even though none of the floor's current
-    codes are planned — hiding them would make the unplanned percentages read
-    as shares of a total that isn't shown anywhere, and a planned code may be
-    added later.
-    """
+    """Downtime minutes by reason, biggest first, with each unplanned
+    reason's share of the unplanned total."""
     ranked = sorted(pareto.values(), key=lambda item: item["minutes"], reverse=True)
     unplanned_total = sum(i["minutes"] for i in ranked if not i["is_planned"])
     for item in ranked:
@@ -866,16 +718,11 @@ def _rank_pareto(pareto: dict[str, dict]) -> list[dict]:
 
 
 def _machine_warnings(result: dict | None, production_warnings: list[str]) -> list[str]:
-    """Warnings worth raising to the top of the page for one machine.
+    """Soft warnings for one machine's shift. The machine still counts.
 
-    Soft: they invalidate nothing and the machine still counts. They mean two
-    inputs disagree, and the wrong one is usually the machine's configured rate
-    rather than what the floor counted.
-
-    Judged on the whole shift, which is now the only grain there is. That was a
-    real bug at slot grain: a per-slot ceiling test flagged seven machines that
-    were simply running well, because a checkpoint read late borrows units from
-    its neighbour. A shift is 480 minutes however the readings fell.
+    Judged on the whole shift, never a single slot: a checkpoint read late
+    borrows units from its neighbour, so one slot can look impossible while
+    the shift is fine.
     """
     warnings = list(production_warnings)
     if result is not None:
@@ -890,22 +737,16 @@ def _summarise_production(
     deltas: dict[str, int | None],
     elapsed: list[str],
 ) -> dict:
-    """Reduces a shift's checkpoints to its total, plus any data-quality signal.
+    """Reduces a shift's checkpoints to its total, plus data-quality flags.
 
-    `good` is the sum of the carry-forward deltas, which by construction equals
-    the LAST reported reading in the shift. Interior gaps cannot change it,
-    which is exactly why shift grain is robust where slot grain was not.
+    `good` is the sum of the deltas, which equals the last reported reading.
 
-    Two distinct problems, deliberately rated differently:
+      units_went_backwards (warning) - a checkpoint is lower than the one
+          before it. If a later reading is higher, the total is still right
+          and the machine still counts.
 
-      units_went_backwards (WARNING) - some checkpoint is lower than the one
-          before it. Somebody should fix that reading, but if a LATER reading
-          is higher the shift total is still correct, so the machine still
-          counts.
-
-      final_reading_low (HARD) - the last reading is below an earlier one, so
-          the shift total itself is understated and nothing derived from it can
-          be trusted. Excluded.
+      final_reading_low (flag) - the last reading is below an earlier one, so
+          the total itself is wrong. The machine is excluded.
     """
     reported = [readings[slot] for slot in elapsed if readings.get(slot) is not None]
     values = [deltas[slot] for slot in elapsed if deltas.get(slot) is not None]
@@ -924,40 +765,30 @@ def _summarise_production(
 
 
 def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) -> dict:
-    """Full OEE picture for one production date: every machine, all 3 shifts.
+    """OEE for one production day: every machine, all three shifts.
 
-    All three shifts ship in one payload so /oee's shift toggle switches
-    client-side with no round trip — the same trade /api/supervisor-data makes,
-    affordable for the same reason: this page doesn't poll.
+    All three shifts are returned together so /oee's shift toggle works
+    without another request.
 
-    Machines marked not-scheduled are computed but flagged and left out of the
-    rollups entirely. Not 0%, not 100% — absent. A machine with no ideal rate
-    seeded gets no OEE at all rather than a guessed ceiling.
+    Machines that weren't scheduled are left out of the rollups (not scored
+    0%). A machine with no ideal rate gets no OEE. A shift that doesn't exist
+    for a machine (the 3rd after a 12-hour 2nd) comes back with
+    scheduled=False and shift_exists=False, so rollups skip it the same way.
 
-    SHIFT LENGTH decides each machine's slots and minutes per shift, and
-    whether the shift exists for it at all (after a 12-hour 2nd Shift there
-    is no 3rd). A shift that doesn't exist is reported as such —
-    scheduled=False with shift_exists=False — so every rollup skips it the
-    way it skips a machine marked not-scheduled, without a second code path.
-
-    `entry_date` is the PRODUCTION DAY: the 3rd Shift here is the one that
-    starts at 10PM on it and lands the next morning.
+    `entry_date` is the production day; its 3rd Shift starts at 10PM that
+    day.
     """
     now = now or datetime.now()
 
-    # Imported here rather than at module scope: entries.py owns the production
-    # query, and a top-level import would make the two modules mutually
-    # importable the moment entries.py ever needs anything from here.
+    # Local import avoids a circular import between the two db modules.
     from app.db.entries import get_latest_entries_for_date
 
     production_day = entry_date
     next_day = production_day + timedelta(days=1)
     lengths = get_shift_lengths(production_day)
 
-    # Every production day's 12AM-6AM checkpoints — the 3rd Shift's, or a
-    # long 2nd Shift's — are filed by the rounds under the NEXT calendar
-    # date, so both dates are read and shift_slot_dates() says which one each
-    # checkpoint carries.
+    # 12AM-6AM checkpoints are filed under the next calendar date, so read
+    # both days.
     units_map: dict[tuple[str, date_type, str], int] = {}
     operator_map: dict[tuple[str, date_type, str], str] = {}
     for day in (production_day, next_day):
@@ -976,8 +807,8 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
     shifts: dict[str, dict] = {}
 
     for shift_label in SHIFT_ORDER:
-        # The 8-hour view of this shift, for the page-level "N elapsed slots"
-        # note. Machines on longer shifts carry their own count.
+        # The 8-hour view, for the page's "N elapsed slots" note. Each
+        # machine also carries its own count.
         default_elapsed = elapsed_dated_slots(
             shift_slot_dates(shift_label, production_day) or [], now
         )
@@ -1014,16 +845,13 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
             if ideal_per_hour is None:
                 flags.append("no_ideal_rate")
 
-            # Planned Production Time is the elapsed part of the shift. With no
-            # planned reason codes in the floor's set, planned downtime is
-            # always zero today — but the arithmetic still subtracts it, so
-            # adding a planned code later needs no change here.
+            # Planned Production Time is the elapsed part of the shift, minus
+            # planned downtime (currently always zero; no reason codes are
+            # planned).
             #
-            # A short day's shift owns a 6-hour window but is scheduled for
-            # only `hours` of it, counted from the window's start, so its
-            # clock is capped there: 4 hours on the 1st Shift is 240 minutes
-            # whether it's read at 11AM or next week. For 8/10/12 hours the
-            # cap is the whole window and changes nothing.
+            # A short-day shift is capped at its scheduled hours: 4 hours on
+            # the 1st Shift is 240 minutes even though its window is six. For
+            # 8/10/12 hours the cap is the whole window.
             planned = downtime["planned_minutes"] if downtime else 0
             unplanned = downtime["unplanned_minutes"] if downtime else 0
             elapsed_minutes = min(SLOT_MINUTES * len(elapsed), hours * 60)
@@ -1051,10 +879,9 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
             )
             scrap_known = countable and scrap is not None
 
-            # The seeded standard is a 4-checkpoint (8-hour) target; a
-            # longer or shorter shift's target is in proportion to its
-            # hours. It is 4 x the 2-hour increment, and every increment on
-            # the floor is even, so this stays a whole number even for 5.
+            # The stored standard is an 8-hour target; scale it to the
+            # shift's hours. Every 2-hour increment is even, so the result
+            # stays whole.
             standard = (
                 standards.get((machine_id, shift_label), 0) * hours // DEFAULT_SHIFT_HOURS
             )
@@ -1079,8 +906,8 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
                 "shift_hours": hours,
                 "shift_minutes": hours * 60,
                 "span": shift_span(shift_label, hours),
-                # Differs from `span` only on a short day: the 6-hour window
-                # the checkpoints come from, e.g. 6AM-12PM around 6AM-10AM.
+                # Differs from `span` only on a short day (6AM-12PM window
+                # around a scheduled 6AM-10AM).
                 "window_span": window_span(shift_label, hours),
                 "production_day": production_day.isoformat(),
                 "operator": next(
@@ -1092,10 +919,8 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
                     None,
                 ),
                 "shift": result,
-                # The raw checkpoint sequence, so a flagged machine can be
-                # diagnosed from the page rather than from a SQL prompt. Each
-                # carries its calendar date because a long 2nd Shift's last
-                # few land on the morning after.
+                # Raw checkpoints, so a flagged machine can be diagnosed from
+                # the page. Each carries the calendar date it was filed under.
                 "checkpoints": [
                     {
                         "slot": slot,
@@ -1142,16 +967,12 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
 
 
 def _absent_shift(hours: int, production_day: date_type, day_lengths: dict[str, int]) -> dict:
-    """The row for a shift the day has no room for — the 3rd Shift after a
-    10 or 12-hour 2nd.
+    """The row for a shift the day has no room for (the 3rd Shift after a 10
+    or 12-hour 2nd).
 
-    Reported with scheduled=False so _build_rollup, _build_pareto and
-    _completeness all leave it out without knowing why, and shift_exists=False
-    so the page can say "no 3rd shift" instead of "not scheduled". The
-    previous shift's length and span ride along so the page can say WHY.
-    Whatever may have been entered under that (date, shift) is deliberately
-    not shown: the night's hours belong to the long 2nd Shift, which is where
-    they are counted.
+    scheduled=False keeps it out of every rollup. shift_exists=False and
+    `covered_by` let the page say "no 3rd shift" and why. Anything entered
+    under that shift is ignored, because those hours belong to the 2nd Shift.
     """
     previous = SHIFT_ORDER[-2]
     return {
@@ -1185,24 +1006,14 @@ def _absent_shift(hours: int, production_day: date_type, day_lengths: dict[str, 
 
 
 def _completeness(machines: dict[str, dict], elapsed: list[str]) -> dict:
-    """How much of the shift's data has actually been keyed in.
+    """How much of the shift's data has been entered, counted per column.
 
-    Counted per COLUMN rather than as one overall percentage. Production comes
-    from the 2-hour rounds and OEE data from one person at end of shift, so the
-    normal state mid-shift is that the OEE columns are empty and the production
-    one isn't. "Machines 34/34, Downtime 12/34" says who to go ask; a single
-    "68%" doesn't.
+    Production and OEE data are entered at different times, so separate
+    counts ("Downtime 12/34") say what's missing better than one percentage.
+    A machine counts for production once it has any reading.
 
-    Production counts a machine once it has ANY reading, because a blank
-    checkpoint means unchanged — one reading determines the whole shift.
-    Downtime and scrap are single submissions per shift, so they simply exist
-    or they don't.
-
-    `elapsed` is the 8-hour view of the shift, for the page's "N elapsed
-    slots" note; each machine is judged on its own elapsed count, which is
-    larger on a 10 or 12-hour day and smaller on a short one.
-    `other_length_machines` says how many of the scheduled machines are on
-    something other than 8 hours so the note can mention it.
+    `elapsed` is the 8-hour view of the shift, for the page's note.
+    `other_length_machines` counts scheduled machines not on 8 hours.
     """
     counts = {"production": 0, "downtime": 0, "scrap": 0}
     total = 0
@@ -1241,42 +1052,26 @@ def compute_pareto_range(
     end_day: date_type, days: int, *, now: datetime | None = None
 ) -> dict:
     """Downtime minutes by reason for every machine, summed over the `days`
-    production days ending on (and including) `end_day`, all three shifts
-    together. What /oee's Pareto shows when "7 days" or "30 days" is picked.
+    production days ending on (and including) `end_day`, all shifts
+    together. Used by /oee's 7 and 30-day Pareto.
 
-    PER MACHINE, NOT PRE-SUMMED. The picker on /oee narrows the Pareto to any
-    set of machines, so the per-reason sum across machines happens in the
-    browser from these — the same split the one-shift Pareto already makes
-    (buildPareto in oee.js), and safe for the same reason: a Pareto is a
-    plain sum of minutes with no rate in it. Summing across DAYS happens here,
-    because that needs each day's shift lengths and scheduling.
+    Returned per machine so the page's machine picker can filter in the
+    browser. A machine-shift counts if it exists on that day and is
+    scheduled, the same rule compute_oee_report() uses.
 
-    Which machine-shifts count is decided exactly as compute_oee_report()
-    decides it for one day: the shift has to exist on that machine's day
-    (after a 12-hour 2nd Shift there is no 3rd) and the machine has to be
-    scheduled for it, explicitly or by default_scheduled() for its length.
-    A counted shift's reasons are included whether or not its OEE was
-    computable, as there.
+    Each machine also carries coverage counts, since a month with unentered
+    downtime would otherwise look better than it was:
 
-    HOW MUCH IS BEHIND THE BARS
-    ---------------------------
-    A month in which half the downtime was never entered looks quieter than
-    it was, and a bar chart can't say so on its own. Each machine carries:
+      records - counted machine-shifts with a downtime submission
+      missing - finished machine-shifts that reported production but have no
+                downtime submission
 
-      records - counted machine-shifts with a downtime submission, "ran
-                clean" ones included
-      missing - counted machine-shifts that are over, reported production,
-                and have NO downtime submission — losses the bars can't show
+    Reported production is the test for whether a shift ran, so an unworked
+    Sunday isn't counted as missing.
 
-    "Reported production" is the test for whether a shift ran, so a Sunday
-    nobody worked (and nobody unticked Scheduled for) is not "missing". A
-    shift still in progress isn't either: its downtime is entered at the end.
-
-    Five queries for any length of range, rather than one report per day —
-    every query opens its own connection, and 30 days of reports would be
-    several hundred of them.
+    Reads each table once for the whole range rather than building a report
+    per day, which would open hundreds of connections.
     """
-    # Imported here for the same reason compute_oee_report() does it.
     from app.db.entries import get_reported_slots
 
     now = now or datetime.now()
@@ -1306,7 +1101,7 @@ def compute_pareto_range(
                 hours = lengths[shift]
                 dated_slots = shift_slot_dates(shift, day, hours)
                 if dated_slots is None:
-                    continue  # the day has no room for this shift
+                    continue  # shift doesn't exist on this day
                 scheduled = schedule.get(
                     (machine_id, day, shift), default_scheduled(shift, hours)
                 )

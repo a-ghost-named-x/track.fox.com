@@ -1,110 +1,44 @@
-"""Routes for /console/oee — end-of-shift OEE data entry.
+"""Routes for /console/oee, the end-of-shift OEE entry form.
 
-One person, once per shift, enters the whole floor's downtime and scrap in a
-single sitting. Deliberately separate from /console and /console/<zone>, which
-went back to good units only: the 2-hour rounds are a walking job with a clock
-running, and folding downtime capture into them was adding work to every lap.
-This is sit-down work at the end of the shift.
+One person enters the whole floor's downtime, scrap, scheduling and shift
+lengths once per shift. The 2-hour rounds on /console/<zone> only record good
+units.
 
-That split is also better for the metric. A per-slot downtime figure has to be
-attributed to a 2-hour window whose boundaries nobody reads exactly, and the
-resulting noise produced false "impossible value" alarms on WS1 and C8 in the
-first week. A shift is 480 minutes however the readings fell.
+app/main.py must register this router before console.py's, or /console/oee is
+matched as /console/{zone} with zone "oee" and returns 404.
 
-ROUTE ORDER MATTERS
--------------------
-/console/oee would otherwise be captured by /console/{zone} in
-app/routers/console.py and 404 as a zone named "oee". FastAPI matches routes in
-registration order, so app/main.py includes THIS router before that one. Keep
-it that way — the failure is silent and looks like a missing page.
+Pre-fill
+--------
+Unlike /console/<zone>, which several people share, this form is owned by one
+person, so every field is pre-filled from what's on record. Each write path
+compares against the stored value and skips when nothing changed, so saving
+an untouched page doesn't append 34 identical rows.
 
-PREFILL POLICY, AND WHY IT DIFFERS FROM THE PRODUCTION FORM
------------------------------------------------------------
-This form pre-fills every field from what is already on record, and the batch
-production form deliberately does not. The difference is how many people touch
-each one.
+Retired reason codes
+--------------------
+The picker only offers active codes. If a shift already has minutes against
+a retired code, that code is shown on the machine's row (tagged "retired") so
+a later correction carries it forward. Otherwise, because the newest
+submission replaces the whole set, re-saving the shift would drop those
+minutes.
 
-/console/<zone> is shared: several people submit it during a shift, so a blank
-box has to mean "I'm not touching this" or one person's save wipes another's
-numbers. Here a single person owns the whole form, so pre-filling makes
-reviewing and correcting a shift natural — open it, see what's recorded, adjust,
-save.
+Shift length
+------------
+Each shift's length is set on that shift's page: 8, 10 or 12 hours, or 1-6 on
+a short day (rules in "Shift length" in app/models.py). Options that would
+overlap an earlier shift are disabled on the page and rejected on save by
+shift_length_conflict(). A 10 or 12-hour 2nd Shift defaults to not scheduled
+and leaves no 3rd Shift that night; that row shows "no 3rd shift" with no
+inputs.
 
-To keep that from appending an identical row for all 34 machines every time
-somebody opens and saves the page, each write path compares against what is
-already stored and skips when nothing changed. The tables stay append-only; the
-"saved" badges then mean something, because only genuinely changed machines get
-one.
+The short day is a fourth radio with a number box inside it, so the radio
+group always posts exactly one value. A number typed in the box while 8, 10
+or 12 is picked is rejected as contradictory. The 3rd Shift page only shows
+the length control on rows whose 2nd Shift is a short day, the only case
+where a 3rd Shift has a choice.
 
-RETIRED REASON CODES STAY ON THE SHIFTS THAT HAVE THEM
-------------------------------------------------------
-The reason picker lists active codes only — that is what retiring a code
-(`downtime_reasons.active = false`) means. But pre-fill plus newest-header-
-wins is a trap for shifts entered before a retirement: if the form silently
-left a retired code off a machine's row, re-saving that shift for any reason
-(fixing the note, correcting another reason's minutes) would post only the
-codes it could see, and the old minutes would drop out of that shift's record.
-
-So a retired code is rendered on a machine's row when, and only when, that
-shift already has it on record — tagged "retired", with the same checkbox and
-minutes box, so it carries forward untouched by default or can be deliberately
-unticked and reclassified. An untouched machine never shows it, which is what
-keeps new use impossible. First needed by docs/sql/13_split_operator_adjustments.sql.
-
-SHIFT LENGTH IS SET PER SHIFT, ON THAT SHIFT'S PAGE
---------------------------------------------------
-Each machine's shift can be 8, 10 or 12 hours, set on the 1st Shift page for
-the 1st Shift and on the 2nd Shift page for the 2nd (the 3rd can only ever
-be 8, so its page shows it read-only). A shift with nothing set inherits the
-one before it, so "decide at 6AM that today is 12 hours" is one click on the
-1st Shift page and the night follows. The manager's other case — an 8-hour
-1st Shift, then a 12-hour crew arriving at 6PM — is one click on the 2nd
-Shift page.
-
-The one rule, enforced on every save: a later shift can be as long or longer
-than the one before it, never shorter, because a shift's length decides
-where it starts (the second 12-hour shift of the day is 6PM-6AM) and a
-shorter later shift would start inside the earlier one. Options that would
-break it are disabled on the page and rejected by shift_length_conflict() if
-posted anyway.
-
-Two things follow from a 10 or 12-hour 2nd Shift, both from app/models.py:
-it defaults to NOT scheduled (a night crew is the exception, so picking the
-length on this page ticks it on, and the person can untick), and there is no
-3rd Shift that night — its row is rendered as "no 3rd shift" with no inputs.
-
-SHORT DAYS: TYPED HOURS, NOT A FOURTH BUTTON
---------------------------------------------
-Next to 8h/10h/12h every row has a short-day option with a box for a whole
-number of hours, 1 to 6 (production manager, 2026-09-23 — Saturdays mostly,
-where how long each machine runs depends on demand and who turned up). It
-puts that machine's day on 6-hour shifts (6AM-12PM, 12PM-6PM, 6PM-12AM), and
-the number is how many of those six hours it was scheduled for. See
-"SHORT DAYS" in app/models.py for the rules; the page's job is the input.
-
-The short option is a fourth RADIO with the number box inside it, so the
-group still always posts exactly one choice and absence still means "the
-control wasn't on the page". The box only counts when the short radio is
-the one picked, and a number typed next to 8h/10h/12h is refused as a
-contradiction rather than guessed at — the same rule as minutes typed
-against an unticked reason. The JS picks the radio when someone types in
-the box, so that error only reaches someone without it.
-
-The 3rd Shift page gains the control too, because a short day's 3rd Shift
-(6PM-12AM) is real. It is only rendered on rows where the 2nd Shift is on
-the short pattern — the one case a 3rd Shift has a choice; everywhere else
-the row shows 8h read-only, as before.
-
-THE DATE IS THE DAY THE SHIFT STARTED
--------------------------------------
-"3rd Shift, Thursday" is Thursday 10PM through Friday 6AM, and it is entered
-at 6AM Friday under THURSDAY's date — the page defaults the date box to
-yesterday when 3rd Shift is opened in the morning, and prints the span with
-dates so it can't be misread. The 2-hour rounds still date the 12AM-6AM
-readings by the morning they land on; that is the boards' convention and it
-isn't changing. See "THE PRODUCTION DAY" in app/models.py.
-
-Access model matches the rest of the app: no auth, URL obscurity only.
+The date is the production day the shift started on. The 3rd Shift page
+defaults to yesterday when opened in the morning.
 """
 from datetime import date, datetime, timedelta
 
@@ -161,12 +95,8 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 def _parse_entry_date(raw: str | None) -> date | None:
-    """Parses the date box, or None if missing/unparseable.
-
-    Same forgiving-on-GET, strict-on-POST split the production console uses: a
-    junk date in a URL shouldn't 500 the page, but it must not silently file a
-    whole shift under the wrong day either.
-    """
+    """Parses the date box, or None if missing/unparseable. The GET falls
+    back to a default; the POST shows an error."""
     if not raw:
         return None
     try:
@@ -176,12 +106,7 @@ def _parse_entry_date(raw: str | None) -> date | None:
 
 
 def _zones() -> list[dict]:
-    """Zone sections in /supervisor's order, so the three review-side pages
-    agree about where Poly sits.
-
-    A slug missing from DASHBOARD_ZONES is skipped rather than raising, so
-    retiring a zone can't 500 this page.
-    """
+    """Zone sections in the same order as /supervisor and /oee."""
     sections = []
     for slug in OEE_ZONE_ORDER:
         machine_ids = DASHBOARD_ZONES.get(slug)
@@ -209,29 +134,25 @@ def _blank_row() -> dict:
         "span": "",
         "window_span": "",
         "shift_minutes": DEFAULT_SHIFT_HOURS * 60,
-        # The shortest PATTERN this shift may be (the previous shift's) and
-        # the longest (the next shift's, where one is explicitly set), so the
-        # page can grey out the options that would overlap. Patterns, not
-        # hours: a short day's 1-6 are all the 6-hour pattern.
+        # Shortest and longest pattern this shift may be, so the page can
+        # disable options that would overlap. A short day's 1-6 are all
+        # pattern 6.
         "min_pattern": SHORT_PATTERN_HOURS,
         "max_pattern": max(SHIFT_LENGTH_HOURS),
-        # What the short-day box shows: the stored hours on a short day,
-        # empty otherwise.
+        # Short-day box value: the stored hours on a short day, else empty.
         "short_value": "",
-        # Whether this row gets the length control at all. Always on the 1st
-        # and 2nd Shift pages; on the 3rd only when the 2nd is a short day,
-        # the one case where a 3rd Shift has more than one possible length.
+        # Whether this row gets a length control. On the 3rd Shift page,
+        # only when the 2nd Shift is a short day.
         "length_editable": True,
         # Whether this shift's length was set on this page or inherited.
         "hours_explicit": False,
-        # Whether `scheduled` came from a machine_schedule row or from the
-        # default for this shift's length. The POST needs to know, because a
-        # length change on the same save can change the default.
+        # Whether `scheduled` came from a stored row or the default. The POST
+        # needs this because changing the length can change the default.
         "scheduled_explicit": False,
-        # For a row the day has no room for: which shift covers the night.
+        # For a shift that doesn't exist: which shift covers the night.
         "covered_by": None,
-        # Every explicitly-set length on this machine's day, for the
-        # overlap check on save.
+        # Every explicitly set length on this machine's day, for the overlap
+        # check.
         "explicit": {},
         "scheduled": True,
         "ran_clean": False,
@@ -246,12 +167,8 @@ def _blank_row() -> dict:
 
 
 def _retired_on_row(codes, active: dict, all_reasons: dict) -> list[dict]:
-    """Which of `codes` the picker no longer offers, with labels.
-
-    These get their own rows on the form so they round-trip — see the module
-    docstring. `codes` is whatever is on the machine's record (GET) or whatever
-    the form carried for it (POST); there is rarely more than one.
-    """
+    """Which of `codes` are retired, with labels, so the form can show them.
+    `codes` comes from the record (GET) or the submitted form (POST)."""
     return [
         {"code": code, "label": all_reasons.get(code, {}).get("label", code)}
         for code in codes
@@ -260,12 +177,8 @@ def _retired_on_row(codes, active: dict, all_reasons: dict) -> list[dict]:
 
 
 def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
-    """Current state of every machine for this date+shift, as form values.
-
-    Pre-fills the form so the page shows what is already recorded rather than
-    an empty grid over the top of real data — see the module docstring for why
-    that is safe here and not on the shared production form.
-    """
+    """Current state of every machine for this date and shift, as form
+    values."""
     scrap = get_latest_scrap_for_date(entry_date)
     downtime = get_latest_downtime_for_date(entry_date)
     schedule = get_schedule_for_date(entry_date)
@@ -296,16 +209,12 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
         ]
         if later_explicit:
             row["max_pattern"] = min(later_explicit)
-        # Only the 3rd Shift has rows with nothing to choose: after an 8-hour
-        # 2nd Shift it can only be 8 hours (10 and 12 run past 6AM, and a
-        # short one would start inside the 2nd).
+        # After an 8-hour 2nd Shift, the 3rd can only be 8 hours.
         row["length_editable"] = (
             shift != SHIFT_ORDER[-1] or row["min_pattern"] == SHORT_PATTERN_HOURS
         )
         if not row["shift_exists"]:
-            # No inputs are rendered for this row and nothing is read back
-            # for it on POST, so its record (if any) is neither shown nor
-            # touched. Say which shift owns the night instead.
+            # No inputs are rendered for this row and the POST ignores it.
             previous = SHIFT_ORDER[index - 1]
             row["covered_by"] = {
                 "shift": previous,
@@ -328,14 +237,12 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
         if record is not None:
             row["note"] = record["note"] or ""
             row["minutes"] = {r["code"]: str(r["minutes"]) for r in record["reasons"]}
-            # The record already carries labels from the full code table, so a
-            # retired code resolves to its name without another lookup.
+            # The record's reasons already carry labels, retired ones included.
             row["retired"] = _retired_on_row(
                 row["minutes"], active, {r["code"]: r for r in record["reasons"]}
             )
-            # A submission with no reasons is the "ran clean" statement, which
-            # has to round-trip as a ticked box rather than as an empty form
-            # indistinguishable from never-entered.
+            # A submission with no reasons means "ran clean", shown as the
+            # ticked "no downtime" box.
             row["ran_clean"] = not record["reasons"]
 
         rows[machine_id] = row
@@ -350,13 +257,8 @@ def _context(
     entered_by: str = "",
     top_error: str | None = None,
 ):
-    """Shared context builder for the GET and POST responses.
-
-    `shift` and `entry_date` are resolved by the caller and passed in rather
-    than re-derived from the clock, because both are user-controlled and this
-    runs on the POST path too — quietly recomputing either would mean a page
-    that saved 1st Shift's numbers at 4PM re-rendered itself as 2nd Shift.
-    """
+    """Template context shared by the GET and the POST. `shift` and
+    `entry_date` are the user's choice, never re-derived from the clock."""
     saved_count = sum(1 for row in rows.values() if row["status"] == "saved")
     failed_rows = [(m, r) for m, r in rows.items() if r["status"] == "failed"]
     next_day = entry_date + timedelta(days=1)
@@ -374,14 +276,13 @@ def _context(
         "failed_rows": failed_rows,
         "top_error": top_error,
         "max_shift_minutes": MAX_SHIFT_MINUTES,
-        # 8/10/12 on the 1st and 2nd Shift pages, just 8 on the 3rd; the
-        # short-day option is on every page. Rows decide which are blocked.
+        # 8/10/12 on the 1st and 2nd Shift pages, just 8 on the 3rd. The
+        # short-day option is on every page.
         "shift_length_options": long_length_options(shift),
         "short_shift_hours": SHORT_SHIFT_HOURS,
         "short_pattern_hours": SHORT_PATTERN_HOURS,
         "default_shift_hours": DEFAULT_SHIFT_HOURS,
-        # The 3rd Shift page shows most rows read-only (see _existing_rows);
-        # the page-level switch is only for the hint text.
+        # Page-level flags, used for the hint text.
         "is_last_shift": shift == SHIFT_ORDER[-1],
         "is_first_shift": shift == SHIFT_ORDER[0],
         "shift_index": SHIFT_ORDER.index(shift),
@@ -389,12 +290,12 @@ def _context(
         # "follows 1st" / "follows 2nd" on a row whose length is inherited.
         "previous_shift": SHIFT_ORDER[SHIFT_ORDER.index(shift) - 1].split(" ")[0]
         if shift != SHIFT_ORDER[0] else "",
-        # "Thu 9/18" and "Fri 9/19", for the span line under the toggle.
-        # Built by hand because strftime has no portable no-leading-zero day.
+        # "Thu 9/18" and "Fri 9/19". Built by hand because strftime has no
+        # portable no-leading-zero format.
         "day_label": f"{entry_date:%a} {entry_date.month}/{entry_date.day}",
         "next_day_label": f"{next_day:%a} {next_day.month}/{next_day.day}",
-        # The 8-hour span of the selected shift, for the same line. Machines
-        # on other lengths show their own span on their row.
+        # The 8-hour span of the selected shift. Rows on other lengths show
+        # their own.
         "default_span": shift_span(shift) or "",
         "crosses_midnight": shift == SHIFT_ORDER[-1],
     }
@@ -404,13 +305,11 @@ def _context(
 def console_oee_page(
     request: Request, shift: str | None = None, entry_date: str | None = None
 ):
-    """The end-of-shift entry form, all 34 machines on one page.
+    """The end-of-shift entry form, every machine on one page.
 
-    `shift` and `entry_date` come from the page's own toggle and date box and
-    default to the shift in progress and the production day it belongs to —
-    which for a 3rd Shift page opened in the morning is YESTERDAY, the day
-    the shift started (default_production_day). The date box is what gets
-    saved, so anyone filling in an earlier day just changes it.
+    `shift` and `entry_date` default to the current shift and its production
+    day, which for 3rd Shift opened in the morning is yesterday (see
+    default_production_day()).
     """
     now = datetime.now()
     selected_shift = resolve_shift(shift, now)
@@ -433,15 +332,10 @@ def _collect_reasons(form, machine_id: str, reasons: dict) -> tuple[list, list[s
     """Reads one machine's ticked reasons and their minutes off the form.
 
     Returns (reason inputs, errors). A ticked reason with no minutes is an
-    error rather than a silent zero — the whole point of ticking it is that
-    time was lost, and a zero-minute reason says nothing. Minutes typed against
-    an unticked reason are also an error, because it means the two controls
-    disagree about what the person meant.
+    error, and so are minutes typed against an unticked reason.
 
-    `reasons` is the FULL code table, retired codes included, so a retired
-    code the form rendered for this machine (because the shift already had it)
-    is read back like any other. A retired code that wasn't rendered has no
-    fields in the POST body at all, so it falls through as unticked-and-empty.
+    `reasons` is the full code table, so a retired code shown on this row is
+    read back like any other.
     """
     collected: list[DowntimeReasonInput] = []
     errors: list[str] = []
@@ -465,9 +359,7 @@ def _collect_reasons(form, machine_id: str, reasons: dict) -> tuple[list, list[s
             collected.append(
                 DowntimeReasonInput(reason_code=code, minutes=int(raw_minutes))
             )
-        # ORDER MATTERS: pydantic's ValidationError subclasses ValueError, so a
-        # bare `except ValueError` first would swallow it and mislabel a
-        # range failure as bad number formatting.
+        # ValidationError subclasses ValueError, so it must be caught first.
         except ValidationError:
             errors.append(
                 f"{reasons[code]['label']} minutes must be between 1 and {MAX_SHIFT_MINUTES}."
@@ -493,13 +385,10 @@ def _parse_length(raw_choice: str | None, raw_short: str, shift: str) -> tuple[i
     """Reads one machine's length control: (hours, None), (None, error), or
     (None, None) when the control wasn't on the page at all.
 
-    `raw_choice` is the radio group — "8", "10", "12" or "short" — and
-    `raw_short` the box inside the short option. The box counts only when
-    "short" is the choice. A number in it next to any other choice is an
-    error, not something to resolve quietly either way: it means the two
-    controls disagree about what the person meant (see the module
-    docstring). Whether the rest of the day allows the value is the
-    caller's check, against shift_length_conflict().
+    `raw_choice` is the radio value ("8", "10", "12" or "short") and
+    `raw_short` the box inside the short option, which only counts when
+    "short" is picked. The caller checks the result against the rest of the
+    day with shift_length_conflict().
     """
     if raw_choice is None:
         return None, None
@@ -532,28 +421,22 @@ def _parse_length(raw_choice: str | None, raw_short: str, shift: str) -> tuple[i
 
 @router.post("/console/oee", response_class=HTMLResponse)
 async def console_oee_submit(request: Request):
-    """Saves downtime, scrap and scheduling for every machine that changed.
+    """Saves shift length, scheduling, scrap and downtime for every machine
+    that changed.
 
-    Four INDEPENDENT write paths per machine — shift length, scheduling,
-    scrap, downtime — each skipped when its submitted state matches what's
-    already stored. That keeps the append-only tables from growing an
-    identical row per machine every time the page is opened and saved, and
-    makes the per-row "saved" badge mean something.
-
-    Machines are processed independently rather than as one transaction: a
-    single bad minutes value shouldn't block the other 33 from saving.
+    Each of the four is written separately and skipped when unchanged.
+    Machines are also saved independently, so one bad value doesn't block the
+    rest.
     """
     form = await request.form()
     entered_by = (form.get("entered_by") or "").strip()
     selected_shift = resolve_shift((form.get("shift") or "").strip(), datetime.now())
     selected_date = _parse_entry_date(form.get("entry_date"))
     active = get_downtime_reasons()
-    # Reading the form against the full table is what lets a retired code
-    # carry forward — see _collect_reasons.
+    # Full table, so retired codes on the form are read back too.
     reasons = get_downtime_reasons(active_only=False)
 
-    # Validate the shared fields once. If these are wrong every row would fail
-    # with the same message, which is noise rather than information.
+    # Check the shared fields once rather than failing every row.
     if selected_date is None:
         top_error = "Enter a valid date before saving."
     elif not entered_by:
@@ -576,7 +459,7 @@ async def console_oee_submit(request: Request):
             status_code=400,
         )
 
-    # Read before writing: every path below compares against current state.
+    # Every write path below compares against the current state.
     stored = _existing_rows(selected_date, selected_shift)
     rows: dict[str, dict] = {}
     any_change = False
@@ -584,9 +467,8 @@ async def console_oee_submit(request: Request):
     for machine_id in _all_machines():
         previous = stored[machine_id]
 
-        # A shift this machine's day doesn't have (the 3rd Shift after a 10
-        # or 12-hour day). The form rendered no inputs for it, so there is
-        # nothing to read and nothing to write.
+        # A shift that doesn't exist for this machine today. No inputs were
+        # rendered, so there's nothing to save.
         if not previous["shift_exists"]:
             row = _blank_row()
             row.update({k: previous[k] for k in
@@ -597,12 +479,10 @@ async def console_oee_submit(request: Request):
             continue
 
         submitted_scheduled = form.get(f"scheduled_{machine_id}") is not None
-        # An unticked checkbox and an absent one are indistinguishable in a form
-        # POST. For scheduling that ambiguity is dangerous — reading absence as
-        # "unticked" would mark every machine not on the submitted form as
-        # not-scheduled, removing them from the OEE denominator and inflating
-        # every number. The hidden companion field is always posted, so its
-        # presence proves the control was really on the form.
+        # An unticked checkbox and a missing one look the same in a POST.
+        # Reading absence as "unticked" would mark machines not on the form as
+        # not scheduled and inflate OEE, so a hidden companion field proves
+        # the checkbox was on the page.
         sched_present = form.get(f"sched_present_{machine_id}") is not None
         ran_clean = form.get(f"dt_none_{machine_id}") is not None
         raw_scrap = (form.get(f"scrap_{machine_id}") or "").strip()
@@ -610,25 +490,19 @@ async def console_oee_submit(request: Request):
 
         collected, errors = _collect_reasons(form, machine_id, reasons)
 
-        # Shift length: a radio group, so the browser always posts the
-        # checked value when the control was on the form at all, and nothing
-        # when it wasn't (a 3rd Shift row with no choice to make, where it's
-        # read-only). Absence therefore needs no companion field — it simply
-        # means "leave it alone". A stale page can still post a choice for a
-        # row that has none any more; the conflict check below catches it.
+        # Shift length is a radio group with one option always checked, so it
+        # posts a value whenever it was on the page. Absence means the row
+        # had no length control; leave it alone.
         raw_hours = form.get(f"hours_{machine_id}")
         parsed_hours, hours_error = _parse_length(
             raw_hours, (form.get(f"short_hours_{machine_id}") or "").strip(), selected_shift
         )
         if parsed_hours is not None:
-            # The as-long-or-longer rule, against the whole day as it would
-            # be after this save: everything explicitly set on the other
-            # shifts, this shift's new value, inheritance filling the rest.
+            # Check the whole day as it would be after this save.
             hours_error = shift_length_conflict(resolve_day_lengths(
                 {**previous["explicit"], selected_shift: parsed_hours}
             ))
-        # On any error, fall back to what's on record, so the downtime cap and
-        # the re-rendered row below are built from a real length.
+        # On error, keep the stored length for the downtime cap and re-render.
         submitted_hours = (
             parsed_hours if parsed_hours is not None and hours_error is None
             else previous["shift_hours"]
@@ -663,10 +537,8 @@ async def console_oee_submit(request: Request):
                 },
             }
         )
-        # Re-rendered from the form, not the record. A retired code was on this
-        # machine's row if its minutes box came back (number inputs post even
-        # when empty), and that is the test — not whether it is still ticked,
-        # so an untick that failed validation still has a row to fix.
+        # A retired code was on this row if its minutes box was posted
+        # (number inputs post even when empty), ticked or not.
         row["retired"] = _retired_on_row(
             [c for c in reasons if form.get(f"dt_min_{machine_id}_{c}") is not None],
             active,
@@ -675,8 +547,7 @@ async def console_oee_submit(request: Request):
         rows[machine_id] = row
 
         # --- shift length ---------------------------------------------------
-        # Independent of the downtime path's errors, like scrap: a typo in a
-        # minutes box shouldn't stop the day's length from saving.
+        # Saved even if the downtime fields have errors.
         if hours_error is None and submitted_hours != previous["shift_hours"]:
             any_change = True
             try:
@@ -697,13 +568,10 @@ async def console_oee_submit(request: Request):
                 errors.append(f"Shift length must be {_length_menu(selected_shift)}.")
 
         # --- scheduling ---------------------------------------------------
-        # Compared against what the box will MEAN after this save, not what
-        # it showed before it. Picking 12h on the 2nd Shift page flips that
-        # shift's default from scheduled to not-scheduled; a box ticked on
-        # the same save is then a real statement ("a crew ran") and must be
-        # written, even though it was also ticked when the page loaded.
-        # Without this the tick looks unchanged, nothing is written, and the
-        # next load shows the night as not scheduled.
+        # Compare against the default for the length being saved, not the one
+        # the page loaded with. Picking 12h on the 2nd Shift page flips the
+        # default to not scheduled, so a tick on the same save must be
+        # written or the night would show as not scheduled.
         baseline_scheduled = (
             previous["scheduled"] if previous["scheduled_explicit"]
             else default_scheduled(selected_shift, submitted_hours)
@@ -745,15 +613,11 @@ async def console_oee_submit(request: Request):
                     errors.append("Scrap can't be negative.")
                 except ValueError:
                     errors.append("Scrap must be a whole number.")
-            # Clearing the box is NOT a write. Scrap has no "unknown" value to
-            # write back to, and blanking it would have to mean either zero or
-            # retracted — neither of which the person can express. Correcting a
-            # wrong scrap number means typing the right one.
+            # Clearing the box doesn't write anything. To correct scrap, type
+            # the right number.
 
         # --- downtime -------------------------------------------------------
-        # "Ran clean" and a list of reasons are contradictory statements about
-        # the same shift, so submitting both is an error rather than something
-        # to silently resolve one way.
+        # "No downtime" plus a list of reasons is contradictory.
         if ran_clean and collected:
             errors.append(
                 'Untick "no downtime" or clear the reasons - a shift cannot be both.'
@@ -778,23 +642,21 @@ async def console_oee_submit(request: Request):
                             note=note or None,
                             entered_by=entered_by,
                         ),
-                        # The cap is this machine's shift length on this
-                        # day, including a length changed on this very save.
+                        # Includes a length changed on this save.
                         shift_minutes=row["shift_minutes"],
                     )
                     row["saved_parts"].append(
                         "no downtime" if not collected else "downtime"
                     )
                 except (UnknownReasonCodeError, DowntimeExceedsShiftError) as exc:
-                    # Both carry human-readable messages by design.
+                    # Both carry readable messages.
                     errors.append(str(exc))
                 except ValidationError:
                     errors.append("Couldn't save downtime - check the values.")
 
         if errors:
             row["status"] = "failed"
-            # Several paths can fail independently for one machine, so the
-            # messages are joined rather than only the first being shown.
+            # Show every failure for this machine, not just the first.
             row["error"] = " ".join(errors)
         elif row["saved_parts"]:
             row["status"] = "saved"

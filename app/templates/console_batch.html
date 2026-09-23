@@ -8,12 +8,9 @@
         <a href="/dashboard/{{ zone }}">View {{ zone_label }} dashboard</a>
     </p>
 
-    {# Shift toggle. Plain links rather than form controls so it works with no
-       JS at all: each one reloads this page for that shift, carrying the date
-       along. Whichever shift is active decides which 4 time slots the dropdown
-       below offers, which is the whole point — the dashboard rolls over to the
-       next shift an hour after the real changeover, and this page used to roll
-       with it and take the outgoing shift's slots away. #}
+    {# Shift toggle. Plain links so it works without JS; each reloads the page
+       for that shift, keeping the date. The selected shift decides which four
+       slots the dropdown offers. #}
     <div class="shift-picker">
         <span class="shift-picker-label">Logging for</span>
         <div class="shift-toggle" role="group" aria-label="Shift">
@@ -50,11 +47,9 @@
         <div class="batch-shared-fields">
             <label>
                 Date
-                {# The date that actually gets saved is whatever is in this box
-                   at submit time — it posts with the form, so editing it can't
-                   silently disagree with what gets written. Matters for 3rd
-                   shift, whose 12AM-6AM slots land on the day *after* the
-                   shift starts, and for fixing yesterday the next morning. #}
+                {# This box is what gets saved. Useful for 3rd Shift, whose
+                   12AM-6AM slots fall on the next calendar day, and for next-
+                   morning corrections. #}
                 <input type="date" name="entry_date" id="entry-date" required value="{{ entry_date }}">
             </label>
 
@@ -113,13 +108,7 @@
 </div>
 
 <script>
-    // Keeps the shift toggle's links pointing at whatever is currently in the
-    // Date box, so switching shifts after changing the date doesn't snap the
-    // date back to the one the page happened to load with.
-    //
-    // Convenience only: the date that gets saved is always the one in the box,
-    // which posts with the form. Without JS the toggle still works, it just
-    // carries the loaded date instead of an unsaved edit.
+    // Keeps the shift toggle's links pointing at the date in the Date box.
     (function () {
         var dateInput = document.getElementById("entry-date");
         var links = document.querySelectorAll(".shift-option");

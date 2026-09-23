@@ -1,45 +1,22 @@
-"""Routes for /supervisor — the historical shift-review page.
+"""Routes for /supervisor, the shift-review page.
 
-Where /dashboard answers "what is the floor doing right now" on a floor screen
-screen, this answers "how did a given shift actually do" for a person at a
-desk, after the fact. Same underlying data and the same status rule, with
-three deliberate behavioural differences from the dashboard:
+Same data and status rule as /dashboard, for looking back at a past shift.
+Differences from the floor screens:
 
-  - It doesn't poll. /dashboard re-fetches every POLL_INTERVAL_MS because
-    it's a live display; a fixed past date has nothing to poll for. This page
-    loads once and re-fetches only when the date changes.
-  - It shows every machine in a zone, including ones with no entries at all.
-    /dashboard hides those (applyMachineVisibility in static/js/dashboard.js)
-    because a blank row is noise on a live board. Here it's the opposite: a
-    machine that reported nothing all shift is exactly what a supervisor is
-    looking for, so the blank row IS the signal.
-  - It opens on the most recent date that has data, not on today. At 7AM,
-    before the first entries land, defaulting to today would open on an
-    empty grid.
+  - It doesn't poll; it re-fetches only when the date changes.
+  - It shows every machine, including ones with no entries. On a live board
+    an empty row is clutter; in a review, it's the thing to look for.
+  - It opens on the most recent date with data rather than today.
 
-The numbers are latest-per-slot, corrections included — the same rule
-/dashboard uses via get_latest_entries_for_date(). So this is NOT a frozen
-photograph of what the board displayed at 2PM; it's the current best-known
-picture of that shift, including a correction filed hours after it ended.
-That's the more useful answer to "how did 1st shift do", and it's why this
-page needed no new entry query. A true as-of-that-moment view is possible
-(entries is append-only, so `created_at <= <timestamp>` would do it) but is a
-different feature and isn't built here.
+Numbers are latest-per-slot with corrections included, so this is the
+current best-known picture of the shift, not a snapshot of what the board
+showed at the time.
 
-THE DATE IS A PRODUCTION DAY (since 2026-09-18)
-----------------------------------------------
-"3rd Shift, Thursday" here is Thursday 10PM through Friday 6AM, and "All Day"
-is 6AM Thursday to 6AM Friday — the day as the floor runs it, not the
-calendar's midnight-to-midnight. The 2-hour rounds still file the 12AM-6AM
-checkpoints under the morning they land on (that is how `entries` and the
-boards work, and it is not changing), so this router reads the night slots
-from the next calendar date and presents them as the tail of the day they
-belong to. /oee does the same. Rationale in app/models.py, "THE PRODUCTION
-DAY".
+Dates are production days: "3rd Shift, Thursday" is Thursday 10PM to Friday
+6AM, and "All Day" is 6AM to 6AM. The night slots are read from the next
+calendar date (see "The production day" in app/models.py).
 
-Access model matches /dashboard and /console: no auth, URL obscurity only,
-per the architecture doc. This router is read-only — it has no write path of
-any kind, which is what makes it safe to leave open alongside the others.
+Read-only, with no write paths.
 """
 from datetime import date as date_type
 from datetime import datetime, timedelta
@@ -69,17 +46,12 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 def _supervisor_zones() -> list[dict]:
-    """The zone sections to render, top to bottom, per SUPERVISOR_ZONE_ORDER.
-
-    Unlike /dashboard's zone pages, which each render one zone, this page
-    stacks all of them — a supervisor reviewing the day is on a computer, not
-    a fixed floor display, and wants the whole floor in one scroll.
-    """
+    """All zone sections, top to bottom, per SUPERVISOR_ZONE_ORDER."""
     zones = []
     for slug in SUPERVISOR_ZONE_ORDER:
         machine_ids = DASHBOARD_ZONES.get(slug)
         if machine_ids is None:
-            continue  # slug retired from DASHBOARD_ZONES — skip, don't raise
+            continue  # zone no longer exists
         zones.append(
             {
                 "slug": slug,
@@ -104,13 +76,9 @@ def _parse_date(raw: str | None) -> date_type | None:
 def supervisor_page(request: Request, date: str | None = None, shift: str | None = None):
     """Page shell for the shift-review grid.
 
-    `date` and `shift` are optional query params so one particular view can be
-    bookmarked or pasted to someone else; supervisor.js keeps them in sync
-    with the on-page controls via history.replaceState. Neither is validated
-    into an error here — the shell renders identically either way, and
-    /api/supervisor-data resolves a junk date to a sensible one rather than
-    500ing, the same forgiving approach console_batch_page takes with its own
-    date box.
+    `date` and `shift` are optional query params so a view can be
+    bookmarked; supervisor.js keeps them in sync with the controls. Invalid
+    values aren't errors: /api/supervisor-data falls back to a sensible date.
     """
     now = datetime.now()
     return templates.TemplateResponse(
@@ -123,9 +91,7 @@ def supervisor_page(request: Request, date: str | None = None, shift: str | None
             "shift_slots": SHIFT_SLOTS,
             "all_day_label": ALL_DAY_LABEL,
             "requested_date": date or "",
-            # ALL_DAY_LABEL isn't a real shift, so it has to bypass
-            # resolve_shift() — which would reject it and fall back to the
-            # current clock shift, quietly ignoring a bookmarked All Day view.
+            # "All Day" isn't a shift, so resolve_shift() would reject it.
             "requested_shift": (
                 ALL_DAY_LABEL if shift == ALL_DAY_LABEL else resolve_shift(shift, now)
             ),
@@ -135,20 +101,13 @@ def supervisor_page(request: Request, date: str | None = None, shift: str | None
 
 @router.get("/api/supervisor-data")
 def supervisor_data(date: str | None = None):
-    """Everything /supervisor needs for one production date, in one response.
+    """Everything /supervisor needs for one production date.
 
-    Returns the whole day — all 12 time slots — rather than one shift's four,
-    plus a per-shift operator/issue map. That's deliberate: the shift toggle
-    then switches columns entirely client-side with no round trip, which is
-    what makes it feel instant. The payload is small enough to afford it
-    (34 machines x 12 slots caps out at 408 rows).
+    Returns all 12 slots plus each shift's operators and issues, so the shift
+    toggle works without another request (at most 408 rows).
 
-    Date resolution is forgiving in one direction only. A missing or
-    unparseable date falls back to the most recent date that has entries. But
-    a date that parses fine and simply has no entries is honoured as-is and
-    comes back with an empty `entries` list — bouncing someone somewhere else
-    when they deliberately picked a quiet Sunday would be more confusing than
-    showing them the empty day they asked for.
+    A missing or unparseable date falls back to the most recent date with
+    entries. A valid date with no entries is returned as-is, empty.
     """
     available = get_available_production_days()
     requested = _parse_date(date)
@@ -160,19 +119,10 @@ def supervisor_data(date: str | None = None):
 
     entries = get_production_day_entries(resolved)
 
-    # One get_shift_activity() call per shift — six queries per load. The
-    # dashboard only ever needs the shift in progress, but a review page can
-    # be looking at any of the three, and the toggle is client-side so all
-    # three have to be in hand up front. Affordable here precisely because
-    # this page doesn't poll: it loads a handful of times a day, versus the
-    # dashboard's every-60-seconds. Keeping get_shift_activity() untouched
-    # also means the operator/issue carry-forward rule stays defined in
-    # exactly one place rather than being reimplemented per-shift here.
-    #
-    # The 3rd Shift's four slots are all night slots, filed by the rounds
-    # under the next calendar date — so that is the date its activity is
-    # read from. (A long 2nd Shift also crosses midnight, but this page is
-    # the 8-hour grid; shift lengths live on /oee.)
+    # One get_shift_activity() call per shift, which is fine for a page that
+    # doesn't poll. The 3rd Shift's slots are filed under the next calendar
+    # date, so its activity is read from there. This page is always the
+    # 8-hour grid; shift lengths only matter on /oee.
     shift_activity = {
         label: get_shift_activity(
             resolved + timedelta(days=1) if label == SHIFT_ORDER[-1] else resolved,

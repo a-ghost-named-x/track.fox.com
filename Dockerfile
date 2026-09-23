@@ -1,18 +1,12 @@
 FROM python:3.12-slim-bookworm
 
-# tzdata: ensures the TZ env var (set for local dev in
-# docker-compose.override.yml, since bind-mounting /etc/localtime from the
-# host doesn't carry the real timezone through Docker Desktop's own Linux
-# VM the way it does on a native Linux host like lost-woods) has zoneinfo
-# data to resolve against. Harmless in production, which doesn't set TZ and
-# keeps using the bind-mounted files as before.
+# tzdata lets the TZ variable set in docker-compose.override.yml resolve for
+# local development. Production takes its timezone from the host instead.
 #
-# --- ODBC driver for MSSQL (pyodbc needs the system driver, not just the pip package) ---
-# Following Microsoft's official instructions for Debian-based images.
-# Uses a dedicated keyring file instead of the deprecated/removed `apt-key`,
-# and reads the Debian major version from /etc/os-release instead of
-# hardcoding it, so this survives the base image moving to a newer Debian
-# release (this broke once already going from bookworm/12 to trixie/13).
+# pyodbc needs Microsoft's ODBC driver installed at the system level. The
+# Debian version is read from /etc/os-release rather than hardcoded so the
+# repo URL follows the base image. The base image is pinned to bookworm
+# because Microsoft's packages don't install cleanly on Debian 13 yet.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         gnupg \

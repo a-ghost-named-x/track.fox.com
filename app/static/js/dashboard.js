@@ -5,14 +5,11 @@
  * in dashboard.html.
  */
 
-// Most issue lines one Issue cell will render before the older ones collapse
-// into a "+N earlier" summary. Three fits the board without pushing rows off
-// the bottom; a shift caps out at four slots, so this rarely bites.
+// Issue lines per cell before older ones collapse into "+N earlier".
 const MAX_ISSUE_LINES = 3;
 
-// Shows only the current shift's 4 time-slot columns (header + cells),
-// hiding the other 8. Runs every poll in case the shift changes (e.g. at
-// 2PM) while the page stays open on a floor screen without a reload.
+// Shows only the current shift's four slot columns. Runs every poll so the
+// board switches shifts without a reload.
 function applyActiveSlots(activeSlots) {
     const activeSet = new Set(activeSlots);
     document.querySelectorAll("[data-slot]").forEach((el) => {
@@ -20,19 +17,10 @@ function applyActiveSlots(activeSlots) {
     });
 }
 
-// Hides machine rows with no logged entry in the shift currently in
-// progress. Deliberately scoped to `machine_activity` (server-side, backed
-// by get_shift_activity() -> WHERE time_slot = ANY(active_slots)) rather
-// than the full-day `entries` list. Using the full day here was tried first
-// and rejected: a machine logged only in an earlier shift today would still
-// show, as a row with every currently-visible column blank (its one entry
-// sits in a now-hidden slot) — looking like it's running with no data
-// instead of just not having reported this shift. Tradeoff accepted: right
-// after a shift changeover, a machine won't (re)appear until its first entry
-// for the new shift lands, which can be a real gap since manual entries only
-// come in ~every 2 hours — rows may be sparse for a bit right after the
-// change. Re-evaluated every poll, so this resolves itself as entries land,
-// without needing a page reload.
+// Hides machines with no entry in the current shift. Uses machine_activity
+// (current shift only) rather than the whole day's entries, so a machine
+// that only reported earlier today doesn't show as a row of blanks. Right
+// after a changeover the board fills in as the first entries arrive.
 function applyMachineVisibility(machineActivity) {
     const activeMachines = new Set(Object.keys(machineActivity || {}));
     document.querySelectorAll("tr[data-machine]").forEach((row) => {
@@ -51,8 +39,8 @@ async function refreshDashboard() {
         applyActiveSlots(data.active_slots);
         applyMachineVisibility(data.machine_activity);
 
-        // Clear all cells first so slots with no entry yet show as empty,
-        // not a stale value from a previous poll.
+        // Clear everything first so a slot with no entry doesn't keep a
+        // stale value from the previous poll.
         document.querySelectorAll(".cell").forEach((cell) => {
             cell.innerHTML = '<span class="cell-value">—</span>';
             cell.removeAttribute("data-status");
@@ -68,29 +56,21 @@ async function refreshDashboard() {
 
         for (const entry of data.entries) {
             const row = document.querySelector(`tr[data-machine="${entry.machine_id}"]`);
-            if (!row) continue; // machine not in the configured MACHINE_IDS list yet
+            if (!row) continue; // machine not on this board
 
             const cell = row.querySelector(`td[data-slot="${entry.time_slot}"]`);
             if (!cell) continue;
 
-            // Status is conveyed by color (data-status drives the CSS), not
-            // by appending ":)"/":(" text — keeps the cell to just the number.
-            // toLocaleString adds thousands separators (e.g. 1,234).
+            // Status is shown by colour (data-status drives the CSS).
             cell.querySelector(".cell-value").textContent = entry.units_produced.toLocaleString("en-US");
             cell.setAttribute("data-status", entry.status);
 
-            // Corner flag on the exact slot whose entry reported an issue.
-            // Says WHEN trouble hit from across the floor, where the Issue
-            // column's text is too small to read; the text says what.
+            // Corner flag on the slot that reported an issue, readable from
+            // across the floor.
             if (entry.issue) cell.setAttribute("data-has-issue", "");
         }
 
-        // Operator and the shift's issues, both shown once per machine row
-        // (not repeated per slot cell). Backed by get_shift_activity()
-        // server-side: every slot that reported an issue comes back as its
-        // own item, already in slot order and with repeats collapsed into
-        // ranges, so an issue reported at 8AM still shows for the rest of
-        // the shift — now on a line that says so.
+        // Operator and the shift's issues, once per machine row.
         for (const [machineId, activity] of Object.entries(data.machine_activity || {})) {
             const row = document.querySelector(`tr[data-machine="${machineId}"]`);
             if (!row) continue;

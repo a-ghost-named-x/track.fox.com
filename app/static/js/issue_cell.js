@@ -1,32 +1,21 @@
 /**
- * Shared renderer for the Issue column cell, used by both dashboard.js (the
- * floor screens) and supervisor.js (the review page).
- *
- * One cell per machine row still, but one LINE per reported issue inside it,
- * each prefixed with the time slot it was logged against:
+ * Renders the Issue cell for dashboard.js and supervisor.js: one line per
+ * reported issue, prefixed with the slot it was logged against.
  *
  *     10AM      belt slip
  *     2PM       waiting on forklift
  *
- * The slot prefix is the whole mechanism for telling the lines apart, which
- * is deliberate: the dashboards run on signage with no pointer and no
- * keyboard, so hover tooltips and click-to-expand — the usual answers to
- * "several things in one cell" — aren't available there.
- *
- * Lives in its own file because both pages must format these identically;
- * the run-collapsing rule that produces the ranges is server-side in
- * get_shift_activity() for the same reason.
+ * The floor screens have no mouse or keyboard, so everything has to be
+ * readable without tooltips.
  */
 
 /**
  * Fills `cell` with one line per item in `issues` (the shape returned by
  * get_shift_activity: {time_slot, through, issue}).
  *
- * `maxLines` caps how many lines render, keeping the NEWEST ones and
- * summarising the rest as "+N earlier" above them — a shift is only four
- * slots, so this can't fire until a machine reports four genuinely different
- * issues, and it exists so a fixed-height board can't be pushed off-screen
- * by one bad night. Pass 0 (or omit) for no cap.
+ * `maxLines` keeps only the newest lines and summarises the rest as
+ * "+N earlier", so a fixed-height board can't overflow. Pass 0 (or omit)
+ * for no cap.
  */
 function renderIssueCell(cell, issues, maxLines) {
     cell.textContent = "";
@@ -57,16 +46,14 @@ function renderIssueCell(cell, issues, maxLines) {
 
         const slot = document.createElement("span");
         slot.className = "issue-slot";
-        // `through` is set when consecutive slots reported the same issue,
-        // so the range stands in for what would otherwise be repeat lines.
+        // `through` is set when consecutive slots reported the same issue.
         slot.textContent = item.through
             ? `${item.time_slot}–${item.through}`
             : item.time_slot;
 
         const text = document.createElement("span");
         text.className = "issue-text";
-        // textContent, not innerHTML — `issue` is free text typed at
-        // /console and goes straight to the screen.
+        // textContent, not innerHTML: `issue` is free text from /console.
         text.textContent = item.issue;
 
         line.appendChild(slot);

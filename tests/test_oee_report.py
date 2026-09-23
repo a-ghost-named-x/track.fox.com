@@ -4,8 +4,7 @@ Run it from anywhere:
 
     python tests/test_oee_report.py
 
-Exercises the whole report builder at SHIFT grain against the cases that
-actually bite:
+Covers the whole report builder at shift grain:
 
     C1   hits standard, ran clean, zero scrap        -> must score 0.75
     C2   real row: blank tail + 240 min no operator  -> 25.2%, availability 50%
@@ -20,7 +19,7 @@ Plus the long-shift cases (shift length is per machine, per day, per shift):
     WS1  12-hour 1st Shift at standard               -> 720 min, 6 slots, 0.75
          ...its 2nd Shift inherits 12h and defaults to NOT scheduled
     WS2  12-hour day with a 6PM-6AM crew ticked on   -> stitched across two dates
-    WS3  8-hour 1st Shift, then a 12-hour crew at 6PM -> the manager's case
+    WS3  8-hour 1st Shift, then a 12-hour crew at 6PM
     P1   10-hour 1st Shift at standard               -> 600 min, 5 slots, 0.75
 
 And the production-day rule: C1's 3rd Shift on DAY is DAY 10PM -> DAY_AFTER
@@ -37,9 +36,9 @@ Then a short Saturday (SAT), the 6-hour pattern with typed hours:
 
 and the 7/30-day Pareto over both days (compute_pareto_range).
 
-See tests/test_oee_math.py for the unit-level arithmetic. The rule this file
-guards is aggregation: percentages are never averaged, and A x P x Q must
-reconstruct OEE whenever the three factors describe the same machines.
+See tests/test_oee_math.py for the unit-level arithmetic. This file checks
+aggregation: percentages are never averaged, and A x P x Q must equal OEE
+whenever the three factors cover the same machines.
 """
 import os
 import sys
@@ -100,16 +99,15 @@ add("C4", [11700, 23400, 35100, 20000])       # final reading low
 add("C5", [11700, 23400, 35100, 46800])       # no downtime record below
 add("P3", [16200, 32400, 48600, 64800])       # unscheduled below
 
-# Long shifts. The crew keeps the count running past 2PM, exactly as the floor
-# does it: the 4PM and 6PM boxes hold the cumulative-since-6AM number.
+# Long shifts. The count keeps running past 2PM: the 4PM and 6PM boxes hold
+# the cumulative-since-6AM number.
 add("WS1", [9900, 19800, 29700, 39600, 49500, 59400], slots=TIME_SLOTS[:6])
 add("P1", [14400, 28800, 43200, 57600, 72000], slots=TIME_SLOTS[:5])
-# WS2's night crew: 8PM and 10PM are filed under DAY, 12AM-6AM under DAY_AFTER,
-# which is how the 2-hour rounds already enter an overnight shift.
+# WS2's night crew: 8PM and 10PM are filed under DAY, 12AM-6AM under DAY_AFTER.
 add("WS2", [9900, 19800], slots=["8PM", "10PM"])
 add("WS2", [29700, 39600, 49500, 59400], slots=["12AM", "2AM", "4AM", "6AM"], day=DAY_AFTER)
-# WS3, the manager's case: an ordinary 8-hour 1st Shift, idle 2PM-6PM, then
-# a 12-hour crew from 6PM. Same night readings as WS2.
+# WS3: an 8-hour 1st Shift, idle 2PM-6PM, then a 12-hour crew from 6PM. Same
+# night readings as WS2.
 add("WS3", [9900, 19800, 29700, 39600])
 add("WS3", [9900, 19800], slots=["8PM", "10PM"])
 add("WS3", [29700, 39600, 49500, 59400], slots=["12AM", "2AM", "4AM", "6AM"], day=DAY_AFTER)
@@ -152,12 +150,10 @@ downtime = {
 scrap = {("C1", SHIFT): 0, ("C2", SHIFT): 250, ("C4", SHIFT): 100,
          ("WS1", SHIFT): 0, ("P1", SHIFT): 0, ("WS2", "2nd Shift"): 0,
          ("WS3", SHIFT): 0, ("WS3", "2nd Shift"): 0, ("C1", "3rd Shift"): 0}
-# WS2's night crew is the exception that has to be ticked on: a 12-hour day's
-# 2nd Shift defaults to not scheduled.
+# A 12-hour day's 2nd Shift defaults to not scheduled, so WS2's is ticked on.
 schedule = {("P3", SHIFT): False, ("WS2", "2nd Shift"): True, ("WS3", "2nd Shift"): True}
-# A downtime record under a shift the day has no room for (WS3's 2nd Shift
-# ran 12h, so there is no 3rd). Only the range Pareto test cares: it must not
-# be counted, exactly as the one-day report ignores it.
+# A downtime record under a shift that doesn't exist (WS3's 2nd Shift ran
+# 12h, so there is no 3rd). The range Pareto must ignore it, like the report.
 downtime[("WS3", "3rd Shift")] = {
     "note": None, "planned_minutes": 0, "unplanned_minutes": 90,
     "reasons": [{"code": "ROLL_CHANGE", "label": "Roll Change",
@@ -190,7 +186,7 @@ sat_downtime = {
         "note": None, "planned_minutes": 0, "unplanned_minutes": 30,
         "reasons": [{"code": "SETUP", "label": "Setup", "minutes": 30, "is_planned": False}],
     },
-    # Entered, but FM1's afternoon isn't scheduled — must stay out of any Pareto.
+    # Entered, but FM1's afternoon isn't scheduled, so it stays out of any Pareto.
     ("FM1", "2nd Shift"): {
         "note": None, "planned_minutes": 0, "unplanned_minutes": 50,
         "reasons": [{"code": "DELIVERY", "label": "Delivery", "minutes": 50, "is_planned": False}],

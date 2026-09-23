@@ -1,8 +1,7 @@
-"""Routes for /dashboard — the public, no-auth display the floor screens render.
+"""Routes for /dashboard: the site menu and the floor screens.
 
-Example here is a "mixed" dashboard per the architecture doc: it merges a
-read-only MSSQL query with manual-entry data from Postgres into one view.
-Swap or duplicate this pattern for SQL-only or manual-entry-only dashboards.
+The floor screens show manual-entry data from Postgres. MSSQL data will be
+merged in here once that query exists (see the TODO below).
 """
 from datetime import datetime
 
@@ -26,11 +25,8 @@ templates = Jinja2Templates(directory="app/templates")
 
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard_index(request: Request):
-    """Landing page — lists each floor-section zone as a link rather than
-    rendering a single all-machines grid. Point a floor screen at a specific
-    /dashboard/<zone> URL directly; this page is for a person browsing on a
-    computer to find the right one.
-    """
+    """Site menu. Floor screens point directly at /dashboard/<zone>; this
+    page is for people browsing."""
     zones = [
         {
             "slug": slug,
@@ -48,11 +44,8 @@ def dashboard_index(request: Request):
 
 @router.get("/dashboard/{zone}", response_class=HTMLResponse)
 def dashboard_zone_page(request: Request, zone: str):
-    """Initial page load for one zone's grid (e.g. /dashboard/b3) — renders
-    the shell scoped to just that zone's machines; data is filled in via
-    polling, same as before. 404s on an unrecognized zone slug rather than
-    silently rendering an empty grid.
-    """
+    """Page shell for one zone's grid (e.g. /dashboard/b3). The data is
+    filled in by polling. Unknown zones return 404."""
     machine_ids = DASHBOARD_ZONES.get(zone)
     if machine_ids is None:
         raise HTTPException(status_code=404, detail=f"No dashboard zone named '{zone}'.")
@@ -74,17 +67,13 @@ def dashboard_zone_page(request: Request, zone: str):
 
 @router.get("/api/dashboard-data")
 def dashboard_data():
-    """JSON endpoint the dashboard page polls periodically (see static/js/dashboard.js).
+    """JSON the dashboard polls (see static/js/dashboard.js).
 
-    Returns today's manual entries, pivoted by the frontend into the grid,
-    plus which 4 time-slot columns are relevant to the shift in progress
-    right now (so the grid can narrow down from 12 columns to 4 without a
-    page reload if the shift changes while the page stays open).
+    Returns today's entries plus the current shift's four slot columns, so
+    the grid can switch shifts without a page reload.
 
-    TODO: this is where a SQL-only or mixed dashboard would also query MSSQL
-    via app.db.mssql.run_readonly_query(...) and merge results before
-    returning — left out here since the production query itself depends on
-    your actual MSSQL schema, which this scaffold doesn't have visibility into.
+    TODO: query MSSQL via app.db.mssql.run_readonly_query() and merge it in,
+    once the production schema is confirmed.
     """
     now = datetime.now()
     today = now.date()
@@ -96,7 +85,6 @@ def dashboard_data():
         "shift": shift,
         "active_slots": active_slots,
         "entries": entries,
-        # Per-machine operator + carried issue for the shift in progress —
-        # see get_shift_activity() docstring for the carry-forward rule.
+        # Per-machine operator and issues for the current shift.
         "machine_activity": get_shift_activity(today, active_slots),
     }

@@ -1,3 +1,11 @@
+# Local-only files: SQL scripts, deployment runbooks and the Claude Code
+# project notes. These stay on the workstation and are not published.
+docs/sql/
+docs/applying-poly-leno-standards.md
+docs/deploying-*.md
+docs/postgres-server-setup.md
+CLAUDE.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

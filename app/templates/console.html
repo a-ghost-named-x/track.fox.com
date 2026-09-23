@@ -60,12 +60,8 @@
             <input type="text" name="entered_by" required maxlength="20">
         </label>
 
-        {# Editable rather than hidden, matching the batch form: this page
-           already lists all 12 time slots so it was never shift-locked, but
-           it was still pinned to today — no way to correct yesterday's
-           numbers, or to log 3rd shift's 12AM-6AM slots against the day they
-           actually belong to. No shift toggle here; with every slot already
-           in the dropdown there'd be nothing for it to unlock. #}
+        {# Editable so an entry can be filed under another day, e.g. a
+           correction the next morning. #}
         <label>
             Date
             <input type="date" name="entry_date" required value="{{ entry_date }}">

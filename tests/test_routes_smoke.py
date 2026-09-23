@@ -1,33 +1,25 @@
 """End-to-end smoke test: real routes, real Jinja rendering, stubbed database.
 
-Run it from the REPO ROOT — Jinja2Templates resolves "app/templates"
-relatively, so it won't find the templates from anywhere else:
+Run it from the repo root, since Jinja2Templates resolves "app/templates"
+relative to the working directory:
 
     python tests/test_routes_smoke.py
 
-Needs httpx on top of the app's own dependencies (it backs
-fastapi.testclient.TestClient) — see requirements-dev.txt.
+Needs httpx (see requirements-dev.txt).
 
-Three things this exists to catch:
+What it checks:
 
-  1. ROUTE ORDER. /console/oee is a literal path and /console/{zone} is a
-     pattern. If console.router is registered first, FastAPI matches the OEE
-     form as a zone named "oee" and 404s it. The failure is silent and looks
-     exactly like a missing page.
-  2. THE REVERT. /console/<zone> went back to good units only when OEE capture
-     moved to end-of-shift. If scrap or downtime fields reappear there, the
-     2-hour rounds have picked the extra work back up.
-  3. WRITE ISOLATION on /console/oee — nothing is written for a machine whose
-     values match what's already stored, so opening and saving the page does
-     not append 34 identical rows.
-  4. SHIFT LENGTH — the 8/10/12h control is offered on the 1st and 2nd Shift
-     pages (each for its own shift), a later shift can't be shorter than the
-     one before it, a 10/12h 2nd Shift is unticked by default and removes the
-     SAME date's 3rd Shift row, and the downtime cap follows the machine's
-     own length.
-  5. SHORT DAYS — the typed 1-6 hours box on every row, the rule that the box
-     only counts next to the short-day choice, the 3rd Shift page offering a
-     length only after a short 2nd Shift, and /oee's 7/30-day Pareto.
+  1. Route order. If console.router is registered before console_oee.router,
+     /console/oee is matched as a zone named "oee" and returns 404.
+  2. /console/<zone> records good units only; no scrap or downtime fields.
+  3. /console/oee writes nothing for a machine whose values are unchanged.
+  4. Shift length: the 8/10/12h control on the 1st and 2nd Shift pages, a
+     later shift can't be shorter than the one before, a 10/12h 2nd Shift is
+     unticked by default and removes the same date's 3rd Shift row, and the
+     downtime cap follows the machine's length.
+  5. Short days: the 1-6 hours box, which only counts with the short-day
+     option picked, the 3rd Shift page offering a length only after a short
+     2nd Shift, and /oee's 7/30-day Pareto.
 """
 import os
 import sys
@@ -56,8 +48,7 @@ DAY = date(2026, 9, 8)
 SHIFT = "1st Shift"
 S1 = SHIFT_SLOTS[SHIFT]
 
-# The floor's fourteen active codes, all unplanned: file 12's eleven with
-# Operator Adjustments split four ways by docs/sql/13_split_operator_adjustments.sql.
+# The fourteen active reason codes, all unplanned.
 REASONS = {
     code: {"code": code, "label": label, "is_planned": False}
     for code, label in [
@@ -72,8 +63,8 @@ REASONS = {
         ("REGISTRATION", "Registration"), ("SHIFT_START", "Start of Shift"),
     ]
 }
-# Retired by file 13. Still in the table so history labels, never offered on
-# an untouched machine, but must carry forward on a shift that already has it.
+# A retired code. Never offered on an untouched machine, but must carry forward
+# on a shift that already has it.
 RETIRED = {
     "OPER_ADJUST": {"code": "OPER_ADJUST", "label": "Operator Adjustments",
                     "is_planned": False},
@@ -318,10 +309,10 @@ check("changing the minutes does save", len(written["downtime"]) == 1)
 check("scrap still untouched", written["scrap"] == [])
 
 print("\n== RETIRED CODES CARRY FORWARD on shifts entered before the retirement ==")
-# The trap this guards: a shift entered with Operator Adjustments before file
-# 13 split it. The form only lists active codes, and the newest downtime
-# header wins wholesale — so if the retired code were simply left off the
-# page, re-saving this shift for ANY reason would silently drop its 30 minutes.
+# A shift entered with a code that has since been retired. The form only lists
+# active codes and the newest downtime submission replaces the whole set, so
+# if the retired code were left off the page, re-saving the shift for any
+# reason would drop its 30 minutes.
 reset()
 stored_downtime[("C1", SHIFT)] = {
     "note": None, "planned_minutes": 0, "unplanned_minutes": 45,
@@ -342,8 +333,8 @@ check("still NOT rendered on a machine that doesn't have it",
 check("still 14 offered on that other machine",
       form.count('name="dt_min_C2_') == 14, str(form.count('name="dt_min_C2_')))
 
-# Re-save exactly as the browser would post the pre-filled page, but with
-# Setup corrected — the retired code's fields come back with it.
+# Re-save as the browser would post the pre-filled page, with Setup corrected.
+# The retired code's fields come back with it.
 res = post({
     "dt_on_C1_SETUP": "1", "dt_min_C1_SETUP": "20",
     "dt_on_C1_OPER_ADJUST": "1", "dt_min_C1_OPER_ADJUST": "30",
@@ -356,7 +347,7 @@ check("the retired code's minutes are on the new header too",
 check("and the re-rendered page still shows the retired row",
       'name="dt_on_C1_OPER_ADJUST"' in res.text)
 
-# Untouched, nothing is written — the retired code round-trips as "unchanged".
+# Untouched, nothing is written and the retired code round-trips.
 for bucket in written.values():
     bucket.clear()
 res = post({
@@ -366,7 +357,7 @@ res = post({
 check("saving it untouched writes nothing", written["downtime"] == [],
       str(written["downtime"]))
 
-# Deliberately unticking it IS a reclassification, and drops it.
+# Unticking it drops it.
 for bucket in written.values():
     bucket.clear()
 res = post({
@@ -378,8 +369,7 @@ mins = {r.reason_code: r.minutes for r in written["downtime"][0].reasons} if wri
 check("unticking the retired code and picking a sub-reason reclassifies it",
       mins == {"SETUP": 15, "OPER_ADJ_TEMP": 30}, str(mins))
 # The re-render still shows the row (its minutes box came back in the POST),
-# now unticked — so a failed untick has something to fix. A fresh GET against
-# the corrected record no longer has the code and drops the row.
+# now unticked. A fresh GET no longer has the code and drops the row.
 after = res.text.split('name="dt_on_C1_OPER_ADJUST"')
 check("re-rendered unticked", len(after) == 2 and "checked" not in after[1][:60])
 stored_downtime[("C1", SHIFT)] = {
@@ -409,10 +399,9 @@ check("for that machine, scheduled=False",
       written["schedule"] and written["schedule"][0].machine_id == "C5"
       and written["schedule"][0].scheduled is False)
 
-# THE REGRESSION THIS GUARDS: a POST that omits the scheduling controls
-# entirely must leave scheduling alone. Without the hidden presence marker,
-# every machine would read as "unticked" and be marked not-scheduled, silently
-# removing the whole floor from the OEE denominator.
+# A POST without the scheduling controls must leave scheduling alone. Without
+# the hidden presence field, every machine would read as unticked and drop out
+# of OEE.
 reset()
 client.post("/console/oee", data={
     "entered_by": "9001", "shift": SHIFT, "entry_date": DAY.isoformat(),
@@ -458,8 +447,7 @@ check("for C1, 1st Shift, 12 hours, on the date in the box",
       and written["length"][0].entry_date == DAY)
 check("saved badge names it", "12h shifts" in res.text)
 
-# The manager's case: an ordinary 1st Shift, then a 12-hour crew at 6PM. Set
-# on the 2nd Shift page, for the 2nd Shift.
+# An 8-hour 1st Shift, then a 12-hour crew at 6PM, set on the 2nd Shift page.
 reset()
 res = client.post("/console/oee", data={"entered_by": "9001", "shift": "2nd Shift",
                                         "entry_date": DAY.isoformat(), "hours_C1": "12",
@@ -530,8 +518,8 @@ check("ticking the night crew on writes scheduled=True",
       len(written["schedule"]) == 1 and written["schedule"][0].scheduled is True
       and written["schedule"][0].shift == "2nd Shift", str(written["schedule"]))
 
-# The SAME date's 3rd Shift row is the one a long 2nd Shift removes — the
-# date is the day the shift started.
+# A long 2nd Shift removes the same date's 3rd Shift row (the date is the day
+# the shift started).
 third = client.get(f"/console/oee?shift=3rd%20Shift&entry_date={DAY.isoformat()}").text
 check("3rd Shift of the same date shows 'no 3rd shift' for C1",
       "No 3rd shift" in third and "2nd Shift ran 12h (6PM-6AM)" in third, third[:0])
@@ -769,19 +757,16 @@ for link in ("/console", "/console/oee", "/supervisor", "/oee",
     check(f"links to {link}", f'href="{link}"' in index)
 
 print("\n== the [hidden] reset exists ==")
-# Not a route check, but nothing else can catch this and it shipped a visible
-# bug: `el.hidden = true` works only through the browser's own
-# `[hidden] { display: none }`, which ANY author rule setting `display` beats.
-# `.flag-banner` and `.completeness` are both toggled with .hidden AND styled
-# display:flex, so /oee showed an empty red error banner on days with nothing
-# wrong. A global reset is the fix; this asserts nobody removes it.
+# Not a route check. `el.hidden = true` only works through the browser's own
+# `[hidden] { display: none }`, which any rule setting `display` overrides.
+# Some elements are toggled with .hidden and styled display:flex, so the CSS
+# has a global [hidden] reset; this makes sure it stays.
 css = (Path(__file__).resolve().parents[1] / "app/static/css/style.css").read_text(encoding="utf-8")
 normalised = " ".join(css.split())
 check("style.css has [hidden] { display: none !important }",
       "[hidden] { display: none !important; }" in normalised)
 
-# And flag every element that would silently break if it were removed, so the
-# list stays visible to whoever reads this next.
+# The elements that depend on it.
 import re  # noqa: E402
 toggled = set()
 for js in (Path(__file__).resolve().parents[1] / "app/static/js").glob("*.js"):

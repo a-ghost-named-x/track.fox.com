@@ -6,18 +6,9 @@
         <h1>Production Tracking</h1>
     </header>
 
-    {# The whole site's map, in one place.
-       Everything on this page used to be word-of-mouth: /console was known to
-       two people because it had been mentioned to them verbally, which is a
-       bad way to run a tool the floor depends on.
-
-       Worth being clear-eyed that this trades away some obscurity. There is no
-       authentication anywhere in this app by design, and the entry forms were
-       previously protected only by nobody knowing the URL. They are now one
-       click from the board index. That index is only ever opened by a person
-       browsing on a computer — the screens point at /dashboard/<zone>
-       directly, and those pages still carry no navigation chrome at all — so
-       the exposure is small, but it is not zero. #}
+    {# Site menu. There's no authentication, so this puts the entry forms one
+       click from the board index. The floor screens point at /dashboard/<zone>
+       directly and have no navigation. #}
 
     <section class="index-section">
         <h2 class="index-heading">Floor displays</h2>
@@ -41,7 +32,7 @@
             {% for zone in zones %}
             <li>
                 <a class="index-link" href="/console/{{ zone.slug }}">
-                    <span class="index-link-label">Log Production — {{ zone.label }}</span>
+                    <span class="index-link-label">Log Production: {{ zone.label }}</span>
                     <span class="index-link-note">All {{ zone.machine_count }} machines on one form</span>
                 </a>
             </li>

@@ -1,22 +1,15 @@
 /**
- * /console/oee — end-of-shift OEE entry.
+ * /console/oee: end-of-shift OEE entry.
  *
- * Convenience only. Every rule enforced here is enforced again server-side in
- * app/routers/console_oee.py, which rejects a contradictory submission with a
- * per-machine message — so the form still behaves correctly with JS disabled,
- * it is just more typing.
- *
- * What this adds:
- *   - a live summary on each machine's collapsed <details>, so the page can be
- *     scanned without opening 34 disclosures
- *   - mutual exclusion between "no downtime" and any ticked reason
- *   - a minutes box that follows its checkbox, in both directions
- *   - a running total per machine, warning past one shift's worth — THAT
- *     machine's shift, which is 480, 600 or 720 minutes depending on the
- *     shift length picked for its day, or 60 x the hours on a short day
- *   - a "tick no downtime on every untouched machine" shortcut
- *   - typing in a short-day box picks the short day, and a "set every
- *     machine to N hours" shortcut for a Saturday
+ * Convenience only. The server enforces every rule again, so the form works
+ * without JS. This adds:
+ *   - a live summary on each machine's collapsed downtime picker
+ *   - "no downtime" and ticked reasons clearing each other
+ *   - minutes boxes that follow their checkboxes, both ways
+ *   - a per-machine total that warns past that machine's shift length
+ *   - a "tick no downtime on every untouched machine" button
+ *   - typing short-day hours picks the short day, plus a "set every machine
+ *     to N hours" button
  */
 
 const MAX_SHIFT_MINUTES = window.MAX_SHIFT_MINUTES || 720;
@@ -25,11 +18,7 @@ const DAY_START_HOUR = window.DAY_START_HOUR === undefined ? 6 : window.DAY_STAR
 const SHORT_PATTERN_HOURS = window.SHORT_PATTERN_HOURS || 6;
 const DEFAULT_SHIFT_HOURS = window.DEFAULT_SHIFT_HOURS || 8;
 
-/**
- * How long this machine's shift is, read off its row. The server renders it
- * from the record; the length control can change it without a reload, and
- * applyLength() keeps the attribute in step.
- */
+/** This machine's shift length in minutes, from its row (kept current by applyLength()). */
 function shiftMinutesFor(cell) {
     const row = cell.closest("tr");
     const value = row ? parseInt(row.dataset.shiftMinutes, 10) : NaN;
@@ -52,10 +41,7 @@ function totalMinutes(cell) {
     }, 0);
 }
 
-/**
- * Rewrites the collapsed summary so the state of a machine is readable without
- * expanding it. Mirrors the wording the server renders on first load.
- */
+/** Rewrites the collapsed summary, matching the server's wording on first load. */
 function refreshSummary(cell) {
     const summary = cell.querySelector(".dt-summary");
     const noneBox = cell.querySelector(".dt-none-box");
@@ -74,8 +60,7 @@ function refreshSummary(cell) {
         summary.textContent = "Not entered";
     }
 
-    // Over a full shift is impossible, and the server rejects it. Flagging it
-    // here saves a round trip through 34 machines to find the one that's wrong.
+    // The server rejects more downtime than the shift has; flag it early.
     const cap = shiftMinutesFor(cell);
     const over = minutes > cap;
     summary.classList.toggle("is-over", over);
@@ -85,10 +70,8 @@ function refreshSummary(cell) {
 }
 
 /**
- * A ticked reason needs its minutes box, and a minutes value implies its
- * reason. Keeping the two in step both ways means the person can work from
- * either control, which matters when they're copying off a paper sheet that
- * only lists the causes that happened.
+ * Keeps each reason's checkbox and minutes box in step, both ways, and clears
+ * "no downtime" when a reason is used.
  */
 function wireCell(cell) {
     const noneBox = cell.querySelector(".dt-none-box");
@@ -99,9 +82,7 @@ function wireCell(cell) {
 
         box.addEventListener("change", () => {
             if (box.checked) {
-                // "No downtime" and a reason are contradictory statements about
-                // the same shift, so ticking one clears the other rather than
-                // leaving the server to reject the pair.
+                // "No downtime" and a reason contradict each other.
                 if (noneBox) noneBox.checked = false;
                 minutes.focus();
             } else {
@@ -145,11 +126,7 @@ function hourLabel(hour) {
     return `${h - 12}PM`;
 }
 
-/**
- * The clock span a length means on this page's shift — shift_span() in
- * app/models.py. The Nth shift of an L-hour pattern starts at 6AM + N x L,
- * and a short day's 1-6 all sit in the 6-hour pattern.
- */
+/** The clock span a length means on this page's shift; see shift_span() in app/models.py. */
 function spanFor(hours) {
     const pattern = hours <= SHORT_PATTERN_HOURS ? SHORT_PATTERN_HOURS : hours;
     const start = DAY_START_HOUR + SHIFT_INDEX * pattern;
@@ -169,11 +146,7 @@ function chosenHours(row) {
     return Number.isInteger(value) && value >= 1 && value <= SHORT_PATTERN_HOURS ? value : null;
 }
 
-/**
- * Changing the length changes how many minutes of downtime fit, so the row's
- * cap, its minutes boxes' max and the span under the control follow the
- * choice immediately rather than after a save-and-reload.
- */
+/** Updates the row's downtime cap, minutes max and span line for a new length. */
 function applyLength(row) {
     const hours = chosenHours(row);
     const spanLine = row.querySelector(".hours-span-line");
@@ -193,11 +166,9 @@ function applyLength(row) {
 }
 
 /**
- * On the 2nd and 3rd Shift pages (rows carry data-night-crew) choosing
- * anything but an ordinary 8 hours also ticks Scheduled. A long 2nd Shift is
- * a night crew and a short day's afternoon and evening shifts usually don't
- * run, so both default to not scheduled — and choosing the length IS saying
- * this one ran. The person can untick it again; the server never assumes.
+ * On the 2nd and 3rd Shift pages, picking anything but 8 hours ticks
+ * Scheduled, since those shifts default to not scheduled and picking a length
+ * says a crew ran. It can be unticked.
  */
 function tickIfCrewRan(row) {
     if (!row.dataset.nightCrew) return;
@@ -216,9 +187,7 @@ function pickLength(row, value, shortHours) {
     if (!radio || radio.disabled) return false;
     radio.checked = true;
     const box = row.querySelector(".hours-short");
-    // The box only counts next to the short day, and the server refuses a
-    // number in it beside any other choice, so it is cleared rather than
-    // left holding a value that no longer means anything.
+    // The server rejects a number in the box beside any other choice.
     if (box) box.value = value === "short" ? String(shortHours) : "";
     applyLength(row);
     tickIfCrewRan(row);
@@ -244,9 +213,8 @@ function wireLengthToggle(row) {
         });
     });
 
-    // Typing hours IS picking the short day. Deliberately on input rather
-    // than focus: tabbing through the box on the way to Scheduled mustn't
-    // switch a machine to a short day with no hours in it.
+    // Typing hours picks the short day. On input, not focus, so tabbing
+    // through doesn't switch a machine to an empty short day.
     if (shortRadio && shortBox) {
         shortBox.addEventListener("input", () => {
             if (shortBox.value && !shortRadio.disabled) shortRadio.checked = true;
@@ -259,10 +227,9 @@ function wireLengthToggle(row) {
 document.querySelectorAll("tr[data-shift-minutes]").forEach(wireLengthToggle);
 
 /**
- * "Set every machine to N hours" — a short Saturday is 34 machines at the
- * same number, and typing it 34 times is how one gets missed. Fills the form
- * only; nothing is saved until Save. Machines where that length would
- * overlap a neighbouring shift are skipped and named, not forced.
+ * "Set every machine to N hours". Fills the form only; nothing is saved
+ * until Save. Machines where that length would overlap another shift are
+ * skipped and listed.
  */
 const setAllInput = document.getElementById("set-all-hours");
 const setAllApply = document.getElementById("set-all-apply");
@@ -299,7 +266,7 @@ if (setAllInput && setAllApply) {
             }
         });
         setAllResult.textContent =
-            `Set ${set} machine${set === 1 ? "" : "s"} to ${hours}h — not saved until you press Save.` +
+            `Set ${set} machine${set === 1 ? "" : "s"} to ${hours}h. Not saved until you press Save.` +
             (skipped.length
                 ? ` Skipped ${skipped.join(", ")}: that length would overlap another shift on their day.`
                 : "");
@@ -316,11 +283,8 @@ if (setAllInput && setAllApply) {
 }
 
 /**
- * Ticks "no downtime" on every machine that has nothing entered yet.
- *
- * Deliberately skips machines that already have reasons or an existing
- * submission, so it can't wipe work already done — it only fills in the
- * "these all ran clean" majority, which is the tedious part of the job.
+ * Ticks "no downtime" on every machine that has nothing entered yet. Machines
+ * with reasons are left alone.
  */
 const markAll = document.getElementById("mark-all-clean");
 if (markAll) {
@@ -341,12 +305,7 @@ if (markAll) {
     });
 }
 
-/**
- * Keeps the shift toggle's links pointing at whatever is in the Date box, so
- * switching shifts after changing the date doesn't snap the date back to the
- * one the page loaded with. Convenience only — the date that gets saved is
- * always the one in the box, which posts with the form.
- */
+/** Keeps the shift toggle's links pointing at the date in the Date box. */
 const dateInput = document.getElementById("entry-date");
 if (dateInput) {
     dateInput.addEventListener("change", () => {
