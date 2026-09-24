@@ -394,8 +394,6 @@ function fillMachineRow(row, machine) {
         machine.scrap_known ? "" : "Needs scrap to separate Performance from Quality");
     set("quality", pct(shift.quality),
         machine.scrap_known ? "" : "Scrap not entered for this shift");
-    set("pct_of_standard", pct(shift.pct_of_standard),
-        `Good ${count(shift.good)} against a shift standard of ${count(shift.standard)}`);
     set("good", count(shift.good), checkpointTitle(machine));
     set("scrap", count(shift.scrap),
         machine.scrap_known ? "" : "Scrap not entered for this shift");
@@ -421,7 +419,6 @@ function fillZoneRollup(section, shiftData) {
         `A ${pct(rollup.availability, 0)}`,
         `P ${pct(rollup.performance, 0)}`,
         `Q ${pct(rollup.quality, 1)}`,
-        `${pct(rollup.pct_of_standard, 0)} of std`,
     ].join(" · ");
     target.setAttribute("data-band", bandFor(rollup.oee) || "unknown");
     target.title =

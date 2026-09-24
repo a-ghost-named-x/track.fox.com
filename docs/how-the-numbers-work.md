@@ -140,7 +140,6 @@ That's why hitting standard = 75%: 46,800 ÷ 62,400 = 75%.
 
 ### The other columns
 
-- **% of std** — good units ÷ the shift standard. The old-fashioned "did we hit target" number. C1 at 40,000 is 85% of its 46,800 standard. This is what the boards' green/red is based on; OEE is the stricter version of the same question.
 - **Good** — the shift's last reading. Hover it to see all four checkpoints.
 - **Scrap** — as entered.
 - **Downtime** — total unplanned minutes as entered.
