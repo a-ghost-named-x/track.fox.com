@@ -1206,8 +1206,8 @@ button.shift-option {
 
 /* ---------- /console/oee: end of shift entry ---------- */
 
-/* Wider than .console: every machine on one form, with fourteen downtime
-   reasons each. */
+/* Wider than .console: every machine on one form, with the full downtime
+   reason list each. */
 .console-oee {
     max-width: 1400px;
 }
