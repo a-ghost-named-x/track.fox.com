@@ -1199,11 +1199,6 @@ button.shift-option {
     color: var(--text-dim);
 }
 
-/* Highlight for the end-of-shift form link. */
-.index-link-accent {
-    border-color: var(--accent);
-}
-
 /* ---------- /console/oee: end of shift entry ---------- */
 
 /* Wider than .console: every machine on one form, with the full downtime
