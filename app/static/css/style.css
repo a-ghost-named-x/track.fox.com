@@ -931,22 +931,26 @@ button.shift-option {
 /* OEE band colours, matching .zone-rollup. Thresholds come from bandFor() in
    oee.js. A tint rather than a solid fill so the dashed [data-warned] outline
    stays visible. */
-.oee-grid .sum-oee[data-band="excellent"] {
+.oee-grid .sum-oee[data-band="excellent"],
+.oee-grid .day-col[data-band="excellent"] {
     background: rgba(46, 160, 67, 0.30);
     color: #56d364;
 }
 
-.oee-grid .sum-oee[data-band="good"] {
+.oee-grid .sum-oee[data-band="good"],
+.oee-grid .day-col[data-band="good"] {
     background: rgba(46, 160, 67, 0.18);
     color: #56d364;
 }
 
-.oee-grid .sum-oee[data-band="fair"] {
+.oee-grid .sum-oee[data-band="fair"],
+.oee-grid .day-col[data-band="fair"] {
     background: rgba(210, 153, 34, 0.20);
     color: #e3b341;
 }
 
-.oee-grid .sum-oee[data-band="poor"] {
+.oee-grid .sum-oee[data-band="poor"],
+.oee-grid .day-col[data-band="poor"] {
     background: rgba(218, 54, 51, 0.22);
     color: #ff7b72;
 }
@@ -1671,4 +1675,72 @@ button.shift-option {
 
 .zone-rollup[title] {
     cursor: help;
+}
+
+/* A column per day (or week) takes Top reasons' place. */
+.oee.is-range .reason-head,
+.oee.is-range .reason-cell {
+    display: none;
+}
+
+.oee-grid .day-col {
+    min-width: 3.6rem;
+    font-weight: 600;
+    cursor: help;
+}
+
+.oee-grid thead .day-col {
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: default;
+}
+
+.oee-grid .day-col-date {
+    display: block;
+    font-weight: 400;
+}
+
+/* Nothing entered that day (a Sunday, say): dim, not a score. */
+.oee-grid .day-col[data-empty] {
+    color: var(--border);
+    font-weight: 400;
+}
+
+/* Separates the zone's own row from its machines. */
+.oee-grid .zone-total-row td {
+    border-top: 2px solid var(--text-dim);
+    font-weight: 700;
+}
+
+.oee-grid .zone-total-row .machine-col {
+    background: var(--bg);
+}
+
+/* The floor's daily (or weekly) figures, on their own line. */
+.floor-total-days {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.9rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+}
+
+.floor-total-days:empty {
+    display: none;
+}
+
+.floor-day[data-band="excellent"],
+.floor-day[data-band="good"] {
+    color: #56d364;
+}
+
+.floor-day[data-band="fair"] {
+    color: #e3b341;
+}
+
+.floor-day[data-band="poor"] {
+    color: #ff7b72;
 }

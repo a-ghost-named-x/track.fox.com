@@ -169,6 +169,11 @@ OEE_ZONE_ORDER: list[str] = SUPERVISOR_ZONE_ORDER
 # (and including) the selected date, each compared with the window before it.
 OEE_PERIOD_DAYS: list[int] = [7, 30]
 
+# How many days each of a period's columns covers: a column per day over 7
+# days, per week over 30 (four weeks ending on the selected date, then the
+# leftover days).
+OEE_PERIOD_COLUMN_DAYS: dict[int, int] = {7: 1, 30: 7}
+
 # /oee's option for all three shifts added together over a 7/30-day period.
 # Like ALL_DAY_LABEL, it isn't a shift and is never stored.
 ALL_SHIFTS_LABEL: str = "All"

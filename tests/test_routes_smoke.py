@@ -754,6 +754,8 @@ check("...at the top, not inside the Pareto", 'id="pareto-period"' not in oee_pa
 check("the All button is there, hidden until a period is picked",
       'data-shift="All" hidden' in oee_page)
 check("the floor total is there, hidden", 'id="floor-total" hidden' in oee_page)
+check("each zone has a total row, hidden until a period is picked",
+      oee_page.count("<tfoot hidden>") == 5 and oee_page.count("data-zone-total") == 5)
 check("?period=30 is passed through", "window.INITIAL_PERIOD = 30" in client.get("/oee?period=30").text)
 check("an unknown period means one shift",
       "window.INITIAL_PERIOD = null" in client.get("/oee?period=9").text)
@@ -780,6 +782,15 @@ check("compared with the 30 days before",
       body.get("previous_end") == (DAY - timedelta(days=30)).isoformat())
 check("every machine, so the Pareto picker can narrow it", set(body["machines"]) == set(MACHINE_IDS))
 check("every zone", set(body.get("zones", {})) == set(oee_mod.DASHBOARD_ZONES))
+check("30 days is a column per week: four, then the leftover two days",
+      body.get("column_days") == 7
+      and [c["end"] for c in body.get("columns", [])]
+      == [(DAY - timedelta(days=7 * i)).isoformat() for i in range(5)]
+      and body["columns"][-1]["start"] == (DAY - timedelta(days=29)).isoformat())
+check("the week holding DAY has C1's shift",
+      body["machines"].get("C1", {}).get("All", {}).get("columns", [{}])[0].get("counted") == 1)
+check("7 days is a column per day",
+      len(client.get(f"/api/oee-range?end={DAY.isoformat()}&days=7").json()["columns"]) == 7)
 c1_all = body["machines"].get("C1", {}).get("All", {})
 check("C1 counted once, at standard",
       c1_all.get("counted") == 1 and (c1_all.get("current") or {}).get("oee") == 0.75)

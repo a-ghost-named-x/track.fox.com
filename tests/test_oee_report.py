@@ -666,6 +666,33 @@ check("so b3 is thin this week", b3["thin"], True)
 check("b3 oee is component-summed",
       b3["current"]["oee"], (93600 + 15750 + 46800) / ((93600 + 46800) / 0.75 + 130 * 480))
 
+print("\n== 7 days, a column per day, newest first ==")
+check("one column per day", week["column_days"], 1)
+check("dates run from SAT back to the Sunday",
+      [(c["start"], c["end"]) for c in week["columns"]],
+      [(f"2026-09-{d:02d}", f"2026-09-{d:02d}") for d in range(12, 5, -1)])
+cols = floor["columns"]
+check("SAT (column 0): FM1, FM2, FM3 x3 counted, WS4 left out",
+      (cols[0]["counted"], cols[0]["left_out"], cols[0]["oee"]), (5, 1, 0.75))
+day_good = 46800 + 15750 + 46800 + 59400 + 39600 + 72000 + 59400 + 59400 + 46800
+check("DAY (column 4): its nine shifts, C4/C5/C6 left out",
+      (cols[4]["counted"], cols[4]["left_out"]), (9, 3))
+check("DAY's OEE is its own total over its own possible",
+      cols[4]["oee"], day_good / ((day_good - 15750) / 0.75 + 130 * 480))
+check("THU: only C3's two left-out shifts, so no number and thin",
+      (cols[2]["oee"], cols[2]["counted"], cols[2]["left_out"], cols[2]["thin"]), (None, 0, 2, True))
+check("the Sunday: nothing", cols[6], {"oee": None, "counted": 0, "left_out": 0, "thin": False})
+check("the columns add up to the week",
+      (sum(c["counted"] for c in cols), sum(c["left_out"] for c in cols)), (14, 6))
+check("per machine: C3 counted on DAY, left out on THU",
+      [(c["counted"], c["left_out"]) for c in week["machines"]["C3"][ALL]["columns"]],
+      [(0, 0), (0, 0), (0, 2), (0, 0), (1, 0), (0, 0), (0, 0)])
+check("per shift: DAY's 2nd Shift is WS2 and WS3's night crews",
+      week["floor"]["2nd Shift"]["columns"][4]["counted"], 2)
+check("per zone: b3 on DAY is C1 x2, C2, C3; C4-C6 left out",
+      (week["zones"]["b3"][ALL]["columns"][4]["counted"],
+       week["zones"]["b3"][ALL]["columns"][4]["left_out"]), (4, 3))
+
 print("\n== 7 days, the Pareto ==")
 
 
@@ -703,6 +730,12 @@ print("\n== 30 days ==")
 month = oee.compute_oee_range(SAT, 30, now=NOW_SAT)
 check("30 days ends on the same day", (month["start"], month["end"]), ("2026-08-14", "2026-09-12"))
 check("PREV is inside it now", month["floor"][ALL]["counted"], 17)
+check("a column per week, newest first, the leftover two days last",
+      [(c["start"], c["end"]) for c in month["columns"]],
+      [("2026-09-06", "2026-09-12"), ("2026-08-30", "2026-09-05"), ("2026-08-23", "2026-08-29"),
+       ("2026-08-16", "2026-08-22"), ("2026-08-14", "2026-08-15")])
+check("SAT's week holds the 14, PREV's the 3",
+      [c["counted"] for c in month["floor"][ALL]["columns"]], [14, 3, 0, 0, 0])
 check("nothing in the 30 days before, so no change",
       (month["floor"][ALL]["previous"], month["floor"][ALL]["change"]), (None, None))
 check("the Pareto holds the same reasons (PREV ran clean)", pareto_totals(month), pareto_totals(week))

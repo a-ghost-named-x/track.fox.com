@@ -81,6 +81,7 @@ from app.models import (
     DASHBOARD_ZONES,
     DEFAULT_SHIFT_HOURS,
     MACHINE_IDS,
+    OEE_PERIOD_COLUMN_DAYS,
     SHIFT_MINUTES,
     SHIFT_ORDER,
     SHIFT_SLOTS,
@@ -1122,7 +1123,9 @@ def compute_oee_range(
 
     Returned per machine, per zone and for the floor, for all shifts together
     (ALL_SHIFTS_LABEL) and for each shift. See _range_summary() for the
-    fields.
+    fields. Each also carries `columns`, the period split into days (or
+    weeks, per OEE_PERIOD_COLUMN_DAYS), newest first, with their dates in the
+    top-level `columns`.
 
     A finished machine-shift with some data but no OEE (production without
     downtime, downtime without production, or a hard flag) is "left out" and
@@ -1138,6 +1141,8 @@ def compute_oee_range(
     now = now or datetime.now()
     start = end_day - timedelta(days=days - 1)
     previous_start = start - timedelta(days=days)
+    column_days = OEE_PERIOD_COLUMN_DAYS.get(days, 1)
+    column_count = -(-days // column_days)
 
     explicit_lengths = get_shift_lengths_for_range(previous_start, end_day)
     schedule = get_schedule_for_range(previous_start, end_day)
@@ -1155,7 +1160,12 @@ def compute_oee_range(
     keys = [ALL_SHIFTS_LABEL, *SHIFT_ORDER]
     tallies = {
         machine_id: {
-            key: {"current": _new_tally(), "previous": _new_tally()} for key in keys
+            key: {
+                "current": _new_tally(),
+                "previous": _new_tally(),
+                "columns": [_new_tally() for _ in range(column_count)],
+            }
+            for key in keys
         }
         for machine_id in MACHINE_IDS
     }
@@ -1183,14 +1193,23 @@ def compute_oee_range(
                 if not row["scheduled"]:
                     continue  # not scheduled, or no such shift that day
                 for key in (ALL_SHIFTS_LABEL, shift):
-                    _tally(tallies[machine_id][key][period], row, day, shift)
+                    target = tallies[machine_id][key]
+                    _tally(target[period], row, day, shift)
+                    if period == "current":
+                        column = (end_day - day).days // column_days
+                        _tally(target["columns"][column], row, day, shift)
 
     def group(machine_ids: list[str], key: str, *, detail: bool = False) -> dict:
-        return _range_summary(
+        summary = _range_summary(
             _merge_tallies([tallies[m][key]["current"] for m in machine_ids]),
             _merge_tallies([tallies[m][key]["previous"] for m in machine_ids]),
             detail=detail,
         )
+        summary["columns"] = [
+            _column_summary(_merge_tallies([tallies[m][key]["columns"][i] for m in machine_ids]))
+            for i in range(column_count)
+        ]
+        return summary
 
     return {
         "start": start.isoformat(),
@@ -1198,6 +1217,18 @@ def compute_oee_range(
         "days": days,
         "previous_start": previous_start.isoformat(),
         "previous_end": (start - timedelta(days=1)).isoformat(),
+        # Newest first. The last column is cut short when column_days doesn't
+        # divide the period (30 days is four weeks and two days).
+        "column_days": column_days,
+        "columns": [
+            {
+                "start": max(
+                    start, end_day - timedelta(days=i * column_days + column_days - 1)
+                ).isoformat(),
+                "end": (end_day - timedelta(days=i * column_days)).isoformat(),
+            }
+            for i in range(column_count)
+        ],
         "machines": {
             machine_id: {key: group([machine_id], key, detail=True) for key in keys}
             for machine_id in MACHINE_IDS
@@ -1354,6 +1385,19 @@ def _range_summary(current: dict, previous: dict, *, detail: bool) -> dict:
             }
         )
     return summary
+
+
+def _column_summary(tally: dict) -> dict:
+    """One day's (or week's) figure in a period row: its OEE and how many
+    machine-shifts it's built from."""
+    rollup = _range_rollup(tally)
+    counted, left_out = tally["roll"]["machines"], len(tally["left_out"])
+    return {
+        "oee": rollup["oee"] if rollup else None,
+        "counted": counted,
+        "left_out": left_out,
+        "thin": _is_thin(counted, left_out),
+    }
 
 
 def _by_minutes(reasons: dict[str, dict]) -> list[dict]:

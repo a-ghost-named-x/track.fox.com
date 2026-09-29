@@ -88,6 +88,7 @@ function describeCode(code, table) {
     return entry.tooltip || `${entry.title}. ${entry.detail}`;
 }
 
+const oeeRoot = document.getElementById("oee");
 const dateInput = document.getElementById("review-date");
 const quickPicksEl = document.getElementById("quick-picks");
 const periodToggle = document.getElementById("period-toggle");
@@ -95,6 +96,7 @@ const shiftToggle = document.getElementById("shift-toggle");
 const floorTotal = document.getElementById("floor-total");
 const floorTotalOee = document.getElementById("floor-total-oee");
 const floorTotalDetail = document.getElementById("floor-total-detail");
+const floorTotalDays = document.getElementById("floor-total-days");
 const completenessEl = document.getElementById("completeness");
 const completenessNote = document.getElementById("completeness-note");
 const flagsBanner = document.getElementById("quality-flags");
@@ -361,7 +363,7 @@ function clearGrid() {
         cell.removeAttribute("data-warned");
         cell.removeAttribute("title");
     });
-    document.querySelectorAll(".oee-grid tr[data-machine]").forEach((row) => {
+    document.querySelectorAll(".oee-grid tr[data-machine], .oee-grid tr[data-zone-total]").forEach((row) => {
         row.removeAttribute("data-unscheduled");
         const machineCell = row.querySelector(".machine-col");
         if (machineCell) machineCell.removeAttribute("title");
@@ -568,6 +570,133 @@ function countedTitle(group, range) {
     return lines.join("\n");
 }
 
+function monthDay(iso) {
+    const d = parseISODate(iso);
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function weekday(iso) {
+    return parseISODate(iso).toLocaleDateString("en-US", { weekday: "short" });
+}
+
+/** A column is one day over 7 days, a week over 30. */
+function isDayColumn(column) {
+    return column.start === column.end;
+}
+
+/** "Mon, 9/28" for a day, "Tue, 9/22 – Mon, 9/28" for a week, for tooltips. */
+function columnPhrase(column) {
+    return isDayColumn(column)
+        ? formatQuickPick(column.start)
+        : `${formatQuickPick(column.start)} – ${formatQuickPick(column.end)}`;
+}
+
+/**
+ * Over 7/30 days, swaps Top reasons (hidden by CSS under .is-range) for a
+ * column per day or week, newest first. Removes them for one shift.
+ */
+function syncDayColumns(range) {
+    oeeRoot.classList.toggle("is-range", isRange());
+    document.querySelectorAll(".oee-grid .day-col").forEach((el) => el.remove());
+    const columns = range && range.columns ? range.columns : [];
+    if (!columns.length) return;
+
+    document.querySelectorAll(".oee-grid").forEach((table) => {
+        const head = table.querySelector("thead tr");
+        for (const column of columns) {
+            const th = document.createElement("th");
+            th.className = "sum-head day-col";
+            if (isDayColumn(column)) {
+                th.textContent = weekday(column.start);
+                const date = document.createElement("span");
+                date.className = "day-col-date";
+                date.textContent = monthDay(column.start);
+                th.appendChild(date);
+            } else {
+                th.textContent = `${monthDay(column.start)}–${monthDay(column.end)}`;
+            }
+            head.appendChild(th);
+        }
+        table.querySelectorAll("tbody tr, tfoot tr").forEach((row) => {
+            columns.forEach((_, index) => {
+                const td = document.createElement("td");
+                td.className = "sum day-col";
+                td.dataset.column = index;
+                td.textContent = "—";
+                row.appendChild(td);
+            });
+        });
+    });
+}
+
+/** Each day's (or week's) OEE in a machine or zone row. */
+function fillDayCells(row, byKey, range) {
+    const group = byKey[rangeShift];
+    const unit = range.column_days === 1 ? "day's" : "week's";
+    row.querySelectorAll("td.day-col").forEach((cell) => {
+        const index = Number(cell.dataset.column);
+        const value = group.columns[index];
+        const when = columnPhrase(range.columns[index]);
+        const total = value.counted + value.left_out;
+
+        if (!total) {
+            cell.setAttribute("data-empty", "");
+            cell.title = `${when}: nothing entered.`;
+            return;
+        }
+        if (value.oee === null) {
+            cell.textContent = "!";
+            cell.setAttribute("data-band", "poor");
+            cell.title = `${when}: every shift left out (${value.left_out}). ` +
+                "Hover the name on the left for why.";
+            return;
+        }
+
+        cell.textContent = pct(value.oee, 0);
+        setBand(cell, value.oee);
+        const lines = [`${when}: ${pct(value.oee)} OEE over ${value.counted} of ${total} ` +
+            `shift${total === 1 ? "" : "s"}.`];
+        if (value.thin) {
+            cell.setAttribute("data-warned", "");
+            lines.push(`Fewer than half that ${unit} shifts counted.`);
+        }
+        if (rangeShift === ALL_SHIFTS) {
+            for (const label of SHIFT_ORDER) {
+                const one = byKey[label].columns[index];
+                const text = one.oee !== null ? pct(one.oee)
+                    : one.left_out ? "left out" : "—";
+                lines.push(`   ${shortShift(label)}: ${text}`);
+            }
+        }
+        cell.title = lines.join("\n");
+    });
+}
+
+/** The floor's line of daily (or weekly) figures: "Mon 63 · Sun — · Sat 66". */
+function renderFloorDays(range) {
+    floorTotalDays.textContent = "";
+    const group = range.floor[rangeShift];
+    range.columns.forEach((column, index) => {
+        const value = group.columns[index];
+        const item = document.createElement("span");
+        item.className = "floor-day";
+        const label = isDayColumn(column)
+            ? weekday(column.start)
+            : `${monthDay(column.start)}–${monthDay(column.end)}`;
+        const total = value.counted + value.left_out;
+        const shown = value.oee !== null ? Math.round(value.oee * 100) : total ? "!" : "—";
+        item.textContent = `${label} ${shown}`;
+        setBand(item, value.oee);
+        if (value.oee === null && total) item.setAttribute("data-band", "poor");
+        item.title = value.oee !== null
+            ? `${columnPhrase(column)}: ${pct(value.oee)} over ${value.counted} of ${total} machine-shifts`
+            : total
+                ? `${columnPhrase(column)}: every machine-shift left out (${value.left_out})`
+                : `${columnPhrase(column)}: nothing entered`;
+        floorTotalDays.appendChild(item);
+    });
+}
+
 /** Performance and Quality need scrap, so they may cover fewer shifts. */
 function splitTitle(current) {
     if (!current.split_shifts) return "Needs scrap to separate Performance from Quality";
@@ -575,7 +704,9 @@ function splitTitle(current) {
     return `From the ${current.split_shifts} of ${current.shifts} counted shifts with scrap entered`;
 }
 
+/** A machine's row over 7/30 days, or a zone's total row (byKey without the detail fields). */
 function fillRangeRow(row, byKey, range) {
+    fillDayCells(row, byKey, range);
     const group = byKey[rangeShift];
     const set = (field, text, title) => {
         const cell = row.querySelector(`[data-field="${field}"]`);
@@ -591,7 +722,7 @@ function fillRangeRow(row, byKey, range) {
         // Nothing entered all period: didn't run, or wasn't scheduled.
         row.setAttribute("data-unscheduled", "");
         if (operator) operator.textContent = "no shifts";
-        set("oee", "—", `Nothing entered for this machine, ${periodPhrase(range)}.`);
+        set("oee", "—", `Nothing entered, ${periodPhrase(range)}.`);
         return;
     }
     if (operator) operator.textContent = `${group.counted}/${total} shifts`;
@@ -685,6 +816,7 @@ function renderFloorTotal(range) {
     floorTotal.hidden = false;
     floorTotalOee.textContent = "";
     floorTotalDetail.textContent = "";
+    floorTotalDays.textContent = "";
     floorTotalOee.removeAttribute("data-band");
     floorTotal.removeAttribute("data-warned");
 
@@ -719,6 +851,7 @@ function renderFloorTotal(range) {
         periodPhrase(range),
     ].join(" · ");
     if (rangeShift === ALL_SHIFTS) floorTotalDetail.appendChild(byShiftLine(byKey));
+    renderFloorDays(range);
 
     const title = [
         "Every counted machine-shift added together: total good units over the units " +
@@ -1152,6 +1285,8 @@ function render() {
 
 function renderShift() {
     floorTotal.hidden = true;
+    syncDayColumns(null);
+    document.querySelectorAll(".oee-grid tfoot").forEach((foot) => { foot.hidden = true; });
     const shiftData = payload.shifts[currentShift];
     if (!shiftData) return;
 
@@ -1183,8 +1318,11 @@ function renderShift() {
 function renderRange() {
     completenessEl.hidden = true;
     const range = rangeFor(payload.date, period);
+    const loaded = range !== null && range !== "error";
+    syncDayColumns(loaded ? range : null);
+    document.querySelectorAll(".oee-grid tfoot").forEach((foot) => { foot.hidden = !loaded; });
     renderFloorTotal(range);
-    if (range === null || range === "error") {
+    if (!loaded) {
         // The grid stays, blank, until the period arrives.
         hideEmpty();
         flagsBanner.hidden = true;
@@ -1204,6 +1342,9 @@ function renderRange() {
             const byKey = range.machines[row.dataset.machine];
             if (byKey) fillRangeRow(row, byKey, range);
         });
+        const zoneRow = section.querySelector("tr[data-zone-total]");
+        const zone = (range.zones || {})[section.dataset.zone];
+        if (zoneRow && zone) fillRangeRow(zoneRow, zone, range);
         fillRangeZone(section, range);
     });
 

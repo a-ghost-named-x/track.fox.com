@@ -47,11 +47,13 @@
         </div>
     </div>
 
-    {# The floor's OEE over 7 or 30 days, compared with the period before. #}
+    {# The floor's OEE over 7 or 30 days, compared with the period before,
+       then each day's (or week's). #}
     <div class="floor-total" id="floor-total" hidden>
         <span class="control-label">Floor</span>
         <span class="floor-total-oee" id="floor-total-oee"></span>
         <span class="floor-total-detail" id="floor-total-detail"></span>
+        <span class="floor-total-days" id="floor-total-days"></span>
     </div>
 
     {# Completeness per column, since production and OEE data are entered at
@@ -80,7 +82,8 @@
             </h2>
 
             {# One row per machine per shift. The checkpoint readings are on
-               the Good cell's tooltip. #}
+               the Good cell's tooltip. Over 7 or 30 days, oee.js swaps Top
+               reasons for a column per day (or week). #}
             <table class="oee-grid">
                 <thead>
                     <tr>
@@ -118,6 +121,24 @@
                     </tr>
                     {% endfor %}
                 </tbody>
+                {# The zone's own row over 7 or 30 days, filled like a machine's. #}
+                <tfoot hidden>
+                    <tr class="zone-total-row" data-zone-total>
+                        <td class="machine-col">
+                            <span class="machine-name">Zone total</span>
+                            <span class="shift-length"></span>
+                            <span class="operator"></span>
+                        </td>
+                        <td class="sum sum-oee" data-field="oee">—</td>
+                        <td class="sum" data-field="availability">—</td>
+                        <td class="sum" data-field="performance">—</td>
+                        <td class="sum" data-field="quality">—</td>
+                        <td class="sum" data-field="good">—</td>
+                        <td class="sum" data-field="scrap">—</td>
+                        <td class="sum" data-field="downtime">—</td>
+                        <td class="sum reason-cell" data-field="reasons">—</td>
+                    </tr>
+                </tfoot>
             </table>
         </section>
         {% endfor %}
