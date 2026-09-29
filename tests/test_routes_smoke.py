@@ -18,8 +18,10 @@ What it checks:
      unticked by default and removes the same date's 3rd Shift row, and the
      downtime cap follows the machine's length.
   5. Short days: the 2/4/6 hours box, which only counts with the short-day
-     option picked, the 3rd Shift page offering a length only after a short
-     2nd Shift, and /oee's 7/30-day Pareto.
+     option picked, and the 3rd Shift page offering a length only after a
+     short 2nd Shift.
+  6. /oee's 7/30-day period: its controls, ?period and ?shift=All, and
+     /api/oee-range.
 """
 import os
 import sys
@@ -112,8 +114,8 @@ for mod in (oee_mod, console_oee_mod):
     mod.get_downtime_reasons = (
         lambda active_only=True: dict(REASONS if active_only else ALL_REASONS)
     )
-# The range readers behind the 7/30-day Pareto, over the same stored state
-# (all of it filed under DAY).
+# The range readers behind the 7/30-day view, over the same stored state (all
+# of it filed under DAY).
 oee_mod.get_shift_lengths_for_range = lambda s, e: (
     {(m, DAY, sh): h for (m, sh), h in stored_lengths.items()} if s <= DAY <= e else {}
 )
@@ -123,8 +125,11 @@ oee_mod.get_downtime_for_range = lambda s, e: (
 oee_mod.get_schedule_for_range = lambda s, e: (
     {(m, DAY, sh): v for (m, sh), v in stored_schedule.items()} if s <= DAY <= e else {}
 )
-entries_mod.get_reported_slots = lambda s, e: {
-    (r["machine_id"], r["entry_date"], r["time_slot"]) for r in entries
+oee_mod.get_scrap_for_range = lambda s, e: (
+    {(m, DAY, sh): v for (m, sh), v in stored_scrap.items()} if s <= DAY <= e else {}
+)
+entries_mod.get_readings_for_range = lambda s, e: {
+    (r["machine_id"], r["entry_date"], r["time_slot"]): r["units_produced"] for r in entries
     if s <= r["entry_date"] <= e
 }
 oee_mod.get_ideal_rates = lambda: {m: i / 1.5 for m, i in INCREMENTS.items()}
@@ -742,30 +747,59 @@ check("...and a checkbox per machine",
 check("?pareto= is passed through to the page",
       'window.INITIAL_PARETO = "C1,C2"' in client.get("/oee?pareto=C1,C2").text)
 
-print("\n== the Pareto's 7 and 30-day periods ==")
-check("/oee has the period chips",
+print("\n== the 7 and 30-day period ==")
+check("/oee has the period toggle",
       all(f'data-period="{p}"' in oee_page for p in ("shift", "7", "30")))
+check("...at the top, not inside the Pareto", 'id="pareto-period"' not in oee_page)
+check("the All button is there, hidden until a period is picked",
+      'data-shift="All" hidden' in oee_page)
+check("the floor total is there, hidden", 'id="floor-total" hidden' in oee_page)
 check("?period=30 is passed through", "window.INITIAL_PERIOD = 30" in client.get("/oee?period=30").text)
-check("an unknown period means the shift",
+check("an unknown period means one shift",
       "window.INITIAL_PERIOD = null" in client.get("/oee?period=9").text)
+check("a period opens on All", 'window.INITIAL_SHIFT = "All"' in client.get("/oee?period=7").text)
+check("...unless a shift is asked for",
+      'window.INITIAL_SHIFT = "2nd Shift"' in client.get("/oee?period=7&shift=2nd%20Shift").text)
+check("All without a period falls back to a real shift",
+      'window.INITIAL_SHIFT = "All"' not in client.get("/oee?shift=All").text)
+
 reset()
+# C1 reported at standard (see `entries`) and ran clean: counted. C2 has
+# downtime but no production: left out, but still in the Pareto.
+stored_downtime[("C1", SHIFT)] = {"note": None, "planned_minutes": 0, "unplanned_minutes": 0,
+                                  "reasons": []}
 stored_downtime[("C2", SHIFT)] = {
     "note": None, "planned_minutes": 0, "unplanned_minutes": 20,
     "reasons": [{"code": "SETUP", "label": "Setup", "minutes": 20, "is_planned": False}],
 }
-rng = client.get(f"/api/oee-pareto?end={DAY.isoformat()}&days=30")
-check("/api/oee-pareto 200", rng.status_code == 200, rng.text[:300])
-body = rng.json() if rng.status_code == 200 else {"machines": {}}
+rng = client.get(f"/api/oee-range?end={DAY.isoformat()}&days=30")
+check("/api/oee-range 200", rng.status_code == 200, rng.text[:300])
+body = rng.json() if rng.status_code == 200 else {"machines": {}, "floor": {}}
 check("30 days ending on the date", body.get("days") == 30 and body.get("end") == DAY.isoformat())
-check("every machine, so the picker can narrow it", set(body["machines"]) == set(MACHINE_IDS))
-check("C2's reasons are there",
-      [(r["code"], r["minutes"]) for r in body["machines"].get("C2", {}).get("reasons", [])]
+check("compared with the 30 days before",
+      body.get("previous_end") == (DAY - timedelta(days=30)).isoformat())
+check("every machine, so the Pareto picker can narrow it", set(body["machines"]) == set(MACHINE_IDS))
+check("every zone", set(body.get("zones", {})) == set(oee_mod.DASHBOARD_ZONES))
+c1_all = body["machines"].get("C1", {}).get("All", {})
+check("C1 counted once, at standard",
+      c1_all.get("counted") == 1 and (c1_all.get("current") or {}).get("oee") == 0.75)
+check("C1's 2nd Shift has nothing",
+      body["machines"].get("C1", {}).get("2nd Shift", {}).get("current", "missing") is None)
+check("C2 is left out for having no production",
+      body["machines"].get("C2", {}).get("All", {}).get("left_out_shifts")
+      == [{"date": DAY.isoformat(), "shift": SHIFT, "reasons": ["no_production"]}])
+check("C2's downtime is still in the Pareto",
+      [(r["code"], r["minutes"]) for r in body["machines"].get("C2", {}).get("All", {}).get("pareto", [])]
       == [("SETUP", 20)])
-check("C1 ran with no downtime entered: counted as missing",
-      body["machines"].get("C1", {}).get("missing") == 1)
-check("a junk period falls back to 7", client.get("/api/oee-pareto?days=abc").json()["days"] == 7)
+floor_all = body.get("floor", {}).get("All", {})
+check("floor: one counted, one left out",
+      (floor_all.get("counted"), floor_all.get("left_out")) == (1, 1))
+check("nothing in the 30 days before, so no change",
+      floor_all.get("previous", "missing") is None and floor_all.get("change", "missing") is None)
+check("a junk period falls back to 7", client.get("/api/oee-range?days=abc").json()["days"] == 7)
 check("no end means the latest day with data",
-      client.get("/api/oee-pareto").json()["end"] == DAY.isoformat())
+      client.get("/api/oee-range").json()["end"] == DAY.isoformat())
+check("the old Pareto-only endpoint is gone", client.get("/api/oee-pareto").status_code == 404)
 reset()
 
 print("\n== /dashboard is the site menu ==")

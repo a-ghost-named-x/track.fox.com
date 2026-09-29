@@ -51,6 +51,10 @@ tests/test_oee_math.py asserts they agree for single machines and rollups.
 Across machines, Availability is weighted by capacity rather than clock
 minutes, because machines run at different rates. See _aggregate().
 
+Over 7 or 30 days (compute_oee_range) each machine-shift is worked out the
+same way and then summed like a zone rollup, so a week's OEE is its total
+good units over the units its scheduled time could have made.
+
 What each number needs
 ----------------------
 Scrap cancels out of A x P x Q, so OEE doesn't need it:
@@ -73,6 +77,7 @@ from datetime import datetime, timedelta
 
 from app.db.postgres import get_pg_connection
 from app.models import (
+    ALL_SHIFTS_LABEL,
     DASHBOARD_ZONES,
     DEFAULT_SHIFT_HOURS,
     MACHINE_IDS,
@@ -327,7 +332,7 @@ def create_shift_length(payload: ShiftLengthCreate) -> int:
 
 # Each OEE table has one query, over a range of production days. The
 # single-day readers call it with start == end and drop the date from the key.
-# The 7/30-day Pareto reads ranges so it doesn't open a connection per day.
+# The 7/30-day views read ranges so they don't open a connection per day.
 
 def get_shift_lengths_for_range(
     start: date_type, end: date_type
@@ -370,20 +375,32 @@ def machine_day_lengths(
     )
 
 
-def get_latest_scrap_for_date(entry_date: date_type) -> dict[tuple[str, str], int]:
-    """Latest scrap total per (machine_id, shift) for one date."""
+def get_scrap_for_range(
+    start: date_type, end: date_type
+) -> dict[tuple[str, date_type, str], int]:
+    """Latest scrap total per (machine_id, production day, shift), for every
+    day from `start` to `end` inclusive."""
     with get_pg_connection() as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT ON (machine_id, shift)
-                machine_id, shift, scrap_units
+            SELECT DISTINCT ON (machine_id, entry_date, shift)
+                machine_id, entry_date, shift, scrap_units
             FROM shift_scrap
-            WHERE entry_date = %s
-            ORDER BY machine_id, shift, created_at DESC
+            WHERE entry_date BETWEEN %s AND %s
+            ORDER BY machine_id, entry_date, shift, created_at DESC
             """,
-            (entry_date,),
+            (start, end),
         ).fetchall()
-    return {(machine_id, shift): scrap for machine_id, shift, scrap in rows}
+    return {(machine_id, day, shift): scrap for machine_id, day, shift, scrap in rows}
+
+
+def get_latest_scrap_for_date(entry_date: date_type) -> dict[tuple[str, str], int]:
+    """Latest scrap total per (machine_id, shift) for one production day."""
+    return {
+        (machine_id, shift): scrap
+        for (machine_id, _, shift), scrap
+        in get_scrap_for_range(entry_date, entry_date).items()
+    }
 
 
 def get_downtime_for_range(
@@ -621,6 +638,12 @@ def _accumulate(acc: dict, result: dict, *, with_scrap: bool = False) -> None:
         acc["scrap"] += result["scrap"]
 
 
+def _merge_accumulator(into: dict, other: dict) -> None:
+    """Adds one accumulator's sums into another."""
+    for key, value in other.items():
+        into[key] += value
+
+
 def _accumulator_args(acc: dict) -> dict:
     """Maps an accumulator onto _aggregate's keyword arguments."""
     return {
@@ -653,6 +676,17 @@ def _build_rollup(machines: dict[str, dict], machine_ids: list[str]) -> dict | N
         if machine["scrap_known"]:
             _accumulate(split, machine["shift"], with_scrap=True)
 
+    return _rollup_from(roll, split)
+
+
+def _rollup_from(roll: dict, split: dict) -> dict | None:
+    """The rollup for a pair of accumulators: `roll` for OEE and
+    Availability, `split` for the results that also have scrap. None when
+    nothing was counted.
+
+    `machines` and `split_machines` are how many results each accumulator
+    holds (machine-shifts, over a 7/30-day period).
+    """
     if not roll["machines"]:
         return None
 
@@ -812,138 +846,23 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
         default_elapsed = elapsed_dated_slots(
             shift_slot_dates(shift_label, production_day) or [], now
         )
-        machines: dict[str, dict] = {}
-
-        for machine_id in MACHINE_IDS:
-            hours = day_lengths[machine_id][shift_label]
-            dated_slots = shift_slot_dates(shift_label, production_day, hours)
-            if dated_slots is None:
-                machines[machine_id] = _absent_shift(
-                    hours, production_day, day_lengths[machine_id]
-                )
-                continue
-
-            slots = [slot for slot, _ in dated_slots]
-            elapsed = elapsed_dated_slots(dated_slots, now)
-            elapsed_set = set(elapsed)
-
-            scheduled = schedule_map.get(
-                (machine_id, shift_label), default_scheduled(shift_label, hours)
+        machines = {
+            machine_id: _machine_shift(
+                machine_id,
+                shift_label,
+                production_day,
+                day_lengths[machine_id],
+                units=units_map,
+                operators=operator_map,
+                scheduled=schedule_map.get((machine_id, shift_label)),
+                downtime=downtime_map.get((machine_id, shift_label)),
+                scrap=scrap_map.get((machine_id, shift_label)),
+                ideal_per_hour=ideal_rates.get(machine_id),
+                standard=standards.get((machine_id, shift_label), 0),
+                now=now,
             )
-            ideal_per_hour = ideal_rates.get(machine_id)
-            downtime = downtime_map.get((machine_id, shift_label))
-            scrap = scrap_map.get((machine_id, shift_label))
-
-            readings = {
-                slot: units_map.get((machine_id, slot_date, slot))
-                for slot, slot_date in dated_slots
-            }
-            deltas = _cumulative_deltas(readings, slots, elapsed=elapsed_set)
-            production = _summarise_production(readings, deltas, elapsed)
-
-            flags = list(production["flags"])
-            if ideal_per_hour is None:
-                flags.append("no_ideal_rate")
-
-            # Planned Production Time is the elapsed part of the shift, minus
-            # planned downtime (currently always zero; no reason codes are
-            # planned).
-            #
-            # A short-day shift is capped at its scheduled hours: 4 hours on
-            # the 1st Shift is 240 minutes even though its window is six. For
-            # 8/10/12 hours the cap is the whole window.
-            planned = downtime["planned_minutes"] if downtime else 0
-            unplanned = downtime["unplanned_minutes"] if downtime else 0
-            elapsed_minutes = min(SLOT_MINUTES * len(elapsed), hours * 60)
-            ppt = elapsed_minutes - planned if downtime else None
-            run = ppt - unplanned if ppt is not None else None
-
-            if run is not None and run < 0:
-                flags.append("downtime_over_shift")
-
-            ideal_per_minute = (ideal_per_hour or 0) / 60
-            good = production["good"]
-
-            if (
-                good is not None
-                and ppt
-                and good > ideal_per_minute * ppt * IMPLAUSIBLE_CEILING_MULTIPLE
-            ):
-                flags.append("implausible_units")
-
-            countable = (
-                good is not None
-                and downtime is not None
-                and ideal_per_hour is not None
-                and not flags
-            )
-            scrap_known = countable and scrap is not None
-
-            # The stored standard is an 8-hour target; scale it to the
-            # shift's hours. Every 2-hour increment is even, so the result
-            # stays whole.
-            standard = (
-                standards.get((machine_id, shift_label), 0) * hours // DEFAULT_SHIFT_HOURS
-            )
-
-            result = None
-            if countable:
-                result = _aggregate(
-                    good=good,
-                    scrap=scrap if scrap_known else None,
-                    standard=standard,
-                    ppt=ppt,
-                    run=run,
-                    planned=planned,
-                    unplanned=unplanned,
-                    ideal_at_ppt=ideal_per_minute * ppt,
-                    ideal_at_run=ideal_per_minute * run,
-                )
-
-            machines[machine_id] = {
-                "scheduled": scheduled,
-                "shift_exists": True,
-                "shift_hours": hours,
-                "shift_minutes": hours * 60,
-                "span": shift_span(shift_label, hours),
-                # Differs from `span` only on a short day (6AM-12PM window
-                # around a scheduled 6AM-10AM).
-                "window_span": window_span(shift_label, hours),
-                "production_day": production_day.isoformat(),
-                "operator": next(
-                    (
-                        operator_map[(machine_id, slot_date, slot)]
-                        for slot, slot_date in reversed(dated_slots)
-                        if (machine_id, slot_date, slot) in operator_map
-                    ),
-                    None,
-                ),
-                "shift": result,
-                # Raw checkpoints, so a flagged machine can be diagnosed from
-                # the page. Each carries the calendar date it was filed under.
-                "checkpoints": [
-                    {
-                        "slot": slot,
-                        "date": slot_date.isoformat(),
-                        "reading": readings[slot],
-                        "produced": deltas[slot],
-                        "reported": readings[slot] is not None,
-                        "elapsed": slot in elapsed_set,
-                    }
-                    for slot, slot_date in dated_slots
-                ],
-                "reasons": downtime["reasons"] if downtime else [],
-                "note": downtime["note"] if downtime else None,
-                "has_production": good is not None,
-                "has_downtime": downtime is not None,
-                "has_scrap": scrap is not None,
-                "scrap": scrap,
-                "scrap_known": scrap_known,
-                "elapsed_minutes": elapsed_minutes,
-                "elapsed_count": len(elapsed),
-                "flags": sorted(set(flags)),
-                "warnings": _machine_warnings(result, production["warnings"]),
-            }
+            for machine_id in MACHINE_IDS
+        }
 
         shifts[shift_label] = {
             "machines": machines,
@@ -963,6 +882,147 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
         "shifts": shifts,
         # The 8-hour default. Each machine carries its own shift_minutes.
         "shift_minutes": SHIFT_MINUTES,
+    }
+
+
+def _machine_shift(
+    machine_id: str,
+    shift_label: str,
+    production_day: date_type,
+    day_lengths: dict[str, int],
+    *,
+    units: dict[tuple[str, date_type, str], int],
+    scheduled: bool | None,
+    downtime: dict | None,
+    scrap: int | None,
+    ideal_per_hour: float | None,
+    standard: int,
+    now: datetime,
+    operators: dict[tuple[str, date_type, str], str] | None = None,
+) -> dict:
+    """One machine's OEE row for one shift of one production day. Used by the
+    one-day report and the 7/30-day range.
+
+    `units` (and `operators`) are keyed (machine_id, calendar date, slot), as
+    the rounds file them. `scheduled` is the machine_schedule record, or None
+    for the default. `standard` is the stored 8-hour target.
+    """
+    hours = day_lengths[shift_label]
+    dated_slots = shift_slot_dates(shift_label, production_day, hours)
+    if dated_slots is None:
+        return _absent_shift(hours, production_day, day_lengths)
+
+    slots = [slot for slot, _ in dated_slots]
+    elapsed = elapsed_dated_slots(dated_slots, now)
+    elapsed_set = set(elapsed)
+
+    if scheduled is None:
+        scheduled = default_scheduled(shift_label, hours)
+
+    readings = {
+        slot: units.get((machine_id, slot_date, slot))
+        for slot, slot_date in dated_slots
+    }
+    deltas = _cumulative_deltas(readings, slots, elapsed=elapsed_set)
+    production = _summarise_production(readings, deltas, elapsed)
+
+    flags = list(production["flags"])
+    if ideal_per_hour is None:
+        flags.append("no_ideal_rate")
+
+    # Planned Production Time is the elapsed part of the shift, minus planned
+    # downtime (currently always zero; no reason codes are planned).
+    #
+    # A short-day shift is capped at its scheduled hours: 4 hours on the 1st
+    # Shift is 240 minutes even though its window is six. For 8/10/12 hours
+    # the cap is the whole window.
+    planned = downtime["planned_minutes"] if downtime else 0
+    unplanned = downtime["unplanned_minutes"] if downtime else 0
+    elapsed_minutes = min(SLOT_MINUTES * len(elapsed), hours * 60)
+    ppt = elapsed_minutes - planned if downtime else None
+    run = ppt - unplanned if ppt is not None else None
+
+    if run is not None and run < 0:
+        flags.append("downtime_over_shift")
+
+    ideal_per_minute = (ideal_per_hour or 0) / 60
+    good = production["good"]
+
+    if (
+        good is not None
+        and ppt
+        and good > ideal_per_minute * ppt * IMPLAUSIBLE_CEILING_MULTIPLE
+    ):
+        flags.append("implausible_units")
+
+    countable = (
+        good is not None
+        and downtime is not None
+        and ideal_per_hour is not None
+        and not flags
+    )
+    scrap_known = countable and scrap is not None
+
+    result = None
+    if countable:
+        result = _aggregate(
+            good=good,
+            scrap=scrap if scrap_known else None,
+            # The stored standard is an 8-hour target; scale it to the shift's
+            # hours. Every 2-hour increment is even, so the result stays whole.
+            standard=standard * hours // DEFAULT_SHIFT_HOURS,
+            ppt=ppt,
+            run=run,
+            planned=planned,
+            unplanned=unplanned,
+            ideal_at_ppt=ideal_per_minute * ppt,
+            ideal_at_run=ideal_per_minute * run,
+        )
+
+    operators = operators or {}
+    return {
+        "scheduled": scheduled,
+        "shift_exists": True,
+        "shift_hours": hours,
+        "shift_minutes": hours * 60,
+        "span": shift_span(shift_label, hours),
+        # Differs from `span` only on a short day (6AM-12PM window around a
+        # scheduled 6AM-10AM).
+        "window_span": window_span(shift_label, hours),
+        "production_day": production_day.isoformat(),
+        "operator": next(
+            (
+                operators[(machine_id, slot_date, slot)]
+                for slot, slot_date in reversed(dated_slots)
+                if (machine_id, slot_date, slot) in operators
+            ),
+            None,
+        ),
+        "shift": result,
+        # Raw checkpoints, so a flagged machine can be diagnosed from the page.
+        # Each carries the calendar date it was filed under.
+        "checkpoints": [
+            {
+                "slot": slot,
+                "date": slot_date.isoformat(),
+                "reading": readings[slot],
+                "produced": deltas[slot],
+                "reported": readings[slot] is not None,
+                "elapsed": slot in elapsed_set,
+            }
+            for slot, slot_date in dated_slots
+        ],
+        "reasons": downtime["reasons"] if downtime else [],
+        "note": downtime["note"] if downtime else None,
+        "has_production": good is not None,
+        "has_downtime": downtime is not None,
+        "has_scrap": scrap is not None,
+        "scrap": scrap,
+        "scrap_known": scrap_known,
+        "elapsed_minutes": elapsed_minutes,
+        "elapsed_count": len(elapsed),
+        "flags": sorted(set(flags)),
+        "warnings": _machine_warnings(result, production["warnings"]),
     }
 
 
@@ -1045,104 +1105,256 @@ def _completeness(machines: dict[str, dict], elapsed: list[str]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The downtime Pareto over a week or a month
+# OEE over 7 or 30 days
 # ---------------------------------------------------------------------------
 
-def compute_pareto_range(
+def compute_oee_range(
     end_day: date_type, days: int, *, now: datetime | None = None
 ) -> dict:
-    """Downtime minutes by reason for every machine, summed over the `days`
-    production days ending on (and including) `end_day`, all shifts
-    together. Used by /oee's 7 and 30-day Pareto.
+    """OEE over the `days` production days ending on (and including)
+    `end_day`, and over the `days` before those for comparison. Used by
+    /oee's 7 and 30-day views.
 
-    Returned per machine so the page's machine picker can filter in the
-    browser. A machine-shift counts if it exists on that day and is
-    scheduled, the same rule compute_oee_report() uses.
+    Each machine-shift is worked out by _machine_shift(), as in the one-day
+    report, then summed the way the zone rollups sum machines: counts and
+    minutes are added and divided once, never averaged, so a 4-hour shift
+    weighs less than a 12-hour one.
 
-    Each machine also carries coverage counts, since a month with unentered
-    downtime would otherwise look better than it was:
+    Returned per machine, per zone and for the floor, for all shifts together
+    (ALL_SHIFTS_LABEL) and for each shift. See _range_summary() for the
+    fields.
 
-      records - counted machine-shifts with a downtime submission
-      missing - finished machine-shifts that reported production but have no
-                downtime submission
+    A finished machine-shift with some data but no OEE (production without
+    downtime, downtime without production, or a hard flag) is "left out" and
+    listed. Dropping those quietly would flatter the period, since they tend
+    to be the bad shifts. A shift with nothing entered didn't run and isn't
+    counted either way; nor is one still in progress without its downtime.
 
-    Reported production is the test for whether a shift ran, so an unworked
-    Sunday isn't counted as missing.
-
-    Reads each table once for the whole range rather than building a report
-    per day, which would open hundreds of connections.
+    Reads each table once for both periods rather than building a report per
+    day, which would open hundreds of connections.
     """
-    from app.db.entries import get_reported_slots
+    from app.db.entries import get_readings_for_range
 
     now = now or datetime.now()
     start = end_day - timedelta(days=days - 1)
+    previous_start = start - timedelta(days=days)
 
-    explicit_lengths = get_shift_lengths_for_range(start, end_day)
-    schedule = get_schedule_for_range(start, end_day)
-    downtime = get_downtime_for_range(start, end_day)
+    explicit_lengths = get_shift_lengths_for_range(previous_start, end_day)
+    schedule = get_schedule_for_range(previous_start, end_day)
+    downtime = get_downtime_for_range(previous_start, end_day)
+    scrap = get_scrap_for_range(previous_start, end_day)
     # The last day's night checkpoints are filed under the morning after it.
-    reported = get_reported_slots(start, end_day + timedelta(days=1))
+    units = get_readings_for_range(previous_start, end_day + timedelta(days=1))
+    ideal_rates = get_ideal_rates()
+    standards = get_shift_standards()
 
     explicit_by_day: dict[tuple[str, date_type], dict[str, int]] = {}
     for (machine_id, day, shift), hours in explicit_lengths.items():
         explicit_by_day.setdefault((machine_id, day), {})[shift] = hours
 
-    machines: dict[str, dict] = {}
-    for machine_id in MACHINE_IDS:
-        reasons: dict[str, dict] = {}
-        records = 0
-        missing = 0
+    keys = [ALL_SHIFTS_LABEL, *SHIFT_ORDER]
+    tallies = {
+        machine_id: {
+            key: {"current": _new_tally(), "previous": _new_tally()} for key in keys
+        }
+        for machine_id in MACHINE_IDS
+    }
 
-        for offset in range(days):
-            day = start + timedelta(days=offset)
-            lengths = resolve_day_lengths(explicit_by_day.get((machine_id, day), {}))
+    for machine_id in MACHINE_IDS:
+        for offset in range(days * 2):
+            day = previous_start + timedelta(days=offset)
+            period = "previous" if day < start else "current"
+            day_lengths = resolve_day_lengths(explicit_by_day.get((machine_id, day), {}))
 
             for shift in SHIFT_ORDER:
-                hours = lengths[shift]
-                dated_slots = shift_slot_dates(shift, day, hours)
-                if dated_slots is None:
-                    continue  # shift doesn't exist on this day
-                scheduled = schedule.get(
-                    (machine_id, day, shift), default_scheduled(shift, hours)
+                row = _machine_shift(
+                    machine_id,
+                    shift,
+                    day,
+                    day_lengths,
+                    units=units,
+                    scheduled=schedule.get((machine_id, day, shift)),
+                    downtime=downtime.get((machine_id, day, shift)),
+                    scrap=scrap.get((machine_id, day, shift)),
+                    ideal_per_hour=ideal_rates.get(machine_id),
+                    standard=standards.get((machine_id, shift), 0),
+                    now=now,
                 )
-                if not scheduled:
-                    continue
+                if not row["scheduled"]:
+                    continue  # not scheduled, or no such shift that day
+                for key in (ALL_SHIFTS_LABEL, shift):
+                    _tally(tallies[machine_id][key][period], row, day, shift)
 
-                record = downtime.get((machine_id, day, shift))
-                if record is None:
-                    over = len(elapsed_dated_slots(dated_slots, now)) == len(dated_slots)
-                    ran = any(
-                        (machine_id, slot_date, slot) in reported
-                        for slot, slot_date in dated_slots
-                    )
-                    if over and ran:
-                        missing += 1
-                    continue
-
-                records += 1
-                for reason in record["reasons"]:
-                    bucket = reasons.setdefault(
-                        reason["code"],
-                        {
-                            "code": reason["code"],
-                            "label": reason["label"],
-                            "is_planned": reason["is_planned"],
-                            "minutes": 0,
-                            "shifts": 0,
-                        },
-                    )
-                    bucket["minutes"] += reason["minutes"]
-                    bucket["shifts"] += 1
-
-        machines[machine_id] = {
-            "reasons": sorted(reasons.values(), key=lambda r: r["minutes"], reverse=True),
-            "records": records,
-            "missing": missing,
-        }
+    def group(machine_ids: list[str], key: str, *, detail: bool = False) -> dict:
+        return _range_summary(
+            _merge_tallies([tallies[m][key]["current"] for m in machine_ids]),
+            _merge_tallies([tallies[m][key]["previous"] for m in machine_ids]),
+            detail=detail,
+        )
 
     return {
         "start": start.isoformat(),
         "end": end_day.isoformat(),
         "days": days,
-        "machines": machines,
+        "previous_start": previous_start.isoformat(),
+        "previous_end": (start - timedelta(days=1)).isoformat(),
+        "machines": {
+            machine_id: {key: group([machine_id], key, detail=True) for key in keys}
+            for machine_id in MACHINE_IDS
+        },
+        "zones": {
+            slug: {key: group(zone_machines, key) for key in keys}
+            for slug, zone_machines in DASHBOARD_ZONES.items()
+        },
+        "floor": {key: group(MACHINE_IDS, key) for key in keys},
     }
+
+
+def _new_tally() -> dict:
+    """Running totals for one machine over one period."""
+    return {
+        "roll": _new_accumulator(),
+        "split": _new_accumulator(),
+        "left_out": [],
+        "reasons": {},  # downtime on counted shifts, by code
+        "pareto": {},   # downtime on every scheduled shift, by code
+        "downtime_records": 0,
+        "downtime_missing": 0,
+    }
+
+
+def _tally(tally: dict, row: dict, day: date_type, shift: str) -> None:
+    """Folds one scheduled machine-shift (from _machine_shift) into a tally."""
+    finished = row["elapsed_count"] == len(row["checkpoints"])
+
+    # The Pareto takes every downtime record, OEE or not, as the one-shift
+    # Pareto does.
+    if row["has_downtime"]:
+        tally["downtime_records"] += 1
+        _add_reasons(tally["pareto"], row["reasons"])
+    elif finished and row["has_production"]:
+        tally["downtime_missing"] += 1
+
+    if row["shift"] is not None:
+        _accumulate(tally["roll"], row["shift"])
+        if row["scrap_known"]:
+            _accumulate(tally["split"], row["shift"], with_scrap=True)
+        _add_reasons(tally["reasons"], row["reasons"])
+    elif finished and (row["has_production"] or row["has_downtime"] or row["has_scrap"]):
+        tally["left_out"].append(
+            {"date": day.isoformat(), "shift": shift, "reasons": _left_out_reasons(row)}
+        )
+
+
+def _left_out_reasons(row: dict) -> list[str]:
+    """Why a machine-shift with data has no OEE: what's missing, then any
+    hard flags."""
+    reasons = []
+    if not row["has_production"]:
+        reasons.append("no_production")
+    if not row["has_downtime"]:
+        reasons.append("no_downtime")
+    return reasons + row["flags"]
+
+
+def _add_reasons(into: dict, reasons: list[dict]) -> None:
+    """Adds one shift's downtime reasons into totals keyed by code."""
+    for reason in reasons:
+        bucket = into.setdefault(
+            reason["code"],
+            {
+                "code": reason["code"],
+                "label": reason["label"],
+                "is_planned": reason["is_planned"],
+                "minutes": 0,
+                "shifts": 0,
+            },
+        )
+        bucket["minutes"] += reason["minutes"]
+        bucket["shifts"] += 1
+
+
+def _merge_tallies(tallies: list[dict]) -> dict:
+    """One tally holding the sum of several (a zone's machines, say)."""
+    merged = _new_tally()
+    for tally in tallies:
+        _merge_accumulator(merged["roll"], tally["roll"])
+        _merge_accumulator(merged["split"], tally["split"])
+        merged["left_out"] += tally["left_out"]
+        merged["downtime_records"] += tally["downtime_records"]
+        merged["downtime_missing"] += tally["downtime_missing"]
+        for field in ("reasons", "pareto"):
+            for code, bucket in tally[field].items():
+                into = merged[field].setdefault(code, {**bucket, "minutes": 0, "shifts": 0})
+                into["minutes"] += bucket["minutes"]
+                into["shifts"] += bucket["shifts"]
+    return merged
+
+
+def _range_rollup(tally: dict) -> dict | None:
+    """_rollup_from() for a period, with its counts named for what they are."""
+    rollup = _rollup_from(tally["roll"], tally["split"])
+    if rollup is not None:
+        rollup["shifts"] = rollup.pop("machines")
+        rollup["split_shifts"] = rollup.pop("split_machines")
+    return rollup
+
+
+def _is_thin(counted: int, left_out: int) -> bool:
+    """Fewer than half the period's machine-shifts counted."""
+    return counted < left_out
+
+
+def _range_summary(current: dict, previous: dict, *, detail: bool) -> dict:
+    """What /oee shows for one machine, zone or the floor over a period.
+
+      current / previous - rollups for the period and the one before it
+                           (None if nothing counted)
+      counted / left_out - finished machine-shifts that did / didn't count
+      thin               - fewer than half counted; the number is marked
+      change             - current OEE minus previous, None unless both
+                           periods have a number and neither is thin
+
+    `detail` (machines only) adds the left-out shifts, downtime reasons over
+    counted shifts (Top reasons), and the Pareto's reasons over every
+    downtime record with its coverage counts.
+    """
+    now_rollup = _range_rollup(current)
+    before = _range_rollup(previous)
+    counted, left_out = current["roll"]["machines"], len(current["left_out"])
+    previous_counted = previous["roll"]["machines"]
+    previous_left_out = len(previous["left_out"])
+    thin = _is_thin(counted, left_out)
+    previous_thin = _is_thin(previous_counted, previous_left_out)
+
+    comparable = (
+        now_rollup is not None and before is not None
+        and now_rollup["oee"] is not None and before["oee"] is not None
+        and not thin and not previous_thin
+    )
+    summary = {
+        "current": now_rollup,
+        "previous": before,
+        "change": now_rollup["oee"] - before["oee"] if comparable else None,
+        "counted": counted,
+        "left_out": left_out,
+        "thin": thin,
+        "previous_counted": previous_counted,
+        "previous_left_out": previous_left_out,
+        "previous_thin": previous_thin,
+    }
+    if detail:
+        summary.update(
+            {
+                "left_out_shifts": current["left_out"],
+                "reasons": _by_minutes(current["reasons"]),
+                "pareto": _by_minutes(current["pareto"]),
+                "downtime_records": current["downtime_records"],
+                "downtime_missing": current["downtime_missing"],
+            }
+        )
+    return summary
+
+
+def _by_minutes(reasons: dict[str, dict]) -> list[dict]:
+    return sorted(reasons.values(), key=lambda r: r["minutes"], reverse=True)

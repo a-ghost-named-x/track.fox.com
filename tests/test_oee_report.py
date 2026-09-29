@@ -34,7 +34,8 @@ Then a short Saturday (SAT), the 6-hour pattern with typed hours:
     WS4  an ordinary 8h shift, downtime never entered
     WS5  a 6h morning, then an ordinary 8h 2nd Shift
 
-and the 7/30-day Pareto over both days (compute_pareto_range).
+and the 7/30-day view over all of it (compute_oee_range), with a day in the
+week before for the comparison.
 
 See tests/test_oee_math.py for the unit-level arithmetic. This file checks
 aggregation: percentages are never averaged, and A x P x Q must equal OEE
@@ -228,12 +229,13 @@ real_schedule_for_date = oee.get_schedule_for_date
 real_lengths_for_date = oee.get_shift_lengths
 
 entries_mod.get_latest_entries_for_date = lambda d: list(entries_by_date.get(d, []))
-entries_mod.get_reported_slots = lambda start, end: {
-    (row["machine_id"], day, row["time_slot"])
+entries_mod.get_readings_for_range = lambda start, end: {
+    (row["machine_id"], day, row["time_slot"]): row["units_produced"]
     for day, rows in entries_by_date.items() if start <= day <= end
     for row in rows
 }
 oee.get_latest_scrap_for_date = lambda d: dict(scrap_by_day.get(d, {}))
+oee.get_scrap_for_range = lambda s, e: by_range(scrap_by_day, s, e)
 oee.get_latest_downtime_for_date = lambda d: dict(downtime_by_day.get(d, {}))
 oee.get_schedule_for_date = lambda d: dict(schedule_by_day.get(d, {}))
 oee.get_shift_lengths = lambda d: dict(lengths_by_day.get(d, {}))
@@ -559,45 +561,153 @@ after_sat = oee.compute_oee_report(SAT, now=datetime(2026, 9, 12, 13, 0))
 check("at 1PM it is capped at its 4 hours, though three slots have closed",
       after_sat["shifts"][SHIFT]["machines"]["FM2"]["shift"]["ppt_minutes"], 240)
 
-print("\n== the 7-day Pareto (compute_pareto_range) ==")
-week = oee.compute_pareto_range(SAT, 7, now=NOW_SAT)
+# --- 7 and 30 days ------------------------------------------------------------
+# Two more days. PREV is in the week before SAT's week, so it's what the
+# 7-day view compares against: C1, C2 and C3 at standard, ran clean.
+PREV = date(2026, 9, 1)
+entries_by_date[PREV] = []
+for machine in ("C1", "C2", "C3"):
+    add(machine, [11700, 23400, 35100, 46800], day=PREV)
+downtime_by_day[PREV] = {(m, SHIFT): dict(clean) for m in ("C1", "C2", "C3")}
+scrap_by_day[PREV] = {(m, SHIFT): 0 for m in ("C1", "C2", "C3")}
+# THU is in SAT's week: C3 reported two shifts with no downtime entered, so
+# the week has one counted C3 shift (DAY's) and two left out.
+THU = date(2026, 9, 10)
+entries_by_date[THU] = []
+add("C3", [11700, 23400, 35100, 46800], day=THU)
+add("C3", [11700, 23400, 35100, 46800], slots=SHIFT_SLOTS["2nd Shift"], day=THU)
+
+print("\n== 7 days (compute_oee_range) ==")
+week = oee.compute_oee_range(SAT, 7, now=NOW_SAT)
+ALL = "All"
 check("window", (week["start"], week["end"], week["days"]), ("2026-09-06", "2026-09-12", 7))
+check("compared with the 7 days before",
+      (week["previous_start"], week["previous_end"]), ("2026-08-30", "2026-09-05"))
 check("every machine is in it", len(week["machines"]), len(MACHINE_IDS))
+check("all shifts plus each one",
+      set(week["floor"]), {ALL, "1st Shift", "2nd Shift", "3rd Shift"})
+
+floor = week["floor"][ALL]
+# DAY: 6 on the 1st Shift, WS2/WS3's night crews, C1's 3rd. SAT: FM1, FM2,
+# FM3 x3. Left out: C4 (bad last reading), C5 and WS4 (no downtime), C6 (no
+# production), C3 x2 on THU (no downtime).
+check("counted machine-shifts", floor["counted"], 14)
+check("left out", floor["left_out"], 6)
+check("not thin", floor["thin"], False)
+good = (46800 + 15750 + 46800 + 59400 + 39600 + 72000   # DAY 1st
+        + 59400 + 59400 + 46800                         # DAY 2nd, 3rd
+        + 24300 + 16200 + 24300 + 24300 + 16200)        # SAT
+check("good is every counted shift's", floor["current"]["good"], good)
+# Everything ran at standard (0.75) except C2's 25.2% on DAY.
+floor_oee = good / ((good - 15750) / 0.75 + 130 * 480)
+check("a week's OEE is total good over total possible", floor["current"]["oee"], floor_oee)
+per_shift = [0.75] * 13 + [15750 / (130 * 480)]
+check("...which is not the average of the shifts' OEE",
+      abs(floor["current"]["oee"] - sum(per_shift) / len(per_shift)) > 0.003, True)
+check("the counts are named shifts, not machines",
+      ("shifts" in floor["current"], "machines" in floor["current"]), (True, False))
+check("C3 has no scrap on DAY, so P and Q cover 13", floor["current"]["split_shifts"], 13)
+check("the three shifts add up to All",
+      sum(week["floor"][s]["current"]["good"] for s in SHIFT_SLOTS), good)
+check("...and so do their counts",
+      sum(week["floor"][s]["counted"] + week["floor"][s]["left_out"] for s in SHIFT_SLOTS), 20)
+check("the previous week: PREV's three shifts",
+      (floor["previous_counted"], floor["previous"]["oee"]), (3, 0.75))
+check("change is this week minus last", floor["change"], floor_oee - 0.75)
+
+print("\n== 7 days, per machine ==")
+c1 = week["machines"]["C1"]
+check("C1 counted its 1st and 3rd on DAY", (c1[ALL]["counted"], c1[ALL]["current"]["good"]),
+      (2, 93600))
+check("C1 at standard all week", c1[ALL]["current"]["oee"], 0.75)
+check("C1's A x P x Q == oee (same shifts have scrap)", c1[ALL]["current"]["oee_from_factors"], 0.75)
+check("unchanged on last week", c1[ALL]["change"], 0.0)
+check("C1's 1st Shift alone", (c1["1st Shift"]["counted"], c1["1st Shift"]["current"]["good"]),
+      (1, 46800))
+check("C1's 2nd Shift: nothing either week, no change", (c1["2nd Shift"]["current"], c1["2nd Shift"]["change"]),
+      (None, None))
+c2 = week["machines"]["C2"][ALL]
+check("C2 fell from 75% to 25.2%", c2["change"], 15750 / (130 * 480) - 0.75)
+check("C2's Top reasons", c2["reasons"],
+      [{"code": "LACK_OPER", "label": "Lack of Operator", "is_planned": False,
+        "minutes": 240, "shifts": 1}])
+
+c3 = week["machines"]["C3"][ALL]
+check("C3: one counted, two left out", (c3["counted"], c3["left_out"]), (1, 2))
+check("so it's thin", c3["thin"], True)
+check("and gets no change, though both weeks have a number",
+      (c3["current"] is not None, c3["previous"] is not None, c3["change"]), (True, True, None))
+check("its left-out shifts, with the date and why", c3["left_out_shifts"], [
+    {"date": "2026-09-10", "shift": "1st Shift", "reasons": ["no_downtime"]},
+    {"date": "2026-09-10", "shift": "2nd Shift", "reasons": ["no_downtime"]},
+])
+check("C3's 2nd Shift view: left out only, no number",
+      (week["machines"]["C3"]["2nd Shift"]["current"], week["machines"]["C3"]["2nd Shift"]["thin"]),
+      (None, True))
+
+check("C4's bad last reading is listed", week["machines"]["C4"][ALL]["left_out_shifts"],
+      [{"date": "2026-09-08", "shift": "1st Shift", "reasons": ["final_reading_low"]}])
+check("C6's downtime with no production is listed", week["machines"]["C6"][ALL]["left_out_shifts"],
+      [{"date": "2026-09-08", "shift": "1st Shift", "reasons": ["no_production"]}])
+check("C6 has no counted reasons", week["machines"]["C6"][ALL]["reasons"], [])
+check("WS4 on the Saturday", [s["date"] for s in week["machines"]["WS4"][ALL]["left_out_shifts"]],
+      ["2026-09-12"])
+check("P3 wasn't scheduled: neither counted nor left out",
+      (week["machines"]["P3"][ALL]["counted"], week["machines"]["P3"][ALL]["left_out"]), (0, 0))
+as1 = week["machines"]["AS1"][ALL]
+check("a machine nobody ran has nothing, and isn't thin",
+      (as1["current"], as1["counted"], as1["left_out"], as1["thin"]), (None, 0, 0, False))
+
+print("\n== 7 days, per zone ==")
+b3 = week["zones"]["b3"][ALL]
+check("b3: C1 x2, C2, C3 counted", b3["counted"], 4)
+check("b3: C3 x2, C4, C5, C6 left out", b3["left_out"], 5)
+check("so b3 is thin this week", b3["thin"], True)
+check("b3 oee is component-summed",
+      b3["current"]["oee"], (93600 + 15750 + 46800) / ((93600 + 46800) / 0.75 + 130 * 480))
+
+print("\n== 7 days, the Pareto ==")
 
 
-def floor_totals(range_payload):
+def pareto_totals(range_payload, key=ALL):
     totals = {}
     for machine in range_payload["machines"].values():
-        for reason in machine["reasons"]:
+        for reason in machine[key]["pareto"]:
             totals[reason["code"]] = totals.get(reason["code"], 0) + reason["minutes"]
     return totals
 
 
 check("reasons summed across days and shifts",
-      floor_totals(week), {"LACK_OPER": 300, "EQUIP_FAIL": 75, "SETUP": 30})
-check("not-scheduled FM1 afternoon's Delivery left out", "DELIVERY" not in floor_totals(week), True)
-check("the absent 3rd Shift's Roll Change left out", "ROLL_CHANGE" not in floor_totals(week), True)
-check("C2's reasons", week["machines"]["C2"]["reasons"],
-      [{"code": "LACK_OPER", "label": "Lack of Operator", "is_planned": False,
-        "minutes": 240, "shifts": 1}])
-check("FM3's Lack of Operator came from its 2nd Shift",
-      [(r["code"], r["minutes"]) for r in week["machines"]["FM3"]["reasons"]], [("LACK_OPER", 60)])
+      pareto_totals(week), {"LACK_OPER": 300, "EQUIP_FAIL": 75, "SETUP": 30})
+check("C6's Equipment Failure is in it despite no OEE", week["machines"]["C6"][ALL]["pareto"][0]["minutes"], 75)
+check("not-scheduled FM1 afternoon's Delivery left out", "DELIVERY" not in pareto_totals(week), True)
+check("the absent 3rd Shift's Roll Change left out", "ROLL_CHANGE" not in pareto_totals(week), True)
+check("per shift: the 2nd Shift has FM3's Lack of Operator only",
+      pareto_totals(week, "2nd Shift"), {"LACK_OPER": 60})
 check("records: 11 on the Tuesday, 5 on the Saturday",
-      sum(m["records"] for m in week["machines"].values()), 16)
-check("ran-clean shifts count as records", week["machines"]["FM3"]["records"], 3)
-check("missing: C5 and WS4 reported production with no downtime",
-      {m: v["missing"] for m, v in week["machines"].items() if v["missing"]}, {"C5": 1, "WS4": 1})
-check("a machine nobody ran isn't missing", week["machines"]["AS1"]["missing"], 0)
+      sum(m[ALL]["downtime_records"] for m in week["machines"].values()), 16)
+check("ran-clean shifts count as records", week["machines"]["FM3"][ALL]["downtime_records"], 3)
+check("missing: production with no downtime",
+      {m: v[ALL]["downtime_missing"] for m, v in week["machines"].items() if v[ALL]["downtime_missing"]},
+      {"C3": 2, "C5": 1, "WS4": 1})
 
-early = oee.compute_pareto_range(SAT, 7, now=datetime(2026, 9, 12, 11, 0))
+early = oee.compute_oee_range(SAT, 7, now=datetime(2026, 9, 12, 11, 0))
 check("a shift still running isn't missing its downtime yet",
-      {m: v["missing"] for m, v in early["machines"].items() if v["missing"]}, {"C5": 1})
+      {m: v[ALL]["downtime_missing"] for m, v in early["machines"].items() if v[ALL]["downtime_missing"]},
+      {"C3": 2, "C5": 1})
+check("...nor left out", early["machines"]["WS4"][ALL]["left_out"], 0)
+check("FM1's 1st Shift counts on its elapsed part",
+      early["machines"]["FM1"][ALL]["current"]["ppt_minutes"], 240)
 
-month = oee.compute_pareto_range(SAT, 30, now=NOW_SAT)
+print("\n== 30 days ==")
+month = oee.compute_oee_range(SAT, 30, now=NOW_SAT)
 check("30 days ends on the same day", (month["start"], month["end"]), ("2026-08-14", "2026-09-12"))
-check("and holds the same data here", floor_totals(month), floor_totals(week))
-check("a window that misses both days is empty",
-      floor_totals(oee.compute_pareto_range(date(2026, 9, 7), 1, now=NOW_SAT)), {})
+check("PREV is inside it now", month["floor"][ALL]["counted"], 17)
+check("nothing in the 30 days before, so no change",
+      (month["floor"][ALL]["previous"], month["floor"][ALL]["change"]), (None, None))
+check("the Pareto holds the same reasons (PREV ran clean)", pareto_totals(month), pareto_totals(week))
+check("a window that misses every day is empty",
+      oee.compute_oee_range(date(2026, 9, 7), 1, now=NOW_SAT)["floor"][ALL]["current"], None)
 json.dumps(week)
 
 print("\n== the one-day readers are the range readers, keyed without the date ==")

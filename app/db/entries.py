@@ -214,22 +214,26 @@ def get_available_production_days() -> list[date_type]:
     return [row[0] for row in rows]
 
 
-def get_reported_slots(
+def get_readings_for_range(
     start: date_type, end: date_type
-) -> set[tuple[str, date_type, str]]:
-    """Every (machine_id, calendar entry_date, time_slot) with at least one
-    entry between `start` and `end` inclusive.
+) -> dict[tuple[str, date_type, str], int]:
+    """Latest units_produced per (machine_id, calendar entry_date, time_slot)
+    for every date from `start` to `end` inclusive.
 
-    Presence only. The 7/30-day Pareto uses it to tell a shift that ran from
-    one nobody worked, so only the first can count as missing its downtime.
+    Newest row wins, as in get_latest_entries_for_date(). One query for the
+    whole range, so the 7/30-day OEE view doesn't open a connection per day.
+    Keyed by the date each reading was filed under, so a production day's
+    night slots are under the date after it.
     """
     with get_pg_connection() as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT machine_id, entry_date, time_slot
+            SELECT DISTINCT ON (machine_id, entry_date, time_slot)
+                machine_id, entry_date, time_slot, units_produced
             FROM entries
             WHERE entry_date BETWEEN %s AND %s
+            ORDER BY machine_id, entry_date, time_slot, created_at DESC
             """,
             (start, end),
         ).fetchall()
-    return {(machine_id, day, slot) for machine_id, day, slot in rows}
+    return {(machine_id, day, slot): units for machine_id, day, slot, units in rows}

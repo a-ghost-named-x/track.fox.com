@@ -165,9 +165,13 @@ SLOT_POSITIONS: dict[str, tuple[str, int]] = {
 
 OEE_ZONE_ORDER: list[str] = SUPERVISOR_ZONE_ORDER
 
-# Longer periods the /oee downtime Pareto can show besides one shift: rolling
-# windows ending on (and including) the selected date, all shifts combined.
-PARETO_RANGE_DAYS: list[int] = [7, 30]
+# Longer periods /oee can show besides one shift: rolling windows ending on
+# (and including) the selected date, each compared with the window before it.
+OEE_PERIOD_DAYS: list[int] = [7, 30]
+
+# /oee's option for all three shifts added together over a 7/30-day period.
+# Like ALL_DAY_LABEL, it isn't a shift and is never stored.
+ALL_SHIFTS_LABEL: str = "All"
 
 
 # ---------------------------------------------------------------------------

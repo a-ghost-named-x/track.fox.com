@@ -13,7 +13,8 @@
     </p>
 
     {# Same controls as /supervisor, minus "All Day": each shift has its own
-       planned time, downtime and crew. #}
+       planned time, downtime and crew. Over 7 or 30 days the date is the
+       period's last day, and "All" adds the three shifts together. #}
     <div class="supervisor-controls">
         <div class="control-group">
             <label class="control-label" for="review-date">Date</label>
@@ -26,13 +27,31 @@
         </div>
 
         <div class="control-group">
+            <span class="control-label">Period</span>
+            <div class="shift-toggle" id="period-toggle">
+                <button type="button" class="shift-option" data-period="shift">This shift</button>
+                {% for days in period_days %}
+                <button type="button" class="shift-option" data-period="{{ days }}">{{ days }} days</button>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="control-group">
             <span class="control-label">Shift</span>
             <div class="shift-toggle" id="shift-toggle">
+                <button type="button" class="shift-option" data-shift="{{ all_shifts_label }}" hidden>{{ all_shifts_label }}</button>
                 {% for label in shift_order %}
                 <button type="button" class="shift-option" data-shift="{{ label }}">{{ label.split(' ')[0] }}</button>
                 {% endfor %}
             </div>
         </div>
+    </div>
+
+    {# The floor's OEE over 7 or 30 days, compared with the period before. #}
+    <div class="floor-total" id="floor-total" hidden>
+        <span class="control-label">Floor</span>
+        <span class="floor-total-oee" id="floor-total-oee"></span>
+        <span class="floor-total-detail" id="floor-total-detail"></span>
     </div>
 
     {# Completeness per column, since production and OEE data are entered at
@@ -115,19 +134,8 @@
 
         {# Which machines feed the Pareto: the whole floor, a zone, or
            individual machines. The chips are shortcuts for the checkbox list.
-           Summed in the browser by rankReasons() in oee.js. #}
-        {# The Pareto's period: this shift, or the 7/30 days ending on the
-           selected date, all shifts combined. #}
-        <div class="pareto-picker pareto-period" id="pareto-period">
-            <span class="control-label">Period</span>
-            <div class="pareto-chips">
-                <button type="button" class="quick-pick period-chip" data-period="shift">This shift</button>
-                {% for days in pareto_range_days %}
-                <button type="button" class="quick-pick period-chip" data-period="{{ days }}">{{ days }} days</button>
-                {% endfor %}
-            </div>
-        </div>
-
+           Summed in the browser by rankReasons() in oee.js. The period and
+           shift come from the controls at the top. #}
         <div class="pareto-picker" id="pareto-picker">
             <span class="control-label">Machines</span>
             <div class="pareto-chips">
@@ -170,9 +178,11 @@
     window.STANDARD_PCT_OF_IDEAL = {{ standard_pct_of_ideal|tojson }};
     window.INITIAL_DATE = {{ requested_date|tojson }};
     window.INITIAL_SHIFT = {{ requested_shift|tojson }};
+    window.DEFAULT_SHIFT = {{ default_shift|tojson }};
     window.INITIAL_PARETO = {{ requested_pareto|tojson }};
     window.INITIAL_PERIOD = {{ requested_period|tojson }};
-    window.PARETO_RANGE_DAYS = {{ pareto_range_days|tojson }};
+    window.PERIOD_DAYS = {{ period_days|tojson }};
+    window.ALL_SHIFTS_LABEL = {{ all_shifts_label|tojson }};
     window.SHORT_PATTERN_HOURS = {{ short_pattern_hours|tojson }};
     window.ZONES = {{ zones|tojson }};
 </script>

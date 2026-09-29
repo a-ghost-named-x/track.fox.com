@@ -13,8 +13,9 @@ A shift is 480 minutes however the readings fell (600 or 720 for a 10 or
 12-hour shift, 60 per scheduled hour on a short day). Per-slot production is
 still in the payload for the Good column's tooltip.
 
-The Pareto can also show the last 7 or 30 production days ending on the
-selected date, all shifts combined (/api/oee-pareto).
+The whole page, grid and Pareto, can also show the last 7 or 30 production
+days ending on the selected date, compared with the 7 or 30 before them, for
+all shifts together or one at a time (/api/oee-range).
 
 Read-only. All OEE inputs are written on /console/oee.
 """
@@ -26,12 +27,13 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.db.entries import get_available_production_days
-from app.db.oee import compute_oee_report, compute_pareto_range
+from app.db.oee import compute_oee_range, compute_oee_report
 from app.models import (
+    ALL_SHIFTS_LABEL,
     DASHBOARD_ZONE_LABELS,
     DASHBOARD_ZONES,
+    OEE_PERIOD_DAYS,
     OEE_ZONE_ORDER,
-    PARETO_RANGE_DAYS,
     SHIFT_ORDER,
     SHORT_PATTERN_HOURS,
     STANDARD_PCT_OF_IDEAL,
@@ -70,13 +72,13 @@ def _parse_date(raw: str | None) -> date_type | None:
 
 
 def _parse_period(raw: str | None) -> int | None:
-    """The Pareto's period: one of PARETO_RANGE_DAYS, or None for the
-    selected shift (also used for anything unrecognised)."""
+    """The page's period: one of OEE_PERIOD_DAYS, or None for one shift (also
+    used for anything unrecognised)."""
     try:
         days = int(raw) if raw else None
     except ValueError:
         return None
-    return days if days in PARETO_RANGE_DAYS else None
+    return days if days in OEE_PERIOD_DAYS else None
 
 
 @router.get("/oee", response_class=HTMLResponse)
@@ -91,14 +93,25 @@ def oee_page(
 
     Query params (all optional, kept in sync by oee.js so a view can be
     bookmarked):
-      date   - production day; its 3rd Shift starts at 10PM that day
-      shift  - which shift to show
+      date   - production day; its 3rd Shift starts at 10PM that day. Over 7
+               or 30 days, the last day of the period.
+      shift  - which shift to show, or "All" over 7 or 30 days (the default
+               there)
       pareto - comma-separated machine ids for the Pareto; absent = whole floor
-      period - 7 or 30 for the Pareto's rolling window; absent = this shift
+      period - 7 or 30 for a rolling window; absent = one shift
 
-    There's no "All Day" option: each shift has its own planned time, downtime
-    and crew, and one number across all three would hide the differences.
+    One shift has no "All" option: each shift has its own planned time,
+    downtime and crew, and one number across a single day's three would hide
+    the differences. Over a period, All is shown with each shift's OEE beside
+    it for the same reason.
     """
+    days = _parse_period(period)
+    default_shift = resolve_shift(None, datetime.now())
+    if days and shift in (None, ALL_SHIFTS_LABEL):
+        requested_shift = ALL_SHIFTS_LABEL
+    else:
+        requested_shift = resolve_shift(shift, datetime.now())
+
     return templates.TemplateResponse(
         request=request,
         name="oee.html",
@@ -109,10 +122,13 @@ def oee_page(
             # standard).
             "standard_pct_of_ideal": STANDARD_PCT_OF_IDEAL,
             "requested_date": date or "",
-            "requested_shift": resolve_shift(shift, datetime.now()),
+            "requested_shift": requested_shift,
+            # The single shift to show when leaving a period opened on All.
+            "default_shift": default_shift,
             "requested_pareto": pareto or "",
-            "requested_period": _parse_period(period),
-            "pareto_range_days": PARETO_RANGE_DAYS,
+            "requested_period": days,
+            "period_days": OEE_PERIOD_DAYS,
+            "all_shifts_label": ALL_SHIFTS_LABEL,
             "short_pattern_hours": SHORT_PATTERN_HOURS,
         },
     )
@@ -139,17 +155,19 @@ def oee_data(date: str | None = None):
     return report
 
 
-@router.get("/api/oee-pareto")
-def oee_pareto(end: str | None = None, days: str | None = None):
-    """Downtime by reason, per machine, over the `days` production days
-    ending on `end` (the Pareto's 7 and 30-day views), all shifts combined.
+@router.get("/api/oee-range")
+def oee_range(end: str | None = None, days: str | None = None):
+    """OEE over the `days` production days ending on `end`, and the `days`
+    before them, for the page's 7 and 30-day views. Per machine, per zone and
+    for the floor, all shifts together and each shift, plus each machine's
+    Pareto reasons.
 
     A missing or invalid `end` means the latest production day with data; an
     unrecognised `days` means the shortest period.
     """
-    period = _parse_period(days) or PARETO_RANGE_DAYS[0]
+    period = _parse_period(days) or OEE_PERIOD_DAYS[0]
     end_day = _parse_date(end)
     if end_day is None:
         available = get_available_production_days()
         end_day = available[0] if available else datetime.now().date()
-    return compute_pareto_range(end_day, period)
+    return compute_oee_range(end_day, period)

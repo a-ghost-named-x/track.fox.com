@@ -152,11 +152,24 @@ That's why hitting standard = 75%: 46,800 ÷ 62,400 = 75%.
 - One wrinkle you don't need to worry about but might notice: for a *group* of machines, Availability is weighted by each machine's capacity, not just clock minutes. A minute of downtime on a Leno machine (1,680/hr) costs the floor a lot less than a minute on a Combo line (7,800/hr), and the rollup accounts for that. For a single machine it makes no difference.
 - If some machines have scrap entered and some don't, OEE and Availability count all of them, but Performance and Quality only count the ones with scrap. The hover text says how many.
 
+### A week or a month
+
+The **Period** control at the top switches the whole page, table and chart, from one shift to **7 days** or **30 days**: the week or month ending on the date in the date box. Pick an older date and you get the week that ended then.
+
+- **A row is now "this machine over the period."** Its OEE is worked out the same way as the zone totals: every counted shift's good units added up, divided by what the machine could have made in all that scheduled time. It is **not the average of each day's percentage**, so a 4-hour Saturday counts for less than a 12-hour shift, as it should.
+- **Shift:** *All* (the default) adds the three shifts together, with each shift's OEE in small print underneath (`1st 61 · 2nd 57 · 3rd 49`) so crews can be compared at a glance. Pick 1st, 2nd or 3rd to see just that shift across the period.
+- **The arrow** (`▲3.1`) is the change in percentage points from the period before: this week against last week, this month against last month. Hover it for the earlier number. It's left off when either period doesn't have enough counted shifts to be fair (see below), or when there's no earlier data yet.
+- **The floor total** at the top is the whole floor added up the same way, for the number to take to a meeting.
+- **"19/21 shifts"** under the machine name is how many of its shifts made it into the number. A shift is **left out** when it has something entered but can't be scored: production with no downtime, downtime with no production, or one of the problems that shows "!" on a single shift. Hover the count for the dates and reasons; the banner at the top sums them up. A shift with nothing entered at all didn't run and isn't counted either way.
+- Left-out shifts are counted and shown rather than dropped silently, because they tend to be the bad ones (that's often why nobody finished entering them). **If fewer than half a machine's shifts were counted, its number gets the dashed "worth a look" outline**, and the same goes for a zone or the floor.
+- Good and Scrap are totals for the period, Downtime is in hours, and Top reasons covers the whole period. They all come from the counted shifts, so the row adds up.
+
 ### The downtime chart (Pareto)
 
 - Every downtime reason entered across the shift, added up by reason, biggest bar first, with each one's share of the total.
-- **Period:** *This shift* (the one picked at the top of the page), or **7 days** / **30 days** — the week or month ending on the date in the date box, all three shifts added together. Pick an older date and you get the week that ended then. Only the chart has these; the OEE table above it stays one shift.
+- **Period and shift** follow the controls at the top. Over 7 or 30 days the chart adds up every shift in the period, or only the picked shift's.
 - Over a week or a month, a line under the bars says how many machine-shifts the chart is built from, and how many shifts reported production but never had their downtime entered. Those shifts' losses can't be in the bars, so a month with a lot of them looks better than it was — the line turns amber to say so.
+- Unlike the table, the chart includes downtime from shifts that were left out of OEE. Twenty minutes waiting on material is a real 20 minutes even if that shift's production was never entered.
 - **Machines:** the whole floor, one zone, or any machines you tick. Works the same for every period.
 - The thirteen reasons match the floor's paper downtime form, in its order: Roll Change, Setup, Cleaning (rods, knife, etc.), Equipment Failure, Temperature Adjustment, Delivery, Air Jets Adjustment, Silicon Adjustment, Wicket Hole Adjustment, Registration, Def Material or Misprint, Lack of Material, Lack of Operator. There's deliberately no "Other".
 - When the paper form changes, the list here changes with it, but a shift always keeps the reasons it was entered with. Older shifts can show reasons that are no longer on the list, such as FAAR, Start of Shift or "Operator Adjustments - Timing". A reason that was only reworded counts as a new one, so a 7 or 30 day chart that spans the change can show the old and new wording as two bars. If you open an older shift on the entry form, its old reasons are still listed on the machines that had them, tagged "retired", so a correction doesn't lose their minutes.

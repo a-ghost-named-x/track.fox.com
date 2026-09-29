@@ -2,13 +2,15 @@
  * /oee: Overall Equipment Effectiveness by machine and shift.
  *
  * Fetches a whole production day (all three shifts) from /api/oee-data and
- * switches shifts in the browser. Doesn't poll.
+ * switches shifts in the browser. The 7 and 30-day periods come from
+ * /api/oee-range, fetched once per date and period. Doesn't poll.
  *
  * A missing value renders as "—", never as zero or 100%. The server returns
  * null for anything it can't compute.
  */
 
 const SHIFT_ORDER = window.SHIFT_ORDER;
+const ALL_SHIFTS = window.ALL_SHIFTS_LABEL || "All";
 
 // Standards are 75% of theoretical max, so 0.75 means "hit target exactly".
 // The colour bands are derived from it.
@@ -61,6 +63,24 @@ const WARNING_LABELS = {
     },
 };
 
+/**
+ * Why a machine-shift was left out of a 7/30-day number: what's missing, or
+ * one of the hard flags above.
+ */
+const LEFT_OUT_LABELS = {
+    no_downtime: {
+        title: "No downtime entered",
+        detail: "Production was reported but the shift's downtime wasn't. Enter it on " +
+            "/console/oee, ticking \"no downtime\" if the machine ran clean.",
+    },
+    no_production: {
+        title: "No production entered",
+        detail: "Downtime was entered but the shift has no production readings. Check " +
+            "that shift's rounds at /console.",
+    },
+    ...FLAG_LABELS,
+};
+
 /** Short one-line form, for tooltips on an individual cell. */
 function describeCode(code, table) {
     const entry = table[code];
@@ -70,7 +90,11 @@ function describeCode(code, table) {
 
 const dateInput = document.getElementById("review-date");
 const quickPicksEl = document.getElementById("quick-picks");
+const periodToggle = document.getElementById("period-toggle");
 const shiftToggle = document.getElementById("shift-toggle");
+const floorTotal = document.getElementById("floor-total");
+const floorTotalOee = document.getElementById("floor-total-oee");
+const floorTotalDetail = document.getElementById("floor-total-detail");
 const completenessEl = document.getElementById("completeness");
 const completenessNote = document.getElementById("completeness-note");
 const flagsBanner = document.getElementById("quality-flags");
@@ -81,7 +105,6 @@ const paretoEl = document.getElementById("pareto");
 const paretoTotal = document.getElementById("pareto-total");
 const paretoScope = document.getElementById("pareto-scope");
 const paretoPicker = document.getElementById("pareto-picker");
-const paretoPeriodPicker = document.getElementById("pareto-period");
 const paretoEmpty = document.getElementById("pareto-empty");
 const paretoCoverage = document.getElementById("pareto-coverage");
 const loadedAt = document.getElementById("loaded-at");
@@ -103,13 +126,11 @@ let paretoSelection = (() => {
 })();
 
 /**
- * The Pareto's period: "shift" (the selected shift) or a number of days
- * ending on the page's date, all shifts, from /api/oee-pareto.
+ * The page's period: "shift" (one shift of the selected day) or a number of
+ * days ending on it, from /api/oee-range. Drives the grid and the Pareto.
  */
-const PARETO_RANGE_DAYS = window.PARETO_RANGE_DAYS || [7, 30];
-let paretoPeriod = PARETO_RANGE_DAYS.includes(window.INITIAL_PERIOD)
-    ? window.INITIAL_PERIOD
-    : "shift";
+const PERIOD_DAYS = window.PERIOD_DAYS || [7, 30];
+let period = PERIOD_DAYS.includes(window.INITIAL_PERIOD) ? window.INITIAL_PERIOD : "shift";
 
 /**
  * 7/30-day payloads keyed by "date|days", kept for the visit. A pending
@@ -118,9 +139,22 @@ let paretoPeriod = PARETO_RANGE_DAYS.includes(window.INITIAL_PERIOD)
 const rangeCache = new Map();
 
 let payload = null;
-let currentShift = SHIFT_ORDER.includes(window.INITIAL_SHIFT)
+
+// The shift "This shift" shows. Over 7/30 days `rangeShift` is shown instead,
+// which can also be All; picking a single shift there sets both.
+let currentShift = [window.INITIAL_SHIFT, window.DEFAULT_SHIFT]
+    .find((label) => SHIFT_ORDER.includes(label)) || SHIFT_ORDER[0];
+let rangeShift = period !== "shift" && SHIFT_ORDER.includes(window.INITIAL_SHIFT)
     ? window.INITIAL_SHIFT
-    : SHIFT_ORDER[0];
+    : ALL_SHIFTS;
+
+function isRange() {
+    return period !== "shift";
+}
+
+function shownShift() {
+    return isRange() ? rangeShift : currentShift;
+}
 
 /**
  * Parses "2026-09-01" into a local-midnight Date. `new Date(iso)` would give
@@ -159,6 +193,80 @@ function count(value) {
     return value.toLocaleString("en-US");
 }
 
+/** Minutes as hours, for downtime over 7/30 days: "46 h", "2.5 h". */
+function hoursText(minutes, unit = " h") {
+    if (!minutes) return "0";
+    const hours = minutes / 60;
+    return `${hours.toFixed(hours < 10 ? 1 : 0)}${unit}`;
+}
+
+/** "Tue 9/22 – Mon 9/28, all shifts", or "..., 2nd Shift". */
+function periodPhrase(range) {
+    const when = `${formatQuickPick(range.start)} – ${formatQuickPick(range.end)}`;
+    return rangeShift === ALL_SHIFTS ? `${when}, all shifts` : `${when}, ${shortShift(rangeShift)} Shift`;
+}
+
+/**
+ * The "▲3.1" beside a 7/30-day OEE: the change in percentage points from the
+ * period before, or null when the server says the two can't be compared.
+ */
+function changeBadge(group) {
+    if (group.change === null || group.change === undefined) return null;
+    const points = Math.round(group.change * 1000) / 10;
+    const badge = document.createElement("span");
+    badge.className = "oee-change";
+    if (points > 0) {
+        badge.dataset.dir = "up";
+        badge.textContent = `▲${points.toFixed(1)}`;
+    } else if (points < 0) {
+        badge.dataset.dir = "down";
+        badge.textContent = `▼${Math.abs(points).toFixed(1)}`;
+    } else {
+        badge.dataset.dir = "flat";
+        badge.textContent = "±0.0";
+    }
+    return badge;
+}
+
+/** Tooltip line explaining the change, or why there isn't one. */
+function changeTitle(group, range) {
+    const days = range.days;
+    const before = `the previous ${days} days (${formatQuickPick(range.previous_start)} – ` +
+        `${formatQuickPick(range.previous_end)})`;
+    if (group.change !== null && group.change !== undefined) {
+        const points = Math.abs(group.change * 100).toFixed(1);
+        const dir = group.change > 0 ? "up" : group.change < 0 ? "down" : "unchanged,";
+        return `${pct(group.previous.oee)} over ${before}, so ${dir} ${points} points.`;
+    }
+    if (!group.previous) return `Nothing counted in ${before} to compare with.`;
+    if (group.thin) return "Not compared with the period before: fewer than half this period's shifts counted.";
+    const total = group.previous_counted + group.previous_left_out;
+    return `Not compared: ${before} had only ${group.previous_counted} of ${total} shifts ` +
+        `counted, so its ${pct(group.previous.oee)} isn't a fair comparison.`;
+}
+
+/** "1st 61 · 2nd 57 · 3rd —": each shift's OEE, shown under All. */
+function byShiftLine(byKey) {
+    const line = document.createElement("span");
+    line.className = "oee-by-shift";
+    line.textContent = SHIFT_ORDER.map((label) => {
+        const current = byKey[label] && byKey[label].current;
+        const value = current && current.oee !== null ? Math.round(current.oee * 100) : "—";
+        return `${shortShift(label)} ${value}`;
+    }).join(" · ");
+    return line;
+}
+
+/** Tooltip lines for the by-shift figures, with how many shifts each covers. */
+function byShiftTitle(byKey) {
+    return SHIFT_ORDER.map((label) => {
+        const group = byKey[label];
+        if (!group || !group.current) return `   ${shortShift(label)}: nothing counted`;
+        return `   ${shortShift(label)}: ${pct(group.current.oee)} over ${group.counted} ` +
+            `shift${group.counted === 1 ? "" : "s"}`;
+    }).join("\n");
+}
+
 /**
  * Which colour band an OEE value falls in, or null (no colour) when unknown.
  * Missing data shouldn't look like a bad score.
@@ -183,11 +291,11 @@ function setBand(el, value) {
 
 function syncUrl() {
     if (!payload) return;
-    let url = `/oee?date=${encodeURIComponent(payload.date)}&shift=${encodeURIComponent(currentShift)}`;
+    let url = `/oee?date=${encodeURIComponent(payload.date)}&shift=${encodeURIComponent(shownShift())}`;
     if (!isWholeFloor()) {
         url += `&pareto=${encodeURIComponent(ALL_MACHINE_IDS.filter((id) => paretoSelection.has(id)).join(","))}`;
     }
-    if (paretoPeriod !== "shift") url += `&period=${paretoPeriod}`;
+    if (isRange()) url += `&period=${period}`;
     window.history.replaceState(null, "", url);
 }
 
@@ -233,11 +341,14 @@ function checkpointTitle(machine) {
     return lines.join("\n");
 }
 
-/** "Lack of Operator 240 · Setup 30", longest first, capped so the cell fits. */
-function reasonSummary(reasons, maxShown) {
+/**
+ * "Lack of Operator 240 · Setup 30", longest first, capped so the cell fits.
+ * `format` turns minutes into the cell's unit.
+ */
+function reasonSummary(reasons, maxShown, format = (minutes) => minutes) {
     if (!reasons || !reasons.length) return "—";
     const shown = reasons.slice(0, maxShown)
-        .map((r) => `${r.label} ${r.minutes}`)
+        .map((r) => `${r.label} ${format(r.minutes)}`)
         .join(" · ");
     const hidden = reasons.length - Math.min(reasons.length, maxShown);
     return hidden ? `${shown} +${hidden}` : shown;
@@ -252,6 +363,8 @@ function clearGrid() {
     });
     document.querySelectorAll(".oee-grid tr[data-machine]").forEach((row) => {
         row.removeAttribute("data-unscheduled");
+        const machineCell = row.querySelector(".machine-col");
+        if (machineCell) machineCell.removeAttribute("title");
         const operator = row.querySelector(".operator");
         if (operator) operator.textContent = "";
         const length = row.querySelector(".shift-length");
@@ -263,6 +376,9 @@ function clearGrid() {
     });
     document.querySelectorAll("[data-rollup]").forEach((el) => {
         el.textContent = "";
+        el.removeAttribute("data-band");
+        el.removeAttribute("data-warned");
+        el.removeAttribute("title");
     });
 }
 
@@ -427,6 +543,232 @@ function fillZoneRollup(section, shiftData) {
             ? ""
             : `; only ${rollup.split_machines} have complete scrap, so Performance ` +
               "and Quality cover just those");
+}
+
+// ---------------------------------------------------------------------------
+// 7 and 30 days. Every number comes from compute_oee_range() on the server;
+// nothing is re-added here, for the same reason as fillZoneRollup().
+// ---------------------------------------------------------------------------
+
+/** How many shifts a 7/30-day figure is built from, and which were left out. */
+function countedTitle(group, range) {
+    const total = group.counted + group.left_out;
+    const lines = [`${group.counted} of ${total} shift${total === 1 ? "" : "s"} counted for OEE, ` +
+        `${periodPhrase(range)}.`];
+    const leftOut = group.left_out_shifts || [];
+    if (leftOut.length) {
+        lines.push("Left out:");
+        const shown = 15;
+        for (const item of leftOut.slice(0, shown)) {
+            const why = item.reasons.map((code) => (LEFT_OUT_LABELS[code] || { title: code }).title);
+            lines.push(`   ${formatQuickPick(item.date)} ${shortShift(item.shift)}: ${why.join("; ")}`);
+        }
+        if (leftOut.length > shown) lines.push(`   …and ${leftOut.length - shown} more`);
+    }
+    return lines.join("\n");
+}
+
+/** Performance and Quality need scrap, so they may cover fewer shifts. */
+function splitTitle(current) {
+    if (!current.split_shifts) return "Needs scrap to separate Performance from Quality";
+    if (current.split_shifts === current.shifts) return "";
+    return `From the ${current.split_shifts} of ${current.shifts} counted shifts with scrap entered`;
+}
+
+function fillRangeRow(row, byKey, range) {
+    const group = byKey[rangeShift];
+    const set = (field, text, title) => {
+        const cell = row.querySelector(`[data-field="${field}"]`);
+        if (!cell) return cell;
+        cell.textContent = text;
+        if (title) cell.title = title;
+        return cell;
+    };
+
+    const total = group.counted + group.left_out;
+    const operator = row.querySelector(".operator");
+    if (!total) {
+        // Nothing entered all period: didn't run, or wasn't scheduled.
+        row.setAttribute("data-unscheduled", "");
+        if (operator) operator.textContent = "no shifts";
+        set("oee", "—", `Nothing entered for this machine, ${periodPhrase(range)}.`);
+        return;
+    }
+    if (operator) operator.textContent = `${group.counted}/${total} shifts`;
+    row.querySelector(".machine-col").title = countedTitle(group, range);
+
+    const current = group.current;
+    if (!current) {
+        const cell = set("oee", "!", countedTitle(group, range));
+        cell.setAttribute("data-band", "poor");
+        return;
+    }
+
+    const cell = set("oee", pct(current.oee));
+    setBand(cell, current.oee);
+    const change = changeBadge(group);
+    if (change) cell.appendChild(change);
+    if (rangeShift === ALL_SHIFTS) cell.appendChild(byShiftLine(byKey));
+    const title = [
+        `${pct(current.oee)} OEE over ${group.counted} counted shift${group.counted === 1 ? "" : "s"}, ` +
+        `${periodPhrase(range)}.`,
+        changeTitle(group, range),
+    ];
+    if (group.thin) {
+        cell.setAttribute("data-warned", "");
+        title.push("Fewer than half this machine's shifts counted, so this number may not " +
+            "represent the period. Hover the machine name for the ones left out.");
+    }
+    if (rangeShift === ALL_SHIFTS) title.push("By shift:", byShiftTitle(byKey));
+    cell.title = title.join("\n");
+
+    set("availability", pct(current.availability),
+        `Ran ${count(Math.round(current.run_minutes))} of ${count(Math.round(current.ppt_minutes))} ` +
+        "scheduled minutes");
+    set("performance", pct(current.performance), splitTitle(current));
+    set("quality", pct(current.quality), splitTitle(current));
+    set("good", count(current.good), `Good units over ${current.shifts} counted shifts`);
+    set("scrap", count(current.scrap), splitTitle(current));
+
+    const planned = current.planned_minutes;
+    const unplanned = current.unplanned_minutes;
+    set("downtime", planned ? `${hoursText(unplanned)} + ${hoursText(planned)} planned` : hoursText(unplanned),
+        `${count(unplanned)} min unplanned` + (planned ? `, ${count(planned)} min planned` : "") +
+        ` over ${current.shifts} counted shifts`);
+    const reasons = group.reasons || [];
+    set("reasons", reasonSummary(reasons, 2, (minutes) => hoursText(minutes, "h")),
+        reasons.map((r) => `${r.label}: ${count(r.minutes)} min on ${r.shifts} ` +
+            `shift${r.shifts === 1 ? "" : "s"}`).join("\n"));
+}
+
+/** A zone's badge over 7/30 days, with its change and (under All) each shift. */
+function fillRangeZone(section, range) {
+    const target = section.querySelector("[data-rollup]");
+    if (!target) return;
+    const byKey = (range.zones || {})[section.dataset.zone];
+    const group = byKey && byKey[rangeShift];
+    if (!group || !group.current) {
+        target.textContent = group && group.left_out
+            ? "no OEE: every shift left out"
+            : "no OEE: nothing counted in this period";
+        return;
+    }
+
+    const current = group.current;
+    target.textContent = [
+        `OEE ${pct(current.oee)}`,
+        `A ${pct(current.availability, 0)}`,
+        `P ${pct(current.performance, 0)}`,
+        `Q ${pct(current.quality, 1)}`,
+    ].join(" · ");
+    const change = changeBadge(group);
+    if (change) target.appendChild(change);
+    if (rangeShift === ALL_SHIFTS) target.appendChild(byShiftLine(byKey));
+    target.setAttribute("data-band", bandFor(current.oee) || "unknown");
+
+    const total = group.counted + group.left_out;
+    const title = [`${group.counted} of ${total} machine-shifts counted, ${periodPhrase(range)}.`,
+        changeTitle(group, range)];
+    if (group.thin) {
+        target.setAttribute("data-warned", "");
+        title.push("Fewer than half this zone's shifts counted, so this number may not represent the period.");
+    }
+    if (current.split_shifts !== current.shifts) {
+        title.push(`Performance and Quality cover the ${current.split_shifts} shifts with scrap entered.`);
+    }
+    if (rangeShift === ALL_SHIFTS) title.push("By shift:", byShiftTitle(byKey));
+    target.title = title.join("\n");
+}
+
+/** The floor's headline over 7/30 days, in place of the one-shift completeness bar. */
+function renderFloorTotal(range) {
+    floorTotal.hidden = false;
+    floorTotalOee.textContent = "";
+    floorTotalDetail.textContent = "";
+    floorTotalOee.removeAttribute("data-band");
+    floorTotal.removeAttribute("data-warned");
+
+    if (range === null || range === "error") {
+        floorTotalDetail.textContent = range === null
+            ? `Loading the last ${period} days…`
+            : "Couldn't load that period. Check the connection and pick it again.";
+        floorTotal.title = "";
+        return;
+    }
+
+    const byKey = range.floor;
+    const group = byKey[rangeShift];
+    const total = group.counted + group.left_out;
+    if (!group.current) {
+        floorTotalDetail.textContent = `No OEE, ${periodPhrase(range)}.`;
+        floorTotal.title = "";
+        return;
+    }
+
+    const current = group.current;
+    floorTotalOee.textContent = `OEE ${pct(current.oee)}`;
+    setBand(floorTotalOee, current.oee);
+    const change = changeBadge(group);
+    if (change) floorTotalOee.appendChild(change);
+
+    floorTotalDetail.textContent = [
+        `A ${pct(current.availability, 0)}`,
+        `P ${pct(current.performance, 0)}`,
+        `Q ${pct(current.quality, 1)}`,
+        `${count(group.counted)} of ${count(total)} machine-shifts counted`,
+        periodPhrase(range),
+    ].join(" · ");
+    if (rangeShift === ALL_SHIFTS) floorTotalDetail.appendChild(byShiftLine(byKey));
+
+    const title = [
+        "Every counted machine-shift added together: total good units over the units " +
+        "their scheduled time could have made. Not an average of percentages.",
+        changeTitle(group, range),
+    ];
+    if (group.thin) {
+        floorTotal.setAttribute("data-warned", "");
+        title.push("Fewer than half the floor's shifts counted, so this number may not represent the period.");
+    }
+    if (rangeShift === ALL_SHIFTS) title.push("By shift:", byShiftTitle(byKey));
+    floorTotal.title = title.join("\n");
+}
+
+/**
+ * The banner over 7/30 days: left-out machine-shifts grouped by reason, with
+ * how many each machine had. Dates are on each machine's tooltip.
+ */
+function renderLeftOut(range) {
+    flagsBanner.textContent = "";
+    const groups = new Map();
+    let shifts = 0;
+    for (const machineId of ALL_MACHINE_IDS) {
+        const group = range.machines[machineId] && range.machines[machineId][rangeShift];
+        for (const item of (group && group.left_out_shifts) || []) {
+            shifts += 1;
+            for (const code of item.reasons) {
+                if (!groups.has(code)) groups.set(code, new Map());
+                const byMachine = groups.get(code);
+                byMachine.set(machineId, (byMachine.get(machineId) || 0) + 1);
+            }
+        }
+    }
+    if (!shifts) {
+        flagsBanner.hidden = true;
+        return;
+    }
+    flagsBanner.hidden = false;
+
+    const lead = document.createElement("div");
+    lead.className = "flag-lead";
+    lead.textContent = `${count(shifts)} machine-shift${shifts === 1 ? "" : "s"} left out of this ` +
+        "period's OEE. Hover a machine's shift count for the dates.";
+    flagsBanner.appendChild(lead);
+
+    const listed = new Map();
+    for (const [code, byMachine] of groups) {
+        listed.set(code, Array.from(byMachine, ([id, n]) => (n > 1 ? `${id} ×${n}` : id)));
+    }
+    appendFlagGroup(flagsBanner, listed, LEFT_OUT_LABELS);
 }
 
 function renderCompleteness(shiftData) {
@@ -615,9 +957,6 @@ function syncParetoPicker() {
             })();
         chip.classList.toggle("is-active", active);
     });
-    paretoPeriodPicker.querySelectorAll(".period-chip").forEach((chip) => {
-        chip.classList.toggle("is-active", chip.dataset.period === String(paretoPeriod));
-    });
 }
 
 /**
@@ -636,7 +975,7 @@ function rangeFor(date, days) {
     if (cached) return cached;
 
     rangeCache.set(key, "loading");
-    fetch(`/api/oee-pareto?end=${encodeURIComponent(date)}&days=${days}`)
+    fetch(`/api/oee-range?end=${encodeURIComponent(date)}&days=${days}`)
         .then((res) => {
             if (!res.ok) throw new Error(`Request failed: ${res.status}`);
             return res.json();
@@ -644,11 +983,11 @@ function rangeFor(date, days) {
         .then((data) => rangeCache.set(key, data))
         .catch((err) => {
             rangeCache.set(key, "error");
-            console.error("Pareto range load failed:", err);
+            console.error("OEE range load failed:", err);
         })
         .finally(() => {
             // Only if the page still wants this range.
-            if (payload && payload.date === date && paretoPeriod === days) renderPareto();
+            if (payload && payload.date === date && period === days) render();
         });
     return null;
 }
@@ -662,8 +1001,8 @@ function renderCoverage(range) {
     let missing = 0;
     for (const [machineId, machine] of Object.entries(range.machines)) {
         if (!paretoSelection.has(machineId)) continue;
-        records += machine.records;
-        missing += machine.missing;
+        records += machine[rangeShift].downtime_records;
+        missing += machine[rangeShift].downtime_missing;
     }
     paretoCoverage.textContent =
         `Built from ${count(records)} machine-shift${records === 1 ? "" : "s"} with downtime entered` +
@@ -697,7 +1036,7 @@ function renderPareto() {
     let items;
     let when;
     let unit;
-    if (paretoPeriod === "shift") {
+    if (!isRange()) {
         const shiftData = payload.shifts[currentShift] || { machines: {} };
         // Same rules as _build_pareto(): skip unscheduled machines.
         items = rankReasons(
@@ -708,12 +1047,12 @@ function renderPareto() {
         when = `${shortShift(currentShift)} Shift, ${formatQuickPick(payload.date)}`;
         unit = "machine";
     } else {
-        const range = rangeFor(payload.date, paretoPeriod);
-        paretoScope.textContent = `${paretoScopeLabel()} · last ${paretoPeriod} days`;
+        const range = rangeFor(payload.date, period);
+        paretoScope.textContent = `${paretoScopeLabel()} · last ${period} days`;
         if (range === null || range === "error") {
             paretoTotal.textContent = "";
             paretoEmpty.textContent = range === null
-                ? `Loading the last ${paretoPeriod} days…`
+                ? `Loading the last ${period} days…`
                 : "Couldn't load that period. Check the connection and pick it again.";
             paretoEmpty.hidden = false;
             return;
@@ -721,9 +1060,9 @@ function renderPareto() {
         items = rankReasons(
             Object.entries(range.machines)
                 .filter(([machineId]) => paretoSelection.has(machineId))
-                .map(([, machine]) => machine.reasons)
+                .map(([, machine]) => machine[rangeShift].pareto)
         );
-        when = `${formatQuickPick(range.start)} – ${formatQuickPick(range.end)}, all shifts`;
+        when = periodPhrase(range);
         unit = "machine-shift";
         renderCoverage(range);
     }
@@ -731,9 +1070,9 @@ function renderPareto() {
 
     if (!items.length) {
         paretoTotal.textContent = "";
-        paretoEmpty.textContent = paretoPeriod === "shift"
-            ? `No downtime recorded for ${paretoScopeLabel()} this shift.`
-            : `No downtime recorded for ${paretoScopeLabel()} in these ${paretoPeriod} days.`;
+        paretoEmpty.textContent = isRange()
+            ? `No downtime recorded for ${paretoScopeLabel()} in these ${period} days.`
+            : `No downtime recorded for ${paretoScopeLabel()} this shift.`;
         paretoEmpty.hidden = false;
         return;
     }
@@ -780,11 +1119,19 @@ function renderPareto() {
     }
 }
 
-function render() {
-    shiftToggle.querySelectorAll(".shift-option").forEach((button) => {
-        button.classList.toggle("is-active", button.dataset.shift === currentShift);
+/** The Period and Shift toggles. "All" only exists over 7/30 days. */
+function syncToggles() {
+    periodToggle.querySelectorAll(".shift-option").forEach((button) => {
+        button.classList.toggle("is-active", button.dataset.period === String(period));
     });
+    shiftToggle.querySelectorAll(".shift-option").forEach((button) => {
+        if (button.dataset.shift === ALL_SHIFTS) button.hidden = !isRange();
+        button.classList.toggle("is-active", button.dataset.shift === shownShift());
+    });
+}
 
+function render() {
+    syncToggles();
     clearGrid();
 
     if (!payload) {
@@ -792,10 +1139,33 @@ function render() {
         return;
     }
 
+    if (!payload.has_any_data) {
+        showEmpty("No production entries have been recorded yet.");
+    } else if (isRange()) {
+        renderRange();
+    } else {
+        renderShift();
+    }
+    renderPareto();
+    syncUrl();
+}
+
+function renderShift() {
+    floorTotal.hidden = true;
     const shiftData = payload.shifts[currentShift];
-    if (!shiftData) {
-        syncUrl();
-        return;
+    if (!shiftData) return;
+
+    const anyMachine = Object.values(payload.shifts).some((shift) =>
+        Object.values(shift.machines).some((m) => m.shift !== null)
+    );
+    if (!anyMachine) {
+        showEmpty(
+            `No OEE can be computed for ${formatDate(payload.date)}. ` +
+            "OEE needs both production units and a downtime entry for a shift, " +
+            "and at least one of those is missing for every machine that day."
+        );
+    } else {
+        hideEmpty();
     }
 
     document.querySelectorAll(".zone-section").forEach((section) => {
@@ -808,8 +1178,36 @@ function render() {
 
     renderCompleteness(shiftData);
     renderFlags(shiftData);
-    renderPareto();
-    syncUrl();
+}
+
+function renderRange() {
+    completenessEl.hidden = true;
+    const range = rangeFor(payload.date, period);
+    renderFloorTotal(range);
+    if (range === null || range === "error") {
+        // The grid stays, blank, until the period arrives.
+        hideEmpty();
+        flagsBanner.hidden = true;
+        return;
+    }
+
+    const floor = range.floor[rangeShift];
+    if (!floor.counted && !floor.left_out) {
+        showEmpty(`Nothing has been entered for OEE, ${periodPhrase(range)}.`);
+        floorTotal.hidden = true;
+        return;
+    }
+    hideEmpty();
+
+    document.querySelectorAll(".zone-section").forEach((section) => {
+        section.querySelectorAll("tr[data-machine]").forEach((row) => {
+            const byKey = range.machines[row.dataset.machine];
+            if (byKey) fillRangeRow(row, byKey, range);
+        });
+        fillRangeZone(section, range);
+    });
+
+    renderLeftOut(range);
 }
 
 function renderQuickPicks(dates) {
@@ -851,22 +1249,6 @@ async function load(isoDate) {
             dateInput.min = payload.available_dates[payload.available_dates.length - 1];
         }
         renderQuickPicks(payload.available_dates);
-
-        const anyMachine = Object.values(payload.shifts).some((shift) =>
-            Object.values(shift.machines).some((m) => m.shift !== null)
-        );
-        if (!payload.has_any_data) {
-            showEmpty("No production entries have been recorded yet.");
-        } else if (!anyMachine) {
-            showEmpty(
-                `No OEE can be computed for ${formatDate(payload.date)}. ` +
-                "OEE needs both production units and a downtime entry for a slot, " +
-                "and at least one of those is missing for every machine that day."
-            );
-        } else {
-            hideEmpty();
-        }
-
         render();
         loadedAt.textContent = `Loaded at ${new Date().toLocaleTimeString()}`;
     } catch (err) {
@@ -884,11 +1266,26 @@ quickPicksEl.addEventListener("click", (event) => {
     if (button) load(button.dataset.date);
 });
 
+// A period starts on All; going back to "This shift" shows the last single
+// shift picked.
+periodToggle.addEventListener("click", (event) => {
+    const button = event.target.closest(".shift-option");
+    if (!button) return;
+    const days = parseInt(button.dataset.period, 10);
+    const next = PERIOD_DAYS.includes(days) ? days : "shift";
+    if (next === period) return;
+    if (!isRange()) rangeShift = ALL_SHIFTS;
+    period = next;
+    render();
+});
+
 shiftToggle.addEventListener("click", (event) => {
     const button = event.target.closest(".shift-option");
     if (!button) return;
-    currentShift = button.dataset.shift;
-    render(); // all three shifts are already loaded
+    const shift = button.dataset.shift;
+    if (isRange()) rangeShift = shift;
+    if (SHIFT_ORDER.includes(shift)) currentShift = shift;
+    render(); // all three shifts, and each period's shifts, are already loaded
 });
 
 // A zone chip selects exactly that zone's machines; a checkbox toggles one.
@@ -899,17 +1296,6 @@ paretoPicker.addEventListener("click", (event) => {
     const slug = chip.dataset.zone;
     const zone = ZONES.find((z) => z.slug === slug);
     paretoSelection = new Set(slug === "*" || !zone ? ALL_MACHINE_IDS : zone.machine_ids);
-    renderPareto();
-    syncUrl();
-});
-
-// "This shift" uses the loaded payload; 7 and 30 days are fetched once per
-// date and cached.
-paretoPeriodPicker.addEventListener("click", (event) => {
-    const chip = event.target.closest(".period-chip");
-    if (!chip) return;
-    const days = parseInt(chip.dataset.period, 10);
-    paretoPeriod = PARETO_RANGE_DAYS.includes(days) ? days : "shift";
     renderPareto();
     syncUrl();
 });

@@ -414,7 +414,8 @@ body {
     border-left: 1px solid var(--border);
 }
 
-.shift-option:first-child {
+.shift-option:first-child,
+.shift-option[hidden] + .shift-option {
     border-left: none;
 }
 
@@ -1050,13 +1051,8 @@ button.shift-option {
     vertical-align: -1px;
 }
 
-/* Same label width for the Period and Machines rows so the chips line up. */
 .pareto-picker > .control-label {
     min-width: 5.5rem;
-}
-
-.pareto-period {
-    margin-bottom: 0.6rem;
 }
 
 /* Coverage line under the 7/30-day bars. Amber when some shifts have no
@@ -1587,5 +1583,92 @@ button.shift-option {
 .oee-grid .sum[data-warned] {
     outline: 2px dashed #e3b341;
     outline-offset: -2px;
+    cursor: help;
+}
+
+/* ---------- /oee: 7 and 30 days ---------- */
+
+/* The floor's headline, where the one-shift completeness bar sits. */
+.floor-total {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.4rem 1rem;
+    margin: 0 0 1.25rem;
+    padding: 0.7rem 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: help;
+}
+
+.floor-total-oee {
+    font-size: 1.35rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.floor-total-oee[data-band="excellent"],
+.floor-total-oee[data-band="good"] {
+    color: #56d364;
+}
+
+.floor-total-oee[data-band="fair"] {
+    color: #e3b341;
+}
+
+.floor-total-oee[data-band="poor"] {
+    color: #ff7b72;
+}
+
+.floor-total-detail {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+.floor-total-detail .oee-by-shift {
+    display: inline;
+    margin-left: 0.75rem;
+    font-size: inherit;
+}
+
+/* "▲3.1": change in points from the period before. Coloured by direction,
+   not by band, so a low OEE that's improving still reads as improving. */
+.oee-change {
+    margin-left: 0.35rem;
+    font-size: 0.72em;
+    font-weight: 600;
+}
+
+.oee-change[data-dir="up"] {
+    color: #56d364;
+}
+
+.oee-change[data-dir="down"] {
+    color: #ff7b72;
+}
+
+.oee-change[data-dir="flat"] {
+    color: var(--text-dim);
+}
+
+/* Each shift's OEE under an All figure. */
+.oee-by-shift {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 400;
+    color: var(--text-dim);
+}
+
+/* Fewer than half the period's shifts counted: same dashed outline as a
+   warned grid cell. */
+.zone-rollup[data-warned],
+.floor-total[data-warned] {
+    outline: 2px dashed #e3b341;
+    outline-offset: -2px;
+}
+
+.zone-rollup[title] {
     cursor: help;
 }
