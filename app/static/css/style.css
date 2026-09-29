@@ -1028,6 +1028,13 @@ button.shift-option {
     border-radius: 6px;
 }
 
+.pareto-machines-hint {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+}
+
 .pareto-machine-group {
     display: flex;
     flex-wrap: wrap;

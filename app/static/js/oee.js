@@ -116,16 +116,25 @@ const ZONES = window.ZONES || [];
 const ALL_MACHINE_IDS = ZONES.flatMap((zone) => zone.machine_ids);
 
 /**
- * Which machines feed the downtime Pareto. Starts from ?pareto=C1,C2,C3
- * when present; unknown ids are dropped, and an empty result means all.
+ * The machines ticked in the Pareto's picker, and the machines that feed it.
+ * Nothing ticked means the whole floor, so picking a few machines starts
+ * from empty boxes rather than unticking the rest. Starts from
+ * ?pareto=C1,C2,C3 when present; unknown ids are dropped.
  */
-let paretoSelection = (() => {
+let paretoPicked = new Set();
+let paretoSelection = new Set(ALL_MACHINE_IDS);
+
+function setParetoPick(ids) {
+    paretoPicked = new Set(ids);
+    paretoSelection = new Set(paretoPicked.size ? paretoPicked : ALL_MACHINE_IDS);
+}
+
+setParetoPick((() => {
     const wanted = new Set(
         (window.INITIAL_PARETO || "").split(",").map((s) => s.trim()).filter(Boolean)
     );
-    const known = ALL_MACHINE_IDS.filter((id) => wanted.has(id));
-    return new Set(known.length ? known : ALL_MACHINE_IDS);
-})();
+    return ALL_MACHINE_IDS.filter((id) => wanted.has(id));
+})());
 
 /**
  * The page's period: "shift" (one shift of the selected day) or a number of
@@ -1076,7 +1085,7 @@ function paretoScopeLabel() {
 /** Pushes the selection into the chips and checkboxes, so they always agree with it. */
 function syncParetoPicker() {
     paretoPicker.querySelectorAll('input[type="checkbox"]').forEach((box) => {
-        box.checked = paretoSelection.has(box.value);
+        box.checked = paretoPicked.has(box.value);
     });
     paretoPicker.querySelectorAll(".pareto-chip").forEach((chip) => {
         const slug = chip.dataset.zone;
@@ -1429,14 +1438,13 @@ shiftToggle.addEventListener("click", (event) => {
     render(); // all three shifts, and each period's shifts, are already loaded
 });
 
-// A zone chip selects exactly that zone's machines; a checkbox toggles one.
-// The last machine can't be unticked.
+// A zone chip ticks exactly that zone's machines and All clears the ticks; a
+// checkbox toggles one. Unticking the last one goes back to the whole floor.
 paretoPicker.addEventListener("click", (event) => {
     const chip = event.target.closest(".pareto-chip");
     if (!chip) return;
-    const slug = chip.dataset.zone;
-    const zone = ZONES.find((z) => z.slug === slug);
-    paretoSelection = new Set(slug === "*" || !zone ? ALL_MACHINE_IDS : zone.machine_ids);
+    const zone = ZONES.find((z) => z.slug === chip.dataset.zone);
+    setParetoPick(zone ? zone.machine_ids : []);
     renderPareto();
     syncUrl();
 });
@@ -1444,13 +1452,13 @@ paretoPicker.addEventListener("click", (event) => {
 paretoPicker.addEventListener("change", (event) => {
     const box = event.target.closest('input[type="checkbox"]');
     if (!box) return;
+    const picked = new Set(paretoPicked);
     if (box.checked) {
-        paretoSelection.add(box.value);
-    } else if (paretoSelection.size > 1) {
-        paretoSelection.delete(box.value);
+        picked.add(box.value);
     } else {
-        box.checked = true; // keep at least one machine
+        picked.delete(box.value);
     }
+    setParetoPick(ALL_MACHINE_IDS.filter((id) => picked.has(id)));
     renderPareto();
     syncUrl();
 });

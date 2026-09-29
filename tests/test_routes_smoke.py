@@ -744,6 +744,8 @@ check("/oee has the Pareto picker with a chip per zone",
       oee_page.count('class="quick-pick pareto-chip"') == 6)   # All + 5 zones
 check("...and a checkbox per machine",
       oee_page.count('<input type="checkbox" value="') == 34)
+check("...all unticked, since nothing ticked means every machine",
+      '<input type="checkbox" value="C1" checked>' not in oee_page)
 check("?pareto= is passed through to the page",
       'window.INITIAL_PARETO = "C1,C2"' in client.get("/oee?pareto=C1,C2").text)
 

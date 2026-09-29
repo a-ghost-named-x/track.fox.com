@@ -168,12 +168,13 @@
             <details class="pareto-machines" id="pareto-machines">
                 <summary class="pareto-machines-summary">Pick machines</summary>
                 <div class="pareto-machine-groups">
+                    <p class="pareto-machines-hint">Tick the machines to show. Nothing ticked means every machine.</p>
                     {% for zone in zones %}
                     <div class="pareto-machine-group">
                         <span class="pareto-machine-group-label">{{ zone.label }}</span>
                         {% for machine in zone.machine_ids %}
                         <label class="pareto-machine">
-                            <input type="checkbox" value="{{ machine }}" checked> {{ machine }}
+                            <input type="checkbox" value="{{ machine }}"> {{ machine }}
                         </label>
                         {% endfor %}
                     </div>
