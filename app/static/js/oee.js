@@ -97,6 +97,9 @@ const floorTotal = document.getElementById("floor-total");
 const floorTotalOee = document.getElementById("floor-total-oee");
 const floorTotalDetail = document.getElementById("floor-total-detail");
 const floorTotalDays = document.getElementById("floor-total-days");
+const leftOutEl = document.getElementById("left-out");
+const leftOutCounts = document.getElementById("left-out-counts");
+const leftOutDetails = document.getElementById("left-out-details");
 const completenessEl = document.getElementById("completeness");
 const completenessNote = document.getElementById("completeness-note");
 const flagsBanner = document.getElementById("quality-flags");
@@ -903,17 +906,20 @@ function renderFloorTotal(range) {
 const MISSING_CODES = new Set(["no_downtime", "no_production"]);
 
 /**
- * The banner over 7/30 days: left-out machine-shifts in two groups, numbers
- * that look wrong (red) and entries that are missing (amber), each listed by
- * reason with the worst machines first. Dates are on each machine's tooltip.
+ * Over 7/30 days: one line counting the left-out machine-shifts, opening to
+ * two groups, numbers that look wrong and entries that are missing, each
+ * listed by reason with the worst machines first. Dates are on each
+ * machine's tooltip.
  */
 function renderLeftOut(range) {
-    flagsBanner.textContent = "";
+    leftOutDetails.textContent = "";
     const wrong = { groups: new Map(), shifts: 0 };
     const missing = { groups: new Map(), shifts: 0 };
+    let total = 0;
     for (const machineId of ALL_MACHINE_IDS) {
         const group = range.machines[machineId] && range.machines[machineId][rangeShift];
         for (const item of (group && group.left_out_shifts) || []) {
+            total += 1;
             const kinds = new Set();
             for (const code of item.reasons) {
                 const kind = MISSING_CODES.has(code) ? missing : wrong;
@@ -925,25 +931,28 @@ function renderLeftOut(range) {
             kinds.forEach((kind) => { kind.shifts += 1; });
         }
     }
-    if (!wrong.shifts && !missing.shifts) {
-        flagsBanner.hidden = true;
+    if (!total) {
+        leftOutEl.hidden = true;
         return;
     }
-    flagsBanner.hidden = false;
-    // Red when a number looks wrong; amber when it's only missing entries.
-    flagsBanner.classList.toggle("banner-error", wrong.shifts > 0);
-    flagsBanner.classList.toggle("banner-notice", wrong.shifts === 0);
+    leftOutEl.hidden = false;
+
+    const parts = [];
+    if (wrong.shifts) parts.push(`${count(wrong.shifts)} look wrong`);
+    if (missing.shifts) parts.push(`${count(missing.shifts)} not entered`);
+    leftOutCounts.textContent = `ⓘ ${count(total)} machine-shift${total === 1 ? "" : "s"} left out ` +
+        `of these numbers: ${parts.join(", ")}.`;
 
     const plural = (n) => `${count(n)} machine-shift${n === 1 ? "" : "s"}`;
-    appendLeftOutGroup(wrong, "flag-lead",
-        `Numbers that look wrong: ${plural(wrong.shifts)} left out. Fix at /console.`);
+    appendLeftOutGroup(wrong, "flag-lead left-out-wrong",
+        `Numbers that look wrong: ${plural(wrong.shifts)}. Fix at /console.`);
     appendLeftOutGroup(missing, "flag-lead flag-lead-warning",
-        `Not entered: ${plural(missing.shifts)} left out. Enter on /console/oee.`);
+        `Not entered: ${plural(missing.shifts)}. Enter on /console/oee.`);
 
     const hint = document.createElement("div");
     hint.className = "flag-hint";
     hint.textContent = "Hover a machine's shift count for the dates.";
-    flagsBanner.appendChild(hint);
+    leftOutDetails.appendChild(hint);
 }
 
 function appendLeftOutGroup(kind, className, text) {
@@ -951,7 +960,7 @@ function appendLeftOutGroup(kind, className, text) {
     const lead = document.createElement("div");
     lead.className = className;
     lead.textContent = text;
-    flagsBanner.appendChild(lead);
+    leftOutDetails.appendChild(lead);
 
     const listed = new Map();
     for (const [code, byMachine] of kind.groups) {
@@ -959,7 +968,7 @@ function appendLeftOutGroup(kind, className, text) {
         const worstFirst = Array.from(byMachine).sort((a, b) => b[1] - a[1]);
         listed.set(code, worstFirst.map(([id, n]) => (n > 1 ? `${id} ×${n}` : id)));
     }
-    appendFlagGroup(flagsBanner, listed, LEFT_OUT_LABELS);
+    appendFlagGroup(leftOutDetails, listed, LEFT_OUT_LABELS);
 }
 
 function renderCompleteness(shiftData) {
@@ -1059,8 +1068,6 @@ function renderFlags(shiftData) {
     const warningGroups = groupByCode(shiftData.machines, "warnings");
 
     flagsBanner.textContent = "";
-    flagsBanner.classList.add("banner-error");
-    flagsBanner.classList.remove("banner-notice");
     if (!flagGroups.size && !warningGroups.size) {
         flagsBanner.hidden = true;
         return;
@@ -1345,6 +1352,7 @@ function render() {
 
 function renderShift() {
     floorTotal.hidden = true;
+    leftOutEl.hidden = true;
     syncDayColumns(null);
     document.querySelectorAll(".oee-grid tfoot").forEach((foot) => { foot.hidden = true; });
     const shiftData = payload.shifts[currentShift];
@@ -1377,6 +1385,9 @@ function renderShift() {
 
 function renderRange() {
     completenessEl.hidden = true;
+    // The one-shift box; a period's left-out shifts go in the quiet line.
+    flagsBanner.hidden = true;
+    leftOutEl.hidden = true;
     const range = rangeFor(payload.date, period);
     const loaded = range !== null && range !== "error";
     syncDayColumns(loaded ? range : null);
@@ -1385,7 +1396,6 @@ function renderRange() {
     if (!loaded) {
         // The grid stays, blank, until the period arrives.
         hideEmpty();
-        flagsBanner.hidden = true;
         return;
     }
 

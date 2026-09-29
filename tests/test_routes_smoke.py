@@ -757,6 +757,8 @@ check("...at the top, not inside the Pareto", 'id="pareto-period"' not in oee_pa
 check("the All button is there, hidden until a period is picked",
       'data-shift="All" hidden' in oee_page)
 check("the floor total is there, hidden", 'id="floor-total" hidden' in oee_page)
+check("the left-out line is there, hidden until a period is picked",
+      'id="left-out" hidden' in oee_page)
 check("each zone has a total row, hidden until a period is picked",
       oee_page.count("<tfoot hidden>") == 5 and oee_page.count("data-zone-total") == 5)
 check("?period=30 is passed through", "window.INITIAL_PERIOD = 30" in client.get("/oee?period=30").text)

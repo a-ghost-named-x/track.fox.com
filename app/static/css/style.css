@@ -782,6 +782,53 @@ button.shift-option {
     opacity: 0.75;
 }
 
+/* Over 7/30 days: left-out shifts as one quiet line, the list behind it. */
+.left-out {
+    margin: -0.6rem 0 1.25rem;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+}
+
+.left-out-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.75rem;
+    list-style: none;
+    padding: 0 0.9rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+.left-out-summary::-webkit-details-marker {
+    display: none;
+}
+
+.left-out-toggle {
+    color: var(--accent);
+}
+
+.left-out[open] .left-out-show,
+.left-out:not([open]) .left-out-hide {
+    display: none;
+}
+
+.left-out-details {
+    margin-top: 0.5rem;
+    padding: 0.7rem 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-dim);
+}
+
+.left-out-details .flag-machines {
+    color: var(--text);
+}
+
+.left-out-details .left-out-wrong {
+    color: #ff7b72;
+}
+
 .flag-row::before {
     content: "· ";
     font-weight: 700;

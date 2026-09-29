@@ -56,6 +56,18 @@
         <span class="floor-total-days" id="floor-total-days"></span>
     </div>
 
+    {# Over 7 or 30 days: the left-out machine-shifts as one quiet line, with
+       the list behind it. Closed by default; a known backlog shouldn't read
+       as an alarm. #}
+    <details class="left-out" id="left-out" hidden>
+        <summary class="left-out-summary">
+            <span class="left-out-counts" id="left-out-counts"></span>
+            <span class="left-out-toggle left-out-show">Show details ▾</span>
+            <span class="left-out-toggle left-out-hide">Hide details ▴</span>
+        </summary>
+        <div class="flag-banner left-out-details" id="left-out-details"></div>
+    </details>
+
     {# Completeness per column, since production and OEE data are entered at
        different times. Counts are machines. #}
     <div class="completeness" id="completeness" hidden>
