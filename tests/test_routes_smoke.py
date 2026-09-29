@@ -128,6 +128,7 @@ oee_mod.get_schedule_for_range = lambda s, e: (
 oee_mod.get_scrap_for_range = lambda s, e: (
     {(m, DAY, sh): v for (m, sh), v in stored_scrap.items()} if s <= DAY <= e else {}
 )
+oee_mod.get_oee_tracking_start = lambda: DAY
 entries_mod.get_readings_for_range = lambda s, e: {
     (r["machine_id"], r["entry_date"], r["time_slot"]): r["units_produced"] for r in entries
     if s <= r["entry_date"] <= e

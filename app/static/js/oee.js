@@ -211,9 +211,12 @@ function hoursText(minutes, unit = " h") {
     return `${hours.toFixed(hours < 10 ? 1 : 0)}${unit}`;
 }
 
-/** "Tue 9/22 – Mon 9/28, all shifts", or "..., 2nd Shift". */
+/**
+ * "Tue 9/22 – Mon 9/28, all shifts", or "..., 2nd Shift". Starts on the day
+ * OEE tracking began when that's inside the period.
+ */
 function periodPhrase(range) {
-    const when = `${formatQuickPick(range.start)} – ${formatQuickPick(range.end)}`;
+    const when = `${formatQuickPick(range.tracked_start || range.start)} – ${formatQuickPick(range.end)}`;
     return rangeShift === ALL_SHIFTS ? `${when}, all shifts` : `${when}, ${shortShift(rangeShift)} Shift`;
 }
 
@@ -248,6 +251,14 @@ function changeTitle(group, range) {
         const points = Math.abs(group.change * 100).toFixed(1);
         const dir = group.change > 0 ? "up" : group.change < 0 ? "down" : "unchanged,";
         return `${pct(group.previous.oee)} over ${before}, so ${dir} ${points} points.`;
+    }
+    const began = range.tracking_start ? ` (${formatQuickPick(range.tracking_start)})` : "";
+    if (!range.previous_tracked_days) {
+        return `Not compared: ${before} were before OEE tracking began${began}.`;
+    }
+    if (range.previous_tracked_days * 2 < days) {
+        return `Not compared: only ${range.previous_tracked_days} of ${before} were after ` +
+            `OEE tracking began${began}, too few for a fair comparison.`;
     }
     if (!group.previous) return `Nothing counted in ${before} to compare with.`;
     if (group.thin) return "Not compared with the period before: fewer than half this period's shifts counted.";
@@ -648,6 +659,12 @@ function fillDayCells(row, byKey, range) {
         const when = columnPhrase(range.columns[index]);
         const total = value.counted + value.left_out;
 
+        if (range.columns[index].before_tracking) {
+            cell.setAttribute("data-empty", "");
+            cell.title = `${when}: before OEE tracking began` +
+                (range.tracking_start ? ` (${formatQuickPick(range.tracking_start)}).` : ".");
+            return;
+        }
         if (!total) {
             cell.setAttribute("data-empty", "");
             cell.title = `${when}: nothing entered.`;
@@ -697,11 +714,13 @@ function renderFloorDays(range) {
         item.textContent = `${label} ${shown}`;
         setBand(item, value.oee);
         if (value.oee === null && total) item.setAttribute("data-band", "poor");
-        item.title = value.oee !== null
-            ? `${columnPhrase(column)}: ${pct(value.oee)} over ${value.counted} of ${total} machine-shifts`
-            : total
-                ? `${columnPhrase(column)}: every machine-shift left out (${value.left_out})`
-                : `${columnPhrase(column)}: nothing entered`;
+        item.title = column.before_tracking
+            ? `${columnPhrase(column)}: before OEE tracking began`
+            : value.oee !== null
+                ? `${columnPhrase(column)}: ${pct(value.oee)} over ${value.counted} of ${total} machine-shifts`
+                : total
+                    ? `${columnPhrase(column)}: every machine-shift left out (${value.left_out})`
+                    : `${columnPhrase(column)}: nothing entered`;
         floorTotalDays.appendChild(item);
     });
 }
@@ -867,6 +886,10 @@ function renderFloorTotal(range) {
         "their scheduled time could have made. Not an average of percentages.",
         changeTitle(group, range),
     ];
+    if (range.tracked_start && range.tracked_start !== range.start) {
+        title.push(`OEE tracking began ${formatQuickPick(range.tracking_start)}, so this ` +
+            "period's earlier days aren't in any figure.");
+    }
     if (group.thin) {
         floorTotal.setAttribute("data-warned", "");
         title.push("Fewer than half the floor's shifts counted, so this number may not represent the period.");
@@ -875,40 +898,66 @@ function renderFloorTotal(range) {
     floorTotal.title = title.join("\n");
 }
 
+// Left-out reasons that mean something wasn't entered. Every other reason
+// means a number that was entered looks wrong.
+const MISSING_CODES = new Set(["no_downtime", "no_production"]);
+
 /**
- * The banner over 7/30 days: left-out machine-shifts grouped by reason, with
- * how many each machine had. Dates are on each machine's tooltip.
+ * The banner over 7/30 days: left-out machine-shifts in two groups, numbers
+ * that look wrong (red) and entries that are missing (amber), each listed by
+ * reason with the worst machines first. Dates are on each machine's tooltip.
  */
 function renderLeftOut(range) {
     flagsBanner.textContent = "";
-    const groups = new Map();
-    let shifts = 0;
+    const wrong = { groups: new Map(), shifts: 0 };
+    const missing = { groups: new Map(), shifts: 0 };
     for (const machineId of ALL_MACHINE_IDS) {
         const group = range.machines[machineId] && range.machines[machineId][rangeShift];
         for (const item of (group && group.left_out_shifts) || []) {
-            shifts += 1;
+            const kinds = new Set();
             for (const code of item.reasons) {
-                if (!groups.has(code)) groups.set(code, new Map());
-                const byMachine = groups.get(code);
+                const kind = MISSING_CODES.has(code) ? missing : wrong;
+                kinds.add(kind);
+                if (!kind.groups.has(code)) kind.groups.set(code, new Map());
+                const byMachine = kind.groups.get(code);
                 byMachine.set(machineId, (byMachine.get(machineId) || 0) + 1);
             }
+            kinds.forEach((kind) => { kind.shifts += 1; });
         }
     }
-    if (!shifts) {
+    if (!wrong.shifts && !missing.shifts) {
         flagsBanner.hidden = true;
         return;
     }
     flagsBanner.hidden = false;
+    // Red when a number looks wrong; amber when it's only missing entries.
+    flagsBanner.classList.toggle("banner-error", wrong.shifts > 0);
+    flagsBanner.classList.toggle("banner-notice", wrong.shifts === 0);
 
+    const plural = (n) => `${count(n)} machine-shift${n === 1 ? "" : "s"}`;
+    appendLeftOutGroup(wrong, "flag-lead",
+        `Numbers that look wrong: ${plural(wrong.shifts)} left out. Fix at /console.`);
+    appendLeftOutGroup(missing, "flag-lead flag-lead-warning",
+        `Not entered: ${plural(missing.shifts)} left out. Enter on /console/oee.`);
+
+    const hint = document.createElement("div");
+    hint.className = "flag-hint";
+    hint.textContent = "Hover a machine's shift count for the dates.";
+    flagsBanner.appendChild(hint);
+}
+
+function appendLeftOutGroup(kind, className, text) {
+    if (!kind.shifts) return;
     const lead = document.createElement("div");
-    lead.className = "flag-lead";
-    lead.textContent = `${count(shifts)} machine-shift${shifts === 1 ? "" : "s"} left out of this ` +
-        "period's OEE. Hover a machine's shift count for the dates.";
+    lead.className = className;
+    lead.textContent = text;
     flagsBanner.appendChild(lead);
 
     const listed = new Map();
-    for (const [code, byMachine] of groups) {
-        listed.set(code, Array.from(byMachine, ([id, n]) => (n > 1 ? `${id} ×${n}` : id)));
+    for (const [code, byMachine] of kind.groups) {
+        // Most first; ties keep page order, since the sort is stable.
+        const worstFirst = Array.from(byMachine).sort((a, b) => b[1] - a[1]);
+        listed.set(code, worstFirst.map(([id, n]) => (n > 1 ? `${id} ×${n}` : id)));
     }
     appendFlagGroup(flagsBanner, listed, LEFT_OUT_LABELS);
 }
@@ -1010,6 +1059,8 @@ function renderFlags(shiftData) {
     const warningGroups = groupByCode(shiftData.machines, "warnings");
 
     flagsBanner.textContent = "";
+    flagsBanner.classList.add("banner-error");
+    flagsBanner.classList.remove("banner-notice");
     if (!flagGroups.size && !warningGroups.size) {
         flagsBanner.hidden = true;
         return;

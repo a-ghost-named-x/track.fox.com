@@ -776,6 +776,12 @@ button.shift-option {
     text-indent: -0.9rem;
 }
 
+.flag-hint {
+    margin-top: 0.4rem;
+    font-size: 0.85em;
+    opacity: 0.75;
+}
+
 .flag-row::before {
     content: "· ";
     font-weight: 700;

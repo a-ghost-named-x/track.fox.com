@@ -471,6 +471,19 @@ def get_latest_downtime_for_date(entry_date: date_type) -> dict[tuple[str, str],
     }
 
 
+def get_oee_tracking_start() -> date_type | None:
+    """The first production day with a downtime submission, taken as the day
+    OEE tracking began, or None if there isn't one yet.
+
+    Production was entered for weeks before downtime was, so without this
+    every earlier shift would read as "no downtime entered" when nobody was
+    asked to enter any.
+    """
+    with get_pg_connection() as conn:
+        row = conn.execute("SELECT MIN(entry_date) FROM shift_downtime_entry").fetchone()
+    return row[0] if row else None
+
+
 def get_schedule_for_range(
     start: date_type, end: date_type
 ) -> dict[tuple[str, date_type, str], bool]:
@@ -1133,6 +1146,10 @@ def compute_oee_range(
     to be the bad shifts. A shift with nothing entered didn't run and isn't
     counted either way; nor is one still in progress without its downtime.
 
+    Days before OEE tracking began (get_oee_tracking_start) are skipped
+    entirely, since nobody was entering downtime then. The comparison with the
+    previous period is only made when at least half its days were tracked.
+
     Reads each table once for both periods rather than building a report per
     day, which would open hundreds of connections.
     """
@@ -1143,6 +1160,17 @@ def compute_oee_range(
     previous_start = start - timedelta(days=days)
     column_days = OEE_PERIOD_COLUMN_DAYS.get(days, 1)
     column_count = -(-days // column_days)
+
+    tracking_start = get_oee_tracking_start()
+
+    def tracked(day: date_type) -> bool:
+        return tracking_start is not None and day >= tracking_start
+
+    previous_tracked_days = sum(
+        1 for offset in range(days) if tracked(previous_start + timedelta(days=offset))
+    )
+    # Otherwise a full period would be compared against a day or two of data.
+    previous_usable = previous_tracked_days * 2 >= days
 
     explicit_lengths = get_shift_lengths_for_range(previous_start, end_day)
     schedule = get_schedule_for_range(previous_start, end_day)
@@ -1173,6 +1201,8 @@ def compute_oee_range(
     for machine_id in MACHINE_IDS:
         for offset in range(days * 2):
             day = previous_start + timedelta(days=offset)
+            if not tracked(day):
+                continue
             period = "previous" if day < start else "current"
             day_lengths = resolve_day_lengths(explicit_by_day.get((machine_id, day), {}))
 
@@ -1204,6 +1234,7 @@ def compute_oee_range(
             _merge_tallies([tallies[m][key]["current"] for m in machine_ids]),
             _merge_tallies([tallies[m][key]["previous"] for m in machine_ids]),
             detail=detail,
+            previous_usable=previous_usable,
         )
         summary["columns"] = [
             _column_summary(_merge_tallies([tallies[m][key]["columns"][i] for m in machine_ids]))
@@ -1211,12 +1242,20 @@ def compute_oee_range(
         ]
         return summary
 
+    first_tracked = (
+        max(start, tracking_start)
+        if tracking_start is not None and tracking_start <= end_day else None
+    )
     return {
         "start": start.isoformat(),
         "end": end_day.isoformat(),
         "days": days,
         "previous_start": previous_start.isoformat(),
         "previous_end": (start - timedelta(days=1)).isoformat(),
+        "tracking_start": tracking_start.isoformat() if tracking_start else None,
+        # The period's first tracked day, when tracking began inside it.
+        "tracked_start": first_tracked.isoformat() if first_tracked else None,
+        "previous_tracked_days": previous_tracked_days,
         # Newest first. The last column is cut short when column_days doesn't
         # divide the period (30 days is four weeks and two days).
         "column_days": column_days,
@@ -1226,6 +1265,7 @@ def compute_oee_range(
                     start, end_day - timedelta(days=i * column_days + column_days - 1)
                 ).isoformat(),
                 "end": (end_day - timedelta(days=i * column_days)).isoformat(),
+                "before_tracking": not tracked(end_day - timedelta(days=i * column_days)),
             }
             for i in range(column_count)
         ],
@@ -1336,7 +1376,9 @@ def _is_thin(counted: int, left_out: int) -> bool:
     return counted < left_out
 
 
-def _range_summary(current: dict, previous: dict, *, detail: bool) -> dict:
+def _range_summary(
+    current: dict, previous: dict, *, detail: bool, previous_usable: bool = True
+) -> dict:
     """What /oee shows for one machine, zone or the floor over a period.
 
       current / previous - rollups for the period and the one before it
@@ -1344,7 +1386,8 @@ def _range_summary(current: dict, previous: dict, *, detail: bool) -> dict:
       counted / left_out - finished machine-shifts that did / didn't count
       thin               - fewer than half counted; the number is marked
       change             - current OEE minus previous, None unless both
-                           periods have a number and neither is thin
+                           periods have a number, neither is thin, and
+                           `previous_usable` (half its days were tracked)
 
     `detail` (machines only) adds the left-out shifts, downtime reasons over
     counted shifts (Top reasons), and the Pareto's reasons over every
@@ -1359,7 +1402,8 @@ def _range_summary(current: dict, previous: dict, *, detail: bool) -> dict:
     previous_thin = _is_thin(previous_counted, previous_left_out)
 
     comparable = (
-        now_rollup is not None and before is not None
+        previous_usable
+        and now_rollup is not None and before is not None
         and now_rollup["oee"] is not None and before["oee"] is not None
         and not thin and not previous_thin
     )

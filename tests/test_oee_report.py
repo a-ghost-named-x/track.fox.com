@@ -44,7 +44,7 @@ whenever the three factors cover the same machines.
 import os
 import sys
 import types
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -236,6 +236,7 @@ entries_mod.get_readings_for_range = lambda start, end: {
 }
 oee.get_latest_scrap_for_date = lambda d: dict(scrap_by_day.get(d, {}))
 oee.get_scrap_for_range = lambda s, e: by_range(scrap_by_day, s, e)
+oee.get_oee_tracking_start = lambda: min((d for d, rows in downtime_by_day.items() if rows), default=None)
 oee.get_latest_downtime_for_date = lambda d: dict(downtime_by_day.get(d, {}))
 oee.get_schedule_for_date = lambda d: dict(schedule_by_day.get(d, {}))
 oee.get_shift_lengths = lambda d: dict(lengths_by_day.get(d, {}))
@@ -576,6 +577,11 @@ THU = date(2026, 9, 10)
 entries_by_date[THU] = []
 add("C3", [11700, 23400, 35100, 46800], day=THU)
 add("C3", [11700, 23400, 35100, 46800], slots=SHIFT_SLOTS["2nd Shift"], day=THU)
+# PRE is before anyone entered downtime (PREV, 9/1, is the first day with
+# any), so C1's shift there is outside OEE: neither counted nor left out.
+PRE = date(2026, 8, 25)
+entries_by_date[PRE] = []
+add("C1", [11700, 23400, 35100, 46800], day=PRE)
 
 print("\n== 7 days (compute_oee_range) ==")
 week = oee.compute_oee_range(SAT, 7, now=NOW_SAT)
@@ -730,6 +736,13 @@ print("\n== 30 days ==")
 month = oee.compute_oee_range(SAT, 30, now=NOW_SAT)
 check("30 days ends on the same day", (month["start"], month["end"]), ("2026-08-14", "2026-09-12"))
 check("PREV is inside it now", month["floor"][ALL]["counted"], 17)
+check("tracking began on PREV", (month["tracking_start"], month["tracked_start"]),
+      ("2026-09-01", "2026-09-01"))
+check("PRE's shift is before tracking: not left out", month["floor"][ALL]["left_out"], 6)
+check("...and C1 has nothing left out", month["machines"]["C1"][ALL]["left_out"], 0)
+check("...nor missing in the Pareto's coverage", month["machines"]["C1"][ALL]["downtime_missing"], 0)
+check("weeks entirely before tracking are marked",
+      [c["before_tracking"] for c in month["columns"]], [False, False, True, True, True])
 check("a column per week, newest first, the leftover two days last",
       [(c["start"], c["end"]) for c in month["columns"]],
       [("2026-09-06", "2026-09-12"), ("2026-08-30", "2026-09-05"), ("2026-08-23", "2026-08-29"),
@@ -741,6 +754,21 @@ check("nothing in the 30 days before, so no change",
 check("the Pareto holds the same reasons (PREV ran clean)", pareto_totals(month), pareto_totals(week))
 check("a window that misses every day is empty",
       oee.compute_oee_range(date(2026, 9, 7), 1, now=NOW_SAT)["floor"][ALL]["current"], None)
+
+print("\n== comparing with a period that was only partly tracked ==")
+# Ending THU: the week before is 8/28-9/3, of which 9/1-9/3 were tracked.
+thu = oee.compute_oee_range(THU, 7, now=NOW_SAT)
+check("3 of the previous 7 days were tracked", thu["previous_tracked_days"], 3)
+check("PREV's shifts are there, but aren't compared against",
+      (thu["floor"][ALL]["previous"]["shifts"], thu["floor"][ALL]["change"]), (3, None))
+# Ending the day after: 8/29-9/4, so 4 of 7 were tracked.
+fri = oee.compute_oee_range(THU + timedelta(days=1), 7, now=NOW_SAT)
+check("4 of 7 is enough", (fri["previous_tracked_days"], fri["floor"][ALL]["change"] is not None), (4, True))
+saved_tracking_start = oee.get_oee_tracking_start
+oee.get_oee_tracking_start = lambda: None
+check("with no downtime anywhere, nothing is tracked, so nothing is left out",
+      oee.compute_oee_range(SAT, 7, now=NOW_SAT)["floor"][ALL]["left_out"], 0)
+oee.get_oee_tracking_start = saved_tracking_start
 json.dumps(week)
 
 print("\n== the one-day readers are the range readers, keyed without the date ==")
