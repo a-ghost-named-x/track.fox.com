@@ -14,10 +14,11 @@ Everything below feeds one of those three.
 
 ## The one thing to know before anything else
 
-- Every target on this site comes from the standards spreadsheet the floor gave us.
+- Every target on this site comes from the production standards the floor gave us.
 - The floor told us those standards are set at **75% of what the machine can theoretically make**. So "hitting standard" means running at three-quarters of the machine's top speed. That's normal and intentional — nobody runs a machine flat-out for eight hours.
 - To be clear: the numbers in the table (C1 = 11,700 per two hours) **already are** the 75% figure. The site never takes 75% of 11,700. The boards compare readings straight against 11,700. The only thing the site does with the 75% is go the other direction — 11,700 ÷ 0.75 = 15,600 — to work out the machine's top speed for OEE.
 - That one fact explains the number people ask about most: **a machine that hits its standard exactly, with no downtime and no scrap, scores 75% OEE — not 100%.** Nothing is broken. 75% *is* the target. (More on this in the OEE section.)
+- The Pouch machines (PB1, PB2, PP1) came the other way round. Production gave their top speed, 110 a minute, so their target is 75% of that: 9,900 per two hours. For Pouch the 75% only sets the board's target; OEE uses the 110 directly.
 - We have not independently verified the 75% figure — it's what we were told when the standards were handed over. If it's actually 80% or 70% for some machines, every OEE number shifts with it. It's on the list to confirm.
 
 ---
@@ -62,6 +63,7 @@ Everything below feeds one of those three.
   | P2–P4 | 16,200 | 64,800 |
   | AS1–AS5 | 2,520 | 10,080 |
   | AS6–AS7 | 2,250 | 9,000 |
+  | PB1, PB2, PP1 | 9,900 | 39,600 |
 
 - The colour is decided the moment the number is saved, so if a target ever changes, old cells keep the colour they had at the time.
 - A little white corner on a cell means an issue was logged against that slot. The Issue column lists them, tagged with the slot they were logged at.
@@ -86,7 +88,7 @@ Plus two settings:
 
 - The **Scheduled** checkbox. Untick it for a machine that wasn't supposed to run (planned maintenance, no work for it). That machine is left out of the shift entirely — it doesn't score 0%, it just isn't in the picture.
 - The **Shift length** — 8h, 10h or 12h, or a typed 2, 4 or 6 on a short day — per machine, per day, *per shift*: set on the 1st Shift page for the 1st Shift and on the 2nd Shift page for the 2nd (a 3rd Shift is 8h unless the day is a short one). A machine that ran 6AM to 6PM is judged against 720 minutes, not 480, and its shift is the six readings from 8AM to 6PM. The crew keeps writing the running count into the 4PM and 6PM boxes on the rounds exactly as they do now; only OEE reads them differently.
-  - **Short days** (mostly Saturdays): the day runs on 6-hour shifts — 1st 6AM–12PM, 2nd 12PM–6PM, 3rd 6PM–12AM, nothing after midnight. Type how many of those hours the machine was **scheduled** for, 2, 4 or 6, in the box after 12h (production is only read every 2 hours, so odd numbers aren't allowed); 4 on the 1st Shift means 6AM–10AM, judged against 240 minutes, with the standard scaled down to match. A "Set every machine to __ hours" button fills all 34 in one go. Production is still the shift's last reading — on a short 1st Shift that's the 8AM/10AM/12PM boxes, so the final count needs to be in the 12PM box at the latest (a 2PM reading belongs to the 12PM–6PM shift). Each 6-hour crew starts its count from zero, like any shift change.
+  - **Short days** (mostly Saturdays): the day runs on 6-hour shifts — 1st 6AM–12PM, 2nd 12PM–6PM, 3rd 6PM–12AM, nothing after midnight. Type how many of those hours the machine was **scheduled** for, 2, 4 or 6, in the box after 12h (production is only read every 2 hours, so odd numbers aren't allowed); 4 on the 1st Shift means 6AM–10AM, judged against 240 minutes, with the standard scaled down to match. A "Set every machine to __ hours" button fills them all in one go. Production is still the shift's last reading — on a short 1st Shift that's the 8AM/10AM/12PM boxes, so the final count needs to be in the 12PM box at the latest (a 2PM reading belongs to the 12PM–6PM shift). Each 6-hour crew starts its count from zero, like any shift change.
   - **Scheduled hours, not hours run.** If a machine was scheduled for 6 hours and the operator didn't turn up for two of them, type 6 and put 120 minutes on Lack of Operator. Typing 4 would make those two lost hours vanish from OEE, the same way unticking Scheduled makes a whole shift vanish.
   - On a short day the 2nd and 3rd Shift start *unticked* — the usual short day is one morning crew. Typing hours on their page ticks the box.
   - A shift's length says where it starts: the second 12-hour shift of the day is 6PM–6AM, the second 10-hour one is 4PM–2AM. So an 8-hour 1st Shift followed by a 12-hour crew at 6PM is just "2nd Shift: 12h" on the 2nd Shift page.

@@ -9,7 +9,7 @@ The app turns those readings into live green/red boards for the floor, a
 shift-by-shift review page for supervisors, and an OEE (Overall Equipment
 Effectiveness) report with a downtime Pareto.
 
-It covers 34 machines in five zones, three shifts a day.
+It covers 37 machines in six zones, three shifts a day.
 
 ## What's in it
 

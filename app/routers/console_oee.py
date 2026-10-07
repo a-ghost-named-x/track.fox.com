@@ -12,7 +12,7 @@ Pre-fill
 Unlike /console/<zone>, which several people share, this form is owned by one
 person, so every field is pre-filled from what's on record. Each write path
 compares against the stored value and skips when nothing changed, so saving
-an untouched page doesn't append 34 identical rows.
+an untouched page doesn't append an identical row for every machine.
 
 Retired reason codes
 --------------------

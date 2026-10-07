@@ -44,7 +44,7 @@ import app.routers.console as console_mod  # noqa: E402
 import app.routers.console_oee as console_oee_mod  # noqa: E402
 import app.routers.oee as oee_router  # noqa: E402
 import app.routers.supervisor as sup_mod  # noqa: E402
-from app.models import MACHINE_IDS, SHIFT_SLOTS  # noqa: E402
+from app.models import DASHBOARD_ZONES, MACHINE_IDS, SHIFT_SLOTS  # noqa: E402
 
 DAY = date(2026, 9, 8)
 SHIFT = "1st Shift"
@@ -185,8 +185,9 @@ def radio_disabled(html, machine, value):
 
 
 print("\n== every page renders ==")
-for path in ("/dashboard", "/dashboard/b3", "/supervisor", "/oee",
-             "/console", "/console/b3", "/console/oee", "/healthz"):
+ZONE_PATHS = [f"/{page}/{slug}" for slug in DASHBOARD_ZONES for page in ("dashboard", "console")]
+for path in ["/dashboard", "/supervisor", "/oee", "/console", "/console/oee", "/healthz",
+             *ZONE_PATHS]:
     res = client.get(path)
     check(f"GET {path} -> 200", res.status_code == 200,
           f"got {res.status_code}: {res.text[:300]}")
@@ -196,6 +197,15 @@ res = client.get("/console/oee")
 check("not a 404", res.status_code == 200, str(res.status_code))
 check("renders the OEE form, not a zone grid", "End of Shift OEE" in res.text)
 check("unknown zones still 404", client.get("/console/nope").status_code == 404)
+
+print("\n== every zone has a section on the review pages ==")
+for path in ("/supervisor", "/oee"):
+    page = client.get(path).text
+    check(f"{path} has a section per zone",
+          all(f'<section class="zone-section" data-zone="{slug}">' in page for slug in DASHBOARD_ZONES))
+oee_form = client.get("/console/oee").text
+check("/console/oee has a row for every machine",
+      all(f'name="sched_present_{m}"' in oee_form for m in MACHINE_IDS))
 
 print("\n== THE REVERT: /console/<zone> is good units only ==")
 batch = client.get("/console/b3").text
@@ -211,7 +221,7 @@ check("employee number intact", 'name="entered_by"' in batch)
 
 print("\n== /console/oee form contents ==")
 form = client.get("/console/oee").text
-check("all 34 machines", form.count('name="sched_present_') == 34,
+check("every machine", form.count('name="sched_present_') == len(MACHINE_IDS),
       str(form.count('name="sched_present_')))
 check("all 13 reasons on C1", sum(
     1 for code in REASONS if f'name="dt_on_C1_{code}"' in form) == 13)
@@ -440,7 +450,7 @@ check("1st Shift page offers the radio group",
       all(f'name="hours_C1" value="{h}"' in first for h in (8, 10, 12)))
 check("8h is the default", "checked" in first.split('name="hours_C1" value="8"')[1][:80])
 check("every machine gets one (8h, 10h, 12h and the short day)",
-      first.count('name="hours_') == 34 * 4, str(first.count('name="hours_')))
+      first.count('name="hours_') == len(MACHINE_IDS) * 4, str(first.count('name="hours_')))
 second = client.get(f"/console/oee?shift=2nd%20Shift&entry_date={DAY.isoformat()}").text
 check("2nd Shift page offers it too", 'name="hours_C1" value="12"' in second)
 check("...marked as following the 1st Shift when nothing is set", "follows 1st" in second)
@@ -600,7 +610,7 @@ def post_shift(shift, fields):
 
 reset()
 first = client.get(FIRST_URL).text
-check("every row has the short-day option", first.count('value="short"') == 34,
+check("every row has the short-day option", first.count('value="short"') == len(MACHINE_IDS),
       str(first.count('value="short"')))
 check("...with its hours box, 2 to 6 in steps of 2",
       'min="2" max="6" step="2"' in short_box(first, "C1"))
@@ -742,9 +752,9 @@ check("and their shift length", payload["shifts"][SHIFT]["machines"]["C1"]["shif
       and payload["shifts"][SHIFT]["machines"]["C1"]["span"] == "6AM-2PM")
 check("/oee page has the length tag slot", 'class="shift-length"' in oee_page)
 check("/oee has the Pareto picker with a chip per zone",
-      oee_page.count('class="quick-pick pareto-chip"') == 6)   # All + 5 zones
+      oee_page.count('class="quick-pick pareto-chip"') == 1 + len(DASHBOARD_ZONES))  # plus All
 check("...and a checkbox per machine",
-      oee_page.count('<input type="checkbox" value="') == 34)
+      oee_page.count('<input type="checkbox" value="') == len(MACHINE_IDS))
 check("...all unticked, since nothing ticked means every machine",
       '<input type="checkbox" value="C1" checked>' not in oee_page)
 check("?pareto= is passed through to the page",
@@ -760,7 +770,8 @@ check("the floor total is there, hidden", 'id="floor-total" hidden' in oee_page)
 check("the left-out line is there, hidden until a period is picked",
       'id="left-out" hidden' in oee_page)
 check("each zone has a total row, hidden until a period is picked",
-      oee_page.count("<tfoot hidden>") == 5 and oee_page.count("data-zone-total") == 5)
+      oee_page.count("<tfoot hidden>") == len(DASHBOARD_ZONES)
+      and oee_page.count("data-zone-total") == len(DASHBOARD_ZONES))
 check("?period=30 is passed through", "window.INITIAL_PERIOD = 30" in client.get("/oee?period=30").text)
 check("an unknown period means one shift",
       "window.INITIAL_PERIOD = null" in client.get("/oee?period=9").text)

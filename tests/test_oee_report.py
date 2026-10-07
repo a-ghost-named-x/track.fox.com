@@ -68,6 +68,7 @@ NOW_SAT = datetime(2026, 9, 14, 9, 0)
 SHIFT = "1st Shift"
 S1 = SHIFT_SLOTS[SHIFT]
 
+# Pouch is left out, so it stands in for a machine with no ideal rate yet.
 INCREMENTS = {
     "C1": 11700, "C2": 11700, "C3": 11700, "C4": 11700, "C5": 11700,
     "C6": 10800, "C7": 10800, "C8": 10800, "C9": 10800, "C10": 10800, "C11": 10800,
@@ -305,6 +306,10 @@ check("no OEE", M["C6"]["shift"], None)
 check("downtime is still carried", M["C6"]["has_downtime"], True)
 check("and its reasons survive for the Pareto", len(M["C6"]["reasons"]), 1)
 
+print("\n== PB1: no ideal rate ==")
+check("flagged, so the banner says why", M["PB1"]["flags"], ["no_ideal_rate"])
+check("no OEE", M["PB1"]["shift"], None)
+
 print("\n== P3: not scheduled ==")
 check("scheduled false", M["P3"]["scheduled"], False)
 check("still computed individually", M["P3"]["shift"] is not None, True)
@@ -357,7 +362,7 @@ check("so it is not scheduled", ws3_3rd["scheduled"], False)
 check("and says who covered the night", ws3_3rd["covered_by"],
       {"shift": "2nd Shift", "hours": 12, "span": "6PM-6AM"})
 check("3rd Shift completeness leaves it out (WS1, WS2, WS3, P1 have none)",
-      report["shifts"]["3rd Shift"]["completeness"]["machines"], 30)
+      report["shifts"]["3rd Shift"]["completeness"]["machines"], len(MACHINE_IDS) - 4)
 
 print("\n== the production day: C1's 3rd Shift is DAY 10PM -> DAY_AFTER 6AM ==")
 c1_3rd = report["shifts"]["3rd Shift"]["machines"]["C1"]
@@ -421,7 +426,7 @@ check("share of unplanned", pareto[0]["pct_of_unplanned"], 240 / 315)
 
 print("\n== completeness is per column, counted in machines ==")
 c = shift["completeness"]
-check("scheduled machines", c["machines"], 33)          # 34 minus unscheduled P3
+check("scheduled machines", c["machines"], len(MACHINE_IDS) - 1)  # all but unscheduled P3
 check("production entered", c["production"], 8)         # C1-C5, WS1, WS3, P1 (P3 excluded)
 check("downtime entered", c["downtime"], 8)             # C1-C4, C6, WS1, WS3, P1
 check("scrap entered", c["scrap"], 6)                   # C1, C2, C4, WS1, WS3, P1

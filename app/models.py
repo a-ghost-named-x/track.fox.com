@@ -21,6 +21,7 @@ MACHINE_IDS: list[str] = [
     "WS1", "WS2", "WS3", "WS4", "WS5", "WS6",
     "P1", "P2", "P3", "P4",
     "AS1", "AS2", "AS3", "AS4", "AS5", "AS6", "AS7",
+    "PB1", "PB2", "PP1",
 ]
 
 # One floor screen per zone, served at /dashboard/<slug>.
@@ -30,6 +31,7 @@ DASHBOARD_ZONES: dict[str, list[str]] = {
     "b4": ["P1", "P2", "P3", "P4"],
     "ws": ["WS1", "WS2", "WS3", "WS4", "WS5", "WS6"],
     "leno": ["AS1", "AS2", "AS3", "AS4", "AS5", "AS6", "AS7"],
+    "pouch": ["PB1", "PB2", "PP1"],
 }
 
 DASHBOARD_ZONE_LABELS: dict[str, str] = {
@@ -38,11 +40,12 @@ DASHBOARD_ZONE_LABELS: dict[str, str] = {
     "b4": "Poly",
     "ws": "WS",
     "leno": "Leno",
+    "pouch": "Pouch",
 }
 
 # Top-to-bottom zone order on /supervisor. Slugs missing from DASHBOARD_ZONES
 # are skipped, so retiring a zone can't break the page.
-SUPERVISOR_ZONE_ORDER: list[str] = ["b3", "b2", "ws", "b4", "leno"]
+SUPERVISOR_ZONE_ORDER: list[str] = ["b3", "b2", "ws", "b4", "leno", "pouch"]
 
 # Three 8-hour shifts, keyed by the server-local hour each one starts.
 SHIFTS: list[tuple[int, str]] = [
@@ -530,6 +533,12 @@ class ShiftLengthCreate(BaseModel):
             raise ValueError(f"shift_hours must be one of {VALID_SHIFT_HOURS}")
         return value
 
+
+# Every machine belongs to exactly one zone, or it would have no board, no
+# rounds form and no section on the review pages.
+assert sorted(m for zone in DASHBOARD_ZONES.values() for m in zone) == sorted(MACHINE_IDS), (
+    "MACHINE_IDS and DASHBOARD_ZONES must list the same machines, each once"
+)
 
 # The boards use SHIFT_SLOTS and OEE uses shift_plan(); they must agree.
 assert shift_plan(DEFAULT_SHIFT_HOURS) == SHIFT_SLOTS, (

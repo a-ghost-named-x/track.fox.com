@@ -104,7 +104,7 @@ def supervisor_data(date: str | None = None):
     """Everything /supervisor needs for one production date.
 
     Returns all 12 slots plus each shift's operators and issues, so the shift
-    toggle works without another request (at most 408 rows).
+    toggle works without another request (at most 12 rows per machine).
 
     A missing or unparseable date falls back to the most recent date with
     entries. A valid date with no entries is returned as-is, empty.
