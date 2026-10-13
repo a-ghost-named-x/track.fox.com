@@ -906,8 +906,8 @@ const MISSING_CODES = new Set(["no_downtime", "no_production"]);
 /**
  * Over 7/30 days: one line counting the left-out machine-shifts, opening to
  * two groups, numbers that look wrong and entries that are missing, each
- * listed by reason with the worst machines first. Dates are on each
- * machine's tooltip.
+ * listed by reason with the worst machines first and each machine's dates
+ * after it, newest first like the day columns.
  */
 function renderLeftOut(range) {
     leftOutDetails.textContent = "";
@@ -916,7 +916,9 @@ function renderLeftOut(range) {
     let total = 0;
     for (const machineId of ALL_MACHINE_IDS) {
         const group = range.machines[machineId] && range.machines[machineId][rangeShift];
-        for (const item of (group && group.left_out_shifts) || []) {
+        // The server lists them oldest first.
+        const leftOut = ((group && group.left_out_shifts) || []).slice().reverse();
+        for (const item of leftOut) {
             total += 1;
             const kinds = new Set();
             for (const code of item.reasons) {
@@ -924,7 +926,8 @@ function renderLeftOut(range) {
                 kinds.add(kind);
                 if (!kind.groups.has(code)) kind.groups.set(code, new Map());
                 const byMachine = kind.groups.get(code);
-                byMachine.set(machineId, (byMachine.get(machineId) || 0) + 1);
+                if (!byMachine.has(machineId)) byMachine.set(machineId, []);
+                byMachine.get(machineId).push(leftOutWhen(item));
             }
             kinds.forEach((kind) => { kind.shifts += 1; });
         }
@@ -946,11 +949,16 @@ function renderLeftOut(range) {
         `Numbers that look wrong: ${plural(wrong.shifts)}. Fix at /console.`);
     appendLeftOutGroup(missing, "flag-lead flag-lead-warning",
         `Not entered: ${plural(missing.shifts)}. Enter on /console/oee.`);
+}
 
-    const hint = document.createElement("div");
-    hint.className = "flag-hint";
-    hint.textContent = "Hover a machine's shift count for the dates.";
-    leftOutDetails.appendChild(hint);
+/**
+ * "Fri 9/25 2nd", or just "Fri 9/25" with one shift picked. Non-breaking
+ * spaces keep a date on one line when the list wraps.
+ */
+function leftOutWhen(item) {
+    const parts = [weekday(item.date), monthDay(item.date)];
+    if (rangeShift === ALL_SHIFTS) parts.push(shortShift(item.shift));
+    return parts.join(" ");
 }
 
 function appendLeftOutGroup(kind, className, text) {
@@ -963,8 +971,11 @@ function appendLeftOutGroup(kind, className, text) {
     const listed = new Map();
     for (const [code, byMachine] of kind.groups) {
         // Most first; ties keep page order, since the sort is stable.
-        const worstFirst = Array.from(byMachine).sort((a, b) => b[1] - a[1]);
-        listed.set(code, worstFirst.map(([id, n]) => (n > 1 ? `${id} ×${n}` : id)));
+        const worstFirst = Array.from(byMachine).sort((a, b) => b[1].length - a[1].length);
+        listed.set(code, worstFirst.map(([id, dates]) => ({
+            label: dates.length > 1 ? `${id} ×${dates.length}` : id,
+            dates,
+        })));
     }
     appendFlagGroup(leftOutDetails, listed, LEFT_OUT_LABELS);
 }
@@ -1036,8 +1047,12 @@ function groupByCode(machines, field) {
     return groups;
 }
 
+/**
+ * One line per code: its title, the machines, then what to do. A machine is
+ * an id, or `{label, dates}` to print its dates after it.
+ */
 function appendFlagGroup(parent, groups, table) {
-    for (const [code, machineIds] of groups) {
+    for (const [code, machines] of groups) {
         const entry = table[code] || { title: code, detail: "" };
         const row = document.createElement("div");
         row.className = "flag-row";
@@ -1048,7 +1063,18 @@ function appendFlagGroup(parent, groups, table) {
 
         const list = document.createElement("span");
         list.className = "flag-machines";
-        list.textContent = machineIds.join(", ");
+        machines.forEach((machine, index) => {
+            if (index) list.append(", ");
+            if (typeof machine === "string") {
+                list.append(machine);
+                return;
+            }
+            list.append(machine.label);
+            const dates = document.createElement("span");
+            dates.className = "flag-dates";
+            dates.textContent = ` (${machine.dates.join(", ")})`;
+            list.append(dates);
+        });
 
         const detail = document.createElement("span");
         detail.className = "flag-detail";

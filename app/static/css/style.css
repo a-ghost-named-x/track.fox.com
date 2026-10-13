@@ -776,12 +776,6 @@ button.shift-option {
     text-indent: -0.9rem;
 }
 
-.flag-hint {
-    margin-top: 0.4rem;
-    font-size: 0.85em;
-    opacity: 0.75;
-}
-
 /* Over 7/30 days: left-out shifts as one quiet line, the list behind it. */
 .left-out {
     margin: -0.6rem 0 1.25rem;
@@ -843,6 +837,11 @@ button.shift-option {
     margin-left: 0.35rem;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
+}
+
+/* A machine's dates, lighter than its name so the names still scan. */
+.flag-dates {
+    font-weight: 400;
 }
 
 .flag-detail {
