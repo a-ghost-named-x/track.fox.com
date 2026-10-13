@@ -318,9 +318,10 @@ check_eq("elapsed follows each slot's own date",
 
 print("\n== defaults ==")
 check_eq("8h: everything scheduled by default",
-         [default_scheduled(s, 8) for s in SHIFT_SLOTS], [True, True, True])
+         [default_scheduled(s, resolve_day_lengths({})) for s in SHIFT_SLOTS], [True, True, True])
 check_eq("12h: 1st yes, 2nd no (night crew is the exception), 3rd doesn't exist",
-         [default_scheduled(s, 12) for s in SHIFT_SLOTS], [True, False, False])
+         [default_scheduled(s, resolve_day_lengths({"1st Shift": 12})) for s in SHIFT_SLOTS],
+         [True, False, False])
 # The form's date box: 3rd Shift is entered the morning after it started.
 check_eq("3rd Shift page at 6:30AM Fri -> Thu",
          default_production_day("3rd Shift", datetime(2026, 9, 19, 6, 30)), date(2026, 9, 18))

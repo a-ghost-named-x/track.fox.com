@@ -1442,7 +1442,7 @@ button.shift-option {
     cursor: pointer;
 }
 
-/* Radios only: the short-day option carries a visible number box too. */
+/* Radios only: the short-shift option carries a visible number box too. */
 .hours-option input[type="radio"] {
     position: absolute;
     opacity: 0;
@@ -1489,7 +1489,7 @@ button.shift-option {
     text-decoration: line-through;
 }
 
-/* The short-day segment, with its hours box inside. The box takes the
+/* The short-shift segment, with its hours box inside. The box takes the
    segment's colours when selected. */
 .hours-option-short span {
     display: inline-flex;
@@ -1532,7 +1532,7 @@ button.shift-option {
     cursor: not-allowed;
 }
 
-/* Clock span for a non-8-hour length ("6AM-10AM"), under the control. */
+/* Clock span for a non-8-hour length ("2PM-8PM"), under the control. */
 .hours-span-line {
     display: block;
     margin-top: 0.15rem;
@@ -1540,7 +1540,7 @@ button.shift-option {
     color: var(--accent);
 }
 
-/* "Set every machine to [ ] hours  Apply", inline in the short-day hint. */
+/* "Set every machine to [ ] hours  Apply", inline in the short-shift hint. */
 .set-all-hours {
     display: flex;
     flex-wrap: wrap;
@@ -1573,7 +1573,7 @@ button.shift-option {
     color: var(--text-dim);
 }
 
-/* A 2nd Shift with no length of its own is following the 1st Shift's. */
+/* A shift with no length of its own is following the one before it. */
 .hours-inherited {
     display: block;
     margin-top: 0.15rem;
@@ -1587,25 +1587,6 @@ button.shift-option {
 .shift-span-line {
     margin: 0 0 1rem;
     font-size: 0.9rem;
-    color: var(--text-dim);
-}
-
-/* Read-only length on rows with nothing to choose. */
-.hours-readonly {
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: var(--text-dim);
-    cursor: help;
-}
-
-.hours-readonly.is-long {
-    color: var(--accent);
-}
-
-.hours-span {
-    margin-left: 0.35rem;
-    font-size: 0.75rem;
-    font-weight: 400;
     color: var(--text-dim);
 }
 

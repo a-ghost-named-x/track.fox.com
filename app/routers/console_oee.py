@@ -24,18 +24,16 @@ minutes.
 
 Shift length
 ------------
-Each shift's length is set on that shift's page: 8, 10 or 12 hours, or 2, 4 or 6
-on a short day (rules in "Shift length" in app/models.py). Options that would
-overlap an earlier shift are disabled on the page and rejected on save by
-shift_length_conflict(). A 10 or 12-hour 2nd Shift defaults to not scheduled
-and leaves no 3rd Shift that night; that row shows "no 3rd shift" with no
-inputs.
+Each shift's length is set on that shift's page: 8, 10 or 12 hours (just 8 on
+the 3rd Shift), or a short shift of 2, 4 or 6 (rules in "Shift length" in
+app/models.py). Options that would overlap an earlier shift are disabled on
+the page and rejected on save by shift_length_conflict(). A 10 or 12-hour 2nd
+Shift defaults to not scheduled and leaves no 3rd Shift that night; that row
+shows "no 3rd shift" with no inputs.
 
-The short day is a fourth radio with a number box inside it, so the radio
+The short shift is a fourth radio with a number box inside it, so the radio
 group always posts exactly one value. A number typed in the box while 8, 10
-or 12 is picked is rejected as contradictory. The 3rd Shift page only shows
-the length control on rows whose 2nd Shift is a short day, the only case
-where a 3rd Shift has a choice.
+or 12 is picked is rejected as contradictory.
 
 The date is the production day the shift started on. The 3rd Shift page
 defaults to yesterday when opened in the morning.
@@ -70,7 +68,6 @@ from app.models import (
     OEE_ZONE_ORDER,
     SHIFT_LENGTH_HOURS,
     SHIFT_ORDER,
-    SHORT_PATTERN_HOURS,
     SHORT_SHIFT_HOURS,
     DowntimeReasonInput,
     ScheduleCreate,
@@ -135,15 +132,16 @@ def _blank_row() -> dict:
         "window_span": "",
         "shift_minutes": DEFAULT_SHIFT_HOURS * 60,
         # Shortest and longest pattern this shift may be, so the page can
-        # disable options that would overlap. A short day's 2, 4 or 6 are all
-        # pattern 6.
-        "min_pattern": SHORT_PATTERN_HOURS,
+        # disable options that would overlap. A short shift's 2, 4 or 6 are
+        # all pattern 8.
+        "min_pattern": DEFAULT_SHIFT_HOURS,
         "max_pattern": max(SHIFT_LENGTH_HOURS),
-        # Short-day box value: the stored hours on a short day, else empty.
+        # The later shift that sets max_pattern, as "4h", for the tooltip.
+        "max_label": "",
+        # Short-shift box value: the stored hours on a short shift, else empty.
         "short_value": "",
-        # Whether this row gets a length control. On the 3rd Shift page,
-        # only when the 2nd Shift is a short day.
-        "length_editable": True,
+        # Why Scheduled starts unticked, when it does (see _unticked_hint()).
+        "unticked_hint": None,
         # Whether this shift's length was set on this page or inherited.
         "hours_explicit": False,
         # Whether `scheduled` came from a stored row or the default. The POST
@@ -176,6 +174,23 @@ def _retired_on_row(codes, active: dict, all_reasons: dict) -> list[dict]:
     ]
 
 
+def _unticked_hint(shift: str, day: dict[str, int]) -> str | None:
+    """Why `shift` starts unticked on a machine's day, or None when it starts
+    ticked (or doesn't exist). Shown on the Scheduled box."""
+    hours = day[shift]
+    if default_scheduled(shift, day) or shift_slots(shift, hours) is None:
+        return None
+    if hours > DEFAULT_SHIFT_HOURS:
+        return (
+            f"A {hours}h night crew ({shift_span(shift, hours)}) is the exception, "
+            "so this starts unticked unless set. Tick it if one ran."
+        )
+    return (
+        "This machine has a short shift today, so this starts unticked: on those "
+        "days not every crew runs. Tick it if this machine ran."
+    )
+
+
 def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
     """Current state of every machine for this date and shift, as form
     values."""
@@ -196,7 +211,7 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
         row["span"] = shift_span(shift, hours) or ""
         row["window_span"] = window_span(shift, hours) or ""
         row["shift_minutes"] = hours * 60
-        row["short_value"] = str(hours) if hours <= SHORT_PATTERN_HOURS else ""
+        row["short_value"] = str(hours) if hours < DEFAULT_SHIFT_HOURS else ""
         row["hours_explicit"] = (machine_id, shift) in lengths
         row["explicit"] = {
             s_label: h for (m, s_label), h in lengths.items() if m == machine_id
@@ -204,15 +219,13 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
         if index > 0:
             row["min_pattern"] = pattern_hours(day[SHIFT_ORDER[index - 1]])
         later_explicit = [
-            pattern_hours(row["explicit"][s_label]) for s_label in SHIFT_ORDER[index + 1:]
+            row["explicit"][s_label] for s_label in SHIFT_ORDER[index + 1:]
             if s_label in row["explicit"]
         ]
         if later_explicit:
-            row["max_pattern"] = min(later_explicit)
-        # After an 8-hour 2nd Shift, the 3rd can only be 8 hours.
-        row["length_editable"] = (
-            shift != SHIFT_ORDER[-1] or row["min_pattern"] == SHORT_PATTERN_HOURS
-        )
+            limit = min(later_explicit, key=pattern_hours)
+            row["max_pattern"] = pattern_hours(limit)
+            row["max_label"] = f"{limit}h"
         if not row["shift_exists"]:
             # No inputs are rendered for this row and the POST ignores it.
             previous = SHIFT_ORDER[index - 1]
@@ -226,8 +239,9 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
             continue
         row["scheduled_explicit"] = (machine_id, shift) in schedule
         row["scheduled"] = schedule.get(
-            (machine_id, shift), default_scheduled(shift, hours)
+            (machine_id, shift), default_scheduled(shift, day)
         )
+        row["unticked_hint"] = _unticked_hint(shift, day)
 
         scrap_value = scrap.get((machine_id, shift))
         if scrap_value is not None:
@@ -277,11 +291,10 @@ def _context(
         "top_error": top_error,
         "max_shift_minutes": MAX_SHIFT_MINUTES,
         # 8/10/12 on the 1st and 2nd Shift pages, just 8 on the 3rd. The
-        # short-day option is on every page.
+        # short-shift option is on every page.
         "shift_length_options": long_length_options(shift),
         "short_shift_hours": SHORT_SHIFT_HOURS,
         "short_hours_text": SHORT_HOURS_TEXT,
-        "short_pattern_hours": SHORT_PATTERN_HOURS,
         "default_shift_hours": DEFAULT_SHIFT_HOURS,
         # Page-level flags, used for the hint text.
         "is_last_shift": shift == SHIFT_ORDER[-1],
@@ -383,9 +396,9 @@ SHORT_HOURS_TEXT = _or_list(SHORT_SHIFT_HOURS)
 
 def _length_menu(shift: str) -> str:
     """The lengths `shift` can take, as a sentence for error messages:
-    "8, 10 or 12 hours, or a short day of 2, 4 or 6" (just "8 hours, ..." on
+    "8, 10 or 12 hours, or a short shift of 2, 4 or 6" (just "8 hours, ..." on
     the 3rd Shift)."""
-    return f"{_or_list(long_length_options(shift))} hours, or a short day of {SHORT_HOURS_TEXT}"
+    return f"{_or_list(long_length_options(shift))} hours, or a short shift of {SHORT_HOURS_TEXT}"
 
 
 def _parse_length(raw_choice: str | None, raw_short: str, shift: str) -> tuple[int | None, str | None]:
@@ -402,22 +415,22 @@ def _parse_length(raw_choice: str | None, raw_short: str, shift: str) -> tuple[i
 
     if raw_choice == "short":
         if not raw_short:
-            return None, f"Short day is picked but no hours are typed - enter {SHORT_HOURS_TEXT}."
+            return None, f"Short shift is picked but no hours are typed - enter {SHORT_HOURS_TEXT}."
         try:
             hours = int(raw_short)
         except ValueError:
             hours = None
         if hours not in SHORT_SHIFT_HOURS:
             return None, (
-                f"Short-day hours must be {SHORT_HOURS_TEXT}, since production "
+                f"Short-shift hours must be {SHORT_HOURS_TEXT}, since production "
                 "is only read every 2 hours."
             )
         return hours, None
 
     if raw_short:
         return None, (
-            f"{raw_short} is typed in the short-day box but {raw_choice}h is picked - "
-            "pick the short day, or clear the box."
+            f"{raw_short} is typed in the short-shift box but {raw_choice}h is picked - "
+            "pick the short shift, or clear the box."
         )
     try:
         hours = int(raw_choice)
@@ -518,6 +531,11 @@ async def console_oee_submit(request: Request):
         )
         if hours_error:
             errors.append(hours_error)
+        # This machine's day as it will be after the save. Only this shift and
+        # the ones before it matter for its Scheduled default.
+        day_after = resolve_day_lengths(
+            {**previous["explicit"], selected_shift: submitted_hours}
+        )
 
         row = _blank_row()
         row.update(
@@ -528,11 +546,12 @@ async def console_oee_submit(request: Request):
                 "window_span": window_span(selected_shift, submitted_hours),
                 "shift_minutes": submitted_hours * 60,
                 "short_value": (
-                    str(submitted_hours) if submitted_hours <= SHORT_PATTERN_HOURS else ""
+                    str(submitted_hours) if submitted_hours < DEFAULT_SHIFT_HOURS else ""
                 ),
                 "min_pattern": previous["min_pattern"],
                 "max_pattern": previous["max_pattern"],
-                "length_editable": previous["length_editable"],
+                "max_label": previous["max_label"],
+                "unticked_hint": _unticked_hint(selected_shift, day_after),
                 "hours_explicit": previous["hours_explicit"] or raw_hours is not None,
                 "explicit": previous["explicit"],
                 "scheduled": submitted_scheduled if sched_present else previous["scheduled"],
@@ -570,7 +589,7 @@ async def console_oee_submit(request: Request):
                     )
                 )
                 row["saved_parts"].append(
-                    f"{submitted_hours}h short day" if submitted_hours <= SHORT_PATTERN_HOURS
+                    f"{submitted_hours}h short shift" if submitted_hours < DEFAULT_SHIFT_HOURS
                     else f"{submitted_hours}h shifts"
                 )
             except ValidationError:
@@ -578,12 +597,12 @@ async def console_oee_submit(request: Request):
 
         # --- scheduling ---------------------------------------------------
         # Compare against the default for the length being saved, not the one
-        # the page loaded with. Picking 12h on the 2nd Shift page flips the
-        # default to not scheduled, so a tick on the same save must be
-        # written or the night would show as not scheduled.
+        # the page loaded with. Picking 12h or a short shift on the 2nd Shift
+        # page flips the default to not scheduled, so a tick on the same save
+        # must be written or the shift would show as not scheduled.
         baseline_scheduled = (
             previous["scheduled"] if previous["scheduled_explicit"]
-            else default_scheduled(selected_shift, submitted_hours)
+            else default_scheduled(selected_shift, day_after)
         )
         if sched_present and submitted_scheduled != baseline_scheduled:
             any_change = True

@@ -82,12 +82,12 @@
             page. On a 10h/12h night the 2nd Shift starts unticked, so tick it there if a crew ran.
             {% elif not is_last_shift %}
             <strong>Shift length:</strong> a 12h 2nd Shift is 6PM–6AM and a 10h one is 4PM–2AM,
-            whatever the 1st Shift was. It can't be shorter than the 1st Shift (it would start inside it).
-            Picking 10h or 12h ticks Scheduled, since you're saying a crew ran; untick it if not.
+            whatever the 1st Shift was. It can't be shorter than the 1st Shift (it would start inside it);
+            a short shift counts as 8h for that. Picking 10h, 12h or a short shift ticks Scheduled, since
+            you're saying a crew ran; untick it if not.
             {% else %}
-            <strong>Shift length:</strong> a 3rd Shift is 8h, 10PM–6AM, unless the 2nd Shift was a short
-            day (then it's 6PM–12AM and you type its hours here). A machine whose 2nd Shift ran 10h or 12h
-            has no 3rd Shift; its night is on the 2nd Shift page.
+            <strong>Shift length:</strong> a 3rd Shift is 8h, 10PM–6AM, or a short shift from 10PM.
+            A machine whose 2nd Shift ran 10h or 12h has no 3rd Shift; its night is on the 2nd Shift page.
             {% endif %}
             <button type="button" class="link-button" id="mark-all-clean">Tick “no downtime” on every untouched machine</button>
         </p>
@@ -95,11 +95,14 @@
         {# Scheduled hours, not hours run: typing fewer to cover a no-show
            would hide that loss from OEE. #}
         <p class="oee-entry-hint">
-            <strong>Short day:</strong> type the hours ({{ short_hours_text }}, since production is read every
-            2 hours) a machine was <em>scheduled</em> for in the box after 12h, and its day runs on 6-hour shifts:
-            1st 6AM–12PM, 2nd 12PM–6PM, 3rd 6PM–12AM. OEE judges it against that many hours.
-            {% if not is_first_shift %}After a short 1st Shift this shift starts unticked, since usually
-            only the morning crew runs; typing hours here ticks it.{% endif %}
+            <strong>Short shift:</strong> type the hours ({{ short_hours_text }}, since production is read every
+            2 hours) a machine was <em>scheduled</em> for in the box after {{ shift_length_options[-1] }}h.
+            {% if is_first_shift %}The crew can start at 6, 8 or 10AM as long as it's done by 2PM.
+            {% elif not is_last_shift %}It starts at 2PM, so 6 hours is 2PM–8PM.
+            {% else %}It starts at 10PM, so 4 hours is 10PM–2AM.{% endif %}
+            OEE judges it against that many hours.
+            {% if not is_first_shift %}After a short shift earlier in the day this shift starts unticked,
+            since on those days not every crew runs; typing hours here ticks it.{% endif %}
             If an operator didn't show for part of the scheduled time, keep the scheduled hours and
             log the gap as Lack of Operator.
             <span class="set-all-hours">
@@ -154,21 +157,21 @@
                         {% else %}
 
                         <td class="hours-col">
-                            {% if row.length_editable %}
                             {# A radio group always posts its checked value, so
                                absence in the POST means the control wasn't on
                                the page. Overlapping options are disabled here
-                               and re-checked on the server. The short day is
+                               and re-checked on the server. The short shift is
                                the fourth radio; its number box only counts
-                               when that radio is picked. #}
-                            {% set is_short = row.shift_hours <= short_pattern_hours %}
-                            {% set short_blocked = row.min_pattern > short_pattern_hours %}
+                               when that radio is picked. It sits inside the
+                               8-hour shift, so it's blocked exactly when 8h is. #}
+                            {% set is_short = row.shift_hours < default_shift_hours %}
+                            {% set short_blocked = row.min_pattern > default_shift_hours %}
                             <div class="hours-toggle" role="group" aria-label="Shift length for {{ machine }}">
                                 {% for hours in shift_length_options %}
                                 {% set blocked = hours < row.min_pattern or hours > row.max_pattern %}
                                 <label class="hours-option{% if blocked %} is-blocked{% endif %}"
                                        {% if hours < row.min_pattern %}title="Can't be shorter than the shift before it ({{ row.min_pattern }}h) — it would start inside it."
-                                       {% elif hours > row.max_pattern %}title="The next shift is set to {% if row.max_pattern == short_pattern_hours %}a short day{% else %}{{ row.max_pattern }}h{% endif %} and can't be shorter than this one. Change that first."{% endif %}>
+                                       {% elif hours > row.max_pattern %}title="A later shift is set to {{ row.max_label }} and would start inside this one. Change that first."{% endif %}>
                                     <input type="radio" name="hours_{{ machine }}" value="{{ hours }}"
                                            {% if row.shift_hours == hours %}checked{% endif %}
                                            {% if blocked and row.shift_hours != hours %}disabled{% endif %}>
@@ -176,15 +179,15 @@
                                 </label>
                                 {% endfor %}
                                 <label class="hours-option hours-option-short{% if short_blocked %} is-blocked{% endif %}"
-                                       {% if short_blocked %}title="A short day's shift would start inside the {{ row.min_pattern }}h shift before it. Make that shift a short day first."
-                                       {% else %}title="Short day: 6-hour shifts (1st 6AM–12PM, 2nd 12PM–6PM, 3rd 6PM–12AM). Type the hours this machine was scheduled for: {{ short_hours_text }}."{% endif %}>
+                                       {% if short_blocked %}title="A short shift sits inside the normal 8-hour shift, which would start inside the {{ row.min_pattern }}h shift before it."
+                                       {% else %}title="Short shift: type the hours this machine was scheduled for, {{ short_hours_text }}. It stays inside the normal shift ({{ default_span }})."{% endif %}>
                                     <input type="radio" name="hours_{{ machine }}" value="short"
                                            {% if is_short %}checked{% endif %}
                                            {% if short_blocked and not is_short %}disabled{% endif %}>
                                     <span><input type="number" class="hours-short" name="short_hours_{{ machine }}"
                                                  min="{{ short_shift_hours[0] }}" max="{{ short_shift_hours[-1] }}" step="2"
                                                  inputmode="numeric" placeholder="2/4/6"
-                                                 aria-label="Short-day hours for {{ machine }}"
+                                                 aria-label="Short-shift hours for {{ machine }}"
                                                  value="{{ row.short_value }}"
                                                  {% if short_blocked and not is_short %}disabled{% endif %}>h</span>
                                 </label>
@@ -194,13 +197,6 @@
                             <span class="hours-span-line"{% if row.shift_hours == default_shift_hours %} hidden{% endif %}>{{ row.span }}</span>
                             {% if not is_first_shift and not row.hours_explicit %}
                             <span class="hours-inherited" title="No length set for this shift; it follows the {{ previous_shift }} Shift.">follows {{ previous_shift }}</span>
-                            {% endif %}
-                            {% else %}
-                            <span class="hours-readonly{% if row.shift_hours != default_shift_hours %} is-long{% endif %}"
-                                  title="After an 8-hour 2nd Shift a 3rd Shift can only be 8 hours. It can be a short day only when the 2nd Shift is one.">
-                                {{ row.shift_hours }}h
-                                {% if row.span %}<span class="hours-span">{{ row.span }}</span>{% endif %}
-                            </span>
                             {% endif %}
                         </td>
 
@@ -213,13 +209,7 @@
                             <input type="hidden" name="sched_present_{{ machine }}" value="1">
                             <input type="checkbox" name="scheduled_{{ machine }}" value="1"
                                    {% if row.scheduled %}checked{% endif %}
-                                   {% if row.shift_hours != default_shift_hours and not is_first_shift %}
-                                   {% if row.shift_hours <= short_pattern_hours %}
-                                   title="On a short day this shift ({{ row.window_span }}) starts unticked, since usually only the morning crew runs. Tick it if this machine ran."
-                                   {% else %}
-                                   title="A {{ row.shift_hours }}h night crew ({{ row.span }}) is the exception, so this starts unticked unless set. Tick it if one ran."
-                                   {% endif %}
-                                   {% endif %}>
+                                   {% if row.unticked_hint %}title="{{ row.unticked_hint }}"{% endif %}>
                         </td>
 
                         <td class="dt-cell">
@@ -310,7 +300,6 @@
     // Used by the JS to recompute a row's clock span (see shift_span()).
     window.SHIFT_INDEX = {{ shift_index|tojson }};
     window.DAY_START_HOUR = {{ day_start_hour|tojson }};
-    window.SHORT_PATTERN_HOURS = {{ short_pattern_hours|tojson }};
     window.SHORT_SHIFT_HOURS = {{ short_shift_hours|tojson }};
     window.DEFAULT_SHIFT_HOURS = {{ default_shift_hours|tojson }};
 </script>

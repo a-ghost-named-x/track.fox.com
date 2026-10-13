@@ -19,9 +19,6 @@ const WORLD_CLASS = 0.85;
 
 const QUICK_PICK_COUNT = 7;
 
-// A short day's shifts are 6 hours, and a stored length of 2, 4 or 6 means one.
-const SHORT_PATTERN_HOURS = window.SHORT_PATTERN_HOURS || 6;
-
 /**
  * Hard flags: the numbers can't be right, so the machine is excluded from OEE
  * and the rollups. `title` names the problem and `detail` says what to do.
@@ -39,7 +36,7 @@ const FLAG_LABELS = {
     downtime_over_shift: {
         title: "More downtime than fits in the shift",
         detail: "A shift holds at most its own length: 480 minutes on an 8-hour day, " +
-            "600 on a 10-hour one, 720 on a 12-hour one, 60 per hour typed on a short day. " +
+            "600 on a 10-hour one, 720 on a 12-hour one, 60 per hour typed for a short shift. " +
             "Check the minutes, and the hours, on /console/oee.",
     },
     no_ideal_rate: {
@@ -429,12 +426,12 @@ function fillShiftLength(row, machine) {
         return;
     }
     if (machine.window_span && machine.window_span !== machine.span) {
-        // A short day: scheduled for part of a 6-hour shift.
+        // A short shift: scheduled for part of its 8-hour shift.
         tag.title =
-            `Short day: scheduled ${hours} hour${hours === 1 ? "" : "s"} (${machine.span}) of ` +
-            `the ${machine.window_span} shift, so the machine is judged against ` +
-            `${machine.shift_minutes} minutes. Production is the last reading in that ` +
-            "shift's checkpoints. Set on /console/oee.";
+            `Short shift: scheduled for ${hours} hour${hours === 1 ? "" : "s"}, ${machine.span}, ` +
+            `so the machine is judged against ${machine.shift_minutes} minutes. Production ` +
+            `is the last reading in the ${machine.window_span} shift's checkpoints. ` +
+            "Set on /console/oee.";
         return;
     }
     tag.title =
@@ -472,10 +469,11 @@ function fillMachineRow(row, machine) {
         const lateShift = currentShift !== SHIFT_ORDER[0];
         let why = "Marked as not scheduled to run this shift on /console/oee, so it is " +
             "left out of the zone rollup entirely — not counted as 0%.";
-        if (lateShift && machine.shift_hours <= SHORT_PATTERN_HOURS) {
-            why = `On a short day this shift (${machine.window_span}) starts as not ` +
-                "scheduled, since usually only the morning crew runs. Tick Scheduled on " +
-                "/console/oee if this machine ran. Left out of the rollup entirely — not 0%.";
+        if (lateShift && machine.short_day) {
+            why = `This machine had a short shift that day, so this shift (${machine.window_span}) ` +
+                "starts as not scheduled, since on those days not every crew runs. Tick " +
+                "Scheduled on /console/oee if this machine ran. Left out of the rollup " +
+                "entirely — not 0%.";
         } else if (lateShift && machine.shift_hours !== 8) {
             why = `A ${machine.shift_hours}-hour night crew (${machine.span}) is the exception, ` +
                 "so this shift starts as not scheduled. Tick Scheduled on /console/oee " +

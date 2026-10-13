@@ -8,15 +8,14 @@
  *   - minutes boxes that follow their checkboxes, both ways
  *   - a per-machine total that warns past that machine's shift length
  *   - a "tick no downtime on every untouched machine" button
- *   - typing short-day hours picks the short day, plus a "set every machine
- *     to N hours" button
+ *   - typing short-shift hours picks the short shift, plus a "set every
+ *     machine to N hours" button
  */
 
 const MAX_SHIFT_MINUTES = window.MAX_SHIFT_MINUTES || 720;
 const SHIFT_INDEX = window.SHIFT_INDEX || 0;
 const DAY_START_HOUR = window.DAY_START_HOUR === undefined ? 6 : window.DAY_START_HOUR;
-const SHORT_PATTERN_HOURS = window.SHORT_PATTERN_HOURS || 6;
-// Production is read every 2 hours, so a short day is 2, 4 or 6 hours.
+// Production is read every 2 hours, so a short shift is 2, 4 or 6 hours.
 const SHORT_SHIFT_HOURS = window.SHORT_SHIFT_HOURS || [2, 4, 6];
 const DEFAULT_SHIFT_HOURS = window.DEFAULT_SHIFT_HOURS || 8;
 
@@ -130,14 +129,18 @@ function hourLabel(hour) {
 
 /** The clock span a length means on this page's shift; see shift_span() in app/models.py. */
 function spanFor(hours) {
-    const pattern = hours <= SHORT_PATTERN_HOURS ? SHORT_PATTERN_HOURS : hours;
+    const pattern = Math.max(hours, DEFAULT_SHIFT_HOURS);
     const start = DAY_START_HOUR + SHIFT_INDEX * pattern;
+    // A short 1st Shift's crew can start at 6, 8 or 10AM, so it has no fixed span.
+    if (hours < DEFAULT_SHIFT_HOURS && SHIFT_INDEX === 0) {
+        return `within ${hourLabel(start)}-${hourLabel(start + pattern)}`;
+    }
     return `${hourLabel(start)}-${hourLabel(start + hours)}`;
 }
 
 /**
  * The hours a row's length control says right now, or null while the short
- * day is picked with no valid number in its box yet.
+ * shift is picked with no valid number in its box yet.
  */
 function chosenHours(row) {
     const picked = row.querySelector(".hours-toggle input[type=radio]:checked");
@@ -181,7 +184,7 @@ function tickIfCrewRan(row) {
 
 /**
  * Picks `value` ("8", "10", "12" or "short") on a row, with `shortHours` in
- * the box for the short day. Returns false, touching nothing, when that
+ * the box for the short shift. Returns false, touching nothing, when that
  * option isn't on the row or would overlap a neighbouring shift.
  */
 function pickLength(row, value, shortHours) {
@@ -215,8 +218,8 @@ function wireLengthToggle(row) {
         });
     });
 
-    // Typing hours picks the short day. On input, not focus, so tabbing
-    // through doesn't switch a machine to an empty short day.
+    // Typing hours picks the short shift. On input, not focus, so tabbing
+    // through doesn't switch a machine to an empty short shift.
     if (shortRadio && shortBox) {
         shortBox.addEventListener("input", () => {
             if (shortBox.value && !shortRadio.disabled) shortRadio.checked = true;
@@ -245,7 +248,7 @@ if (setAllInput && setAllApply) {
     );
 
     if (!rows.length) {
-        // A 3rd Shift page where no machine's day allows a choice.
+        // A 3rd Shift page where every machine's 2nd Shift ran 10h or 12h.
         setAllInput.closest(".set-all-hours").hidden = true;
     }
 

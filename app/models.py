@@ -200,32 +200,37 @@ ALL_SHIFTS_LABEL: str = "All"
 #   - A later shift can be as long or longer than the one before it, never
 #     shorter; a shorter one would start inside it and count slots twice.
 #     Valid days: 8/8/8, 8/10, 8/12, 10/10, 10/12, 12/12. A 3rd Shift only
-#     exists on an all-8h day (or a short day, below).
+#     exists after an 8h (or short) 2nd Shift.
 #   - A shift with no length set inherits the one before it (the 1st
 #     defaults to 8).
 #
-# Short days
-# ----------
-# Some days (mostly Saturdays) run on 6-hour shifts: 1st 6AM-12PM, 2nd
-# 12PM-6PM, 3rd 6PM-12AM, nothing 12AM-6AM. The stored length is 2, 4 or 6
-# hours (production is only read every 2 hours, so an odd number would end
-# between two checkpoints), and it means two things:
+# Short shifts
+# ------------
+# A crew can also be scheduled for only part of its shift (mostly on
+# Saturdays): 2, 4 or 6 hours, since production is only read every 2 hours
+# and an odd number would end between two checkpoints. A short shift stays
+# inside its normal 8-hour shift:
 #
-#   - The shift sits in the 6-hour pattern (pattern_hours() returns 6). Every
-#     rule above works on the pattern: where the shift starts, which
-#     checkpoints it owns, and the as-long-or-longer check.
-#   - The machine was scheduled for that many hours of it, from the shift's
-#     start. That's Planned Production Time (hours x 60), and the standard
-#     scales with it. 4 on the 1st Shift means 6AM-10AM, 240 minutes.
+#   - The 2nd Shift always starts at 2PM and the 3rd at 10PM, so a 6-hour 2nd
+#     Shift is 2PM-8PM.
+#   - The 1st Shift's crew can start at 6, 8 or 10AM but is always done by
+#     2PM. The start isn't recorded because it doesn't change the numbers:
+#     boxes before the crew arrives are blank (the counter was at zero), boxes
+#     after it leaves are blank (unchanged), so production is still the last
+#     reading. Pages say "within 6AM-2PM" instead of a clock time.
+#
+# So for every rule above a short shift is an 8-hour one (pattern_hours()
+# returns 8): it owns the same four checkpoints the rounds use, and the
+# as-long-or-longer check treats it as 8. Only the minutes differ: Planned
+# Production Time is the scheduled hours x 60, and the standard scales with
+# it.
 #
 # The hours are scheduled time, not time run. A 6-hour shift where the
 # operator missed two hours is 6 with 120 minutes of Lack of Operator;
 # entering 4 would hide that loss.
 #
-# Production is still the last reading in the shift's own checkpoints, and
-# each 6-hour crew starts counting from zero. A shift after a short one
-# inherits the full 6-hour pattern, and a short day's 2nd and 3rd Shifts
-# default to not scheduled (see default_scheduled()).
+# Each crew starts counting from zero. A shift after a short one inherits a
+# full 8 hours, and starts unticked (see default_scheduled()).
 #
 # Lengths are stored per (machine, production day, shift) in
 # `machine_shift_length`; no row means inherit.
@@ -243,8 +248,7 @@ ALL_SHIFTS_LABEL: str = "All"
 SHIFT_LENGTH_HOURS: list[int] = [8, 10, 12]
 DEFAULT_SHIFT_HOURS: int = 8
 
-SHORT_PATTERN_HOURS: int = 6
-SHORT_SHIFT_HOURS: list[int] = list(range(2, SHORT_PATTERN_HOURS + 1, 2))
+SHORT_SHIFT_HOURS: list[int] = list(range(2, DEFAULT_SHIFT_HOURS, 2))
 
 # Every value the app writes to machine_shift_length. Its CHECK constraint
 # must accept all of these.
@@ -266,9 +270,9 @@ NIGHT_SLOTS: list[str] = [
 
 
 def pattern_hours(shift_hours: int) -> int:
-    """The shift pattern a stored length belongs to: 6 for a short day's
+    """The shift pattern a stored length belongs to: 8 for a short shift's
     2, 4 or 6, otherwise the length itself."""
-    return SHORT_PATTERN_HOURS if shift_hours <= SHORT_PATTERN_HOURS else shift_hours
+    return max(shift_hours, DEFAULT_SHIFT_HOURS)
 
 
 def shift_slots(shift: str, shift_hours: int) -> list[str] | None:
@@ -280,10 +284,10 @@ def shift_slots(shift: str, shift_hours: int) -> list[str] | None:
         1st, 8h  -> 8AM..2PM      2nd, 8h  -> 4PM..10PM    3rd, 8h -> 12AM..6AM
         1st, 10h -> 8AM..4PM      2nd, 10h -> 6PM..2AM     3rd, 10h: none
         1st, 12h -> 8AM..6PM      2nd, 12h -> 8PM..6AM     3rd, 12h: none
-        1st, 2/4/6 -> 8AM..12PM   2nd, 2/4/6 -> 2PM..6PM   3rd, 2/4/6 -> 8PM..12AM
 
-    A short-day shift owns its whole 6-hour window whatever hours were
-    entered, so it doesn't matter which of its boxes holds the final count.
+    A short shift (2, 4 or 6) owns its whole 8-hour shift's checkpoints
+    whatever hours were entered, so it doesn't matter which of its boxes
+    holds the final count.
     """
     per_shift = pattern_hours(shift_hours) * 60 // SLOT_MINUTES
     index = SHIFT_ORDER.index(shift)
@@ -307,7 +311,7 @@ def resolve_day_lengths(explicit: dict[str, int]) -> dict[str, int]:
     """Each shift's length for one machine on one day, given what was set.
 
     The 1st Shift defaults to 8 and each later shift inherits the pattern of
-    the one before it. After a 4-hour short 1st Shift, the 2nd is a full 6.
+    the one before it. After a 4-hour 1st Shift, the 2nd is a full 8.
 
     Returns a length for all three shifts even when one can't exist at that
     length; shift_slots() is the existence test.
@@ -323,20 +327,18 @@ def resolve_day_lengths(explicit: dict[str, int]) -> dict[str, int]:
 def shift_length_conflict(lengths: dict[str, int]) -> str | None:
     """A message describing the first overlap on the day, or None.
 
-    Compared on the pattern, so short-day shifts are all 6 here: 4 then 6 is
-    fine, but a short shift after an 8-hour one would start inside it.
+    Compared on the pattern, so a short shift counts as 8 here: it can follow
+    an 8-hour shift but not a 10 or 12-hour one.
     """
     for previous, current in zip(SHIFT_ORDER, SHIFT_ORDER[1:]):
         if pattern_hours(lengths[current]) < pattern_hours(lengths[previous]):
-            short = lengths[current] <= SHORT_PATTERN_HOURS
             return (
                 f"{current} ({lengths[current]}h, {shift_span(current, lengths[current])}) "
-                + (f"can't be a short-day shift after {previous}" if short
-                   else f"can't be shorter than {previous}")
-                + f" ({lengths[previous]}h, {shift_span(previous, lengths[previous])})"
+                f"can't be shorter than {previous} "
+                f"({lengths[previous]}h, {shift_span(previous, lengths[previous])})"
                 f" — it would start inside it. "
-                f"Set {current} to {pattern_hours(lengths[previous])}h or more, or "
-                + (f"make {previous} a short day too." if short else f"shorten {previous}.")
+                f"Set {current} to {pattern_hours(lengths[previous])}h or more, "
+                f"or shorten {previous}."
             )
     return None
 
@@ -378,32 +380,39 @@ def _hour_label(hour: int) -> str:
 
 def shift_span(shift: str, shift_hours: int = DEFAULT_SHIFT_HOURS) -> str | None:
     """Clock span of `shift` at that length, e.g. "6PM-6AM", or None if it
-    doesn't fit. On a short day this is the scheduled part ("12PM-4PM"); see
-    window_span() for the whole window."""
+    doesn't fit. For a short shift this is the scheduled part ("2PM-8PM"),
+    except on the 1st Shift, whose crew can start at 6, 8 or 10AM: that reads
+    "within 6AM-2PM". See window_span() for the whole shift."""
     if shift_slots(shift, shift_hours) is None:
         return None
+    if shift_hours < DEFAULT_SHIFT_HOURS and shift == SHIFT_ORDER[0]:
+        return f"within {window_span(shift, shift_hours)}"
     start = DAY_START_HOUR + SHIFT_ORDER.index(shift) * pattern_hours(shift_hours)
     return f"{_hour_label(start)}-{_hour_label(start + shift_hours)}"
 
 
 def window_span(shift: str, shift_hours: int = DEFAULT_SHIFT_HOURS) -> str | None:
-    """The whole window the shift's checkpoints come from. Differs from
-    shift_span() only on a short day."""
+    """The whole shift the checkpoints come from. Differs from shift_span()
+    only on a short shift."""
     return shift_span(shift, pattern_hours(shift_hours))
 
 
-def default_scheduled(shift: str, shift_hours: int = DEFAULT_SHIFT_HOURS) -> bool:
+def default_scheduled(shift: str, lengths: dict[str, int]) -> bool:
     """Whether a machine counts as scheduled for `shift` when nobody has said
-    otherwise.
+    otherwise. `lengths` is the machine's whole day, from
+    resolve_day_lengths().
 
-    Any 8-hour shift and any 1st Shift: yes. A 10/12-hour 2nd Shift is a
-    night crew, which is the exception, so it defaults to no; the same goes
-    for a short day's 2nd and 3rd Shifts. Without this, every long-day
-    machine would show a missing night.
+    The 1st Shift: yes. A later shift: only if it and every shift before it
+    are 8 hours. A 10/12-hour 2nd Shift is a night crew, which is the
+    exception, and a day with a short shift is usually a Saturday where only
+    some crews run. Without this, those machines would show a missing shift.
     """
-    if shift_slots(shift, shift_hours) is None:
+    if shift_slots(shift, lengths[shift]) is None:
         return False
-    return shift == SHIFT_ORDER[0] or shift_hours == DEFAULT_SHIFT_HOURS
+    index = SHIFT_ORDER.index(shift)
+    return index == 0 or all(
+        lengths[label] == DEFAULT_SHIFT_HOURS for label in SHIFT_ORDER[:index + 1]
+    )
 
 
 def long_length_options(shift: str) -> list[int]:
@@ -508,7 +517,7 @@ class ScheduleCreate(BaseModel):
 class ShiftLengthCreate(BaseModel):
     """How many hours one shift ran on one machine on one production day.
 
-    `shift_hours` is 8, 10 or 12, or 2, 4 or 6 for a short day. The as-long-or-
+    `shift_hours` is 8, 10 or 12, or 2, 4 or 6 for a short shift. The as-long-or-
     longer rule is checked by the caller (shift_length_conflict()), since
     this model only sees one shift.
     """

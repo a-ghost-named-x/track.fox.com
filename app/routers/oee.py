@@ -10,7 +10,7 @@ not 100%, because standards are set at 75% of theoretical maximum. That's
 why "% of standard" is shown next to OEE.
 
 A shift is 480 minutes however the readings fell (600 or 720 for a 10 or
-12-hour shift, 60 per scheduled hour on a short day). Per-slot production is
+12-hour shift, 60 per scheduled hour on a short shift). Per-slot production is
 still in the payload for the Good column's tooltip.
 
 The whole page, grid and Pareto, can also show the last 7 or 30 production
@@ -35,7 +35,6 @@ from app.models import (
     OEE_PERIOD_DAYS,
     OEE_ZONE_ORDER,
     SHIFT_ORDER,
-    SHORT_PATTERN_HOURS,
     STANDARD_PCT_OF_IDEAL,
     resolve_shift,
 )
@@ -129,7 +128,6 @@ def oee_page(
             "requested_period": days,
             "period_days": OEE_PERIOD_DAYS,
             "all_shifts_label": ALL_SHIFTS_LABEL,
-            "short_pattern_hours": SHORT_PATTERN_HOURS,
         },
     )
 

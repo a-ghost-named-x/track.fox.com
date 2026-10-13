@@ -13,11 +13,12 @@ row for that cell and blank out the units entered earlier.
 
 Shift length
 ------------
-Each machine's shift can be 8, 10 or 12 hours, or 2, 4 or 6 on a short day (see
-"Shift length" in app/models.py). The length decides which checkpoints the
-shift has, how many minutes it is, and whether it exists at all (there is no
-3rd Shift after a 12-hour 2nd). On a short day the minutes are the scheduled
-hours x 60, not checkpoints x 120.
+Each machine's shift can be 8, 10 or 12 hours, or a short shift of 2, 4 or 6
+(see "Shift length" in app/models.py). The length decides which checkpoints
+the shift has, how many minutes it is, and whether it exists at all (there is
+no 3rd Shift after a 12-hour 2nd). A short shift keeps its 8-hour shift's
+checkpoints, so its minutes are the scheduled hours x 60, not checkpoints x
+120.
 
 The production day
 ------------------
@@ -207,7 +208,7 @@ def create_shift_downtime(
     """Appends a downtime submission (header plus one row per reason).
 
     `shift_minutes` is this machine's shift length on this day (480, 600,
-    720, or as little as 60 on a short day) and caps the total.
+    720, or as little as 120 on a short shift) and caps the total.
 
     An empty `payload.reasons` writes a header with no children, which records
     "ran clean". That's why downtime is a header table plus children rather
@@ -931,7 +932,7 @@ def _machine_shift(
     elapsed_set = set(elapsed)
 
     if scheduled is None:
-        scheduled = default_scheduled(shift_label, hours)
+        scheduled = default_scheduled(shift_label, day_lengths)
 
     readings = {
         slot: units.get((machine_id, slot_date, slot))
@@ -947,9 +948,11 @@ def _machine_shift(
     # Planned Production Time is the elapsed part of the shift, minus planned
     # downtime (currently always zero; no reason codes are planned).
     #
-    # A short-day shift is capped at its scheduled hours: 4 hours on the 1st
-    # Shift is 240 minutes even though its window is six. For 8/10/12 hours
-    # the cap is the whole window.
+    # A short shift is capped at its scheduled hours: 4 hours on the 1st Shift
+    # is 240 minutes even though its window is eight. For 8/10/12 hours the
+    # cap is the whole window. A 1st Shift crew that started late is charged
+    # from 6AM while its shift is still running, since the start isn't
+    # recorded; once the shift is over the cap is exact.
     planned = downtime["planned_minutes"] if downtime else 0
     unplanned = downtime["unplanned_minutes"] if downtime else 0
     elapsed_minutes = min(SLOT_MINUTES * len(elapsed), hours * 60)
@@ -1000,9 +1003,15 @@ def _machine_shift(
         "shift_hours": hours,
         "shift_minutes": hours * 60,
         "span": shift_span(shift_label, hours),
-        # Differs from `span` only on a short day (6AM-12PM window around a
-        # scheduled 6AM-10AM).
+        # Differs from `span` only on a short shift (the 2PM-10PM shift around
+        # a scheduled 2PM-8PM).
         "window_span": window_span(shift_label, hours),
+        # This shift or an earlier one that day is short, which is why a
+        # later shift starts unticked. Lets /oee say so.
+        "short_day": any(
+            day_lengths[label] < DEFAULT_SHIFT_HOURS
+            for label in SHIFT_ORDER[:SHIFT_ORDER.index(shift_label) + 1]
+        ),
         "production_day": production_day.isoformat(),
         "operator": next(
             (
