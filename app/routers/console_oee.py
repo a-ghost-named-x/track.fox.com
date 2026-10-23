@@ -26,10 +26,11 @@ Shift length
 ------------
 Each shift's length is set on that shift's page: 8, 10 or 12 hours (just 8 on
 the 3rd Shift), or a short shift of 2, 4 or 6 (rules in "Shift length" in
-app/models.py). Options that would overlap an earlier shift are disabled on
-the page and rejected on save by shift_length_conflict(). A 10 or 12-hour 2nd
-Shift defaults to not scheduled and leaves no 3rd Shift that night; that row
-shows "no 3rd shift" with no inputs.
+app/models.py). Options that would overlap another shift are disabled on the
+page and rejected on save by shift_length_conflict(). A 10 or 12-hour 2nd
+Shift, or a short one inside it after a long 1st Shift, defaults to not
+scheduled and leaves no 3rd Shift that night; that row shows "no 3rd shift"
+with no inputs.
 
 The short shift is a fourth radio with a number box inside it, so the radio
 group always posts exactly one value. A number typed in the box while 8, 10
@@ -66,7 +67,6 @@ from app.models import (
     DEFAULT_SHIFT_HOURS,
     MAX_SHIFT_MINUTES,
     OEE_ZONE_ORDER,
-    SHIFT_LENGTH_HOURS,
     SHIFT_ORDER,
     SHORT_SHIFT_HOURS,
     DowntimeReasonInput,
@@ -78,12 +78,12 @@ from app.models import (
     default_scheduled,
     get_current_shift,
     long_length_options,
-    pattern_hours,
     resolve_day_lengths,
     resolve_shift,
     shift_length_conflict,
     shift_slots,
     shift_span,
+    shift_windows,
     window_span,
 )
 
@@ -131,13 +131,13 @@ def _blank_row() -> dict:
         "span": "",
         "window_span": "",
         "shift_minutes": DEFAULT_SHIFT_HOURS * 60,
-        # Shortest and longest pattern this shift may be, so the page can
-        # disable options that would overlap. A short shift's 2, 4 or 6 are
-        # all pattern 8.
-        "min_pattern": DEFAULT_SHIFT_HOURS,
-        "max_pattern": max(SHIFT_LENGTH_HOURS),
-        # The later shift that sets max_pattern, as "4h", for the tooltip.
-        "max_label": "",
+        # Length options that would overlap another shift on this machine's
+        # day, keyed by radio value, with the reason (see _blocked_options()).
+        "blocked": {},
+        # The window a short shift would sit in on this row, and its span,
+        # for the tooltip and the JS.
+        "short_window": DEFAULT_SHIFT_HOURS,
+        "short_window_span": "",
         # Short-shift box value: the stored hours on a short shift, else empty.
         "short_value": "",
         # Why Scheduled starts unticked, when it does (see _unticked_hint()).
@@ -178,17 +178,35 @@ def _unticked_hint(shift: str, day: dict[str, int]) -> str | None:
     """Why `shift` starts unticked on a machine's day, or None when it starts
     ticked (or doesn't exist). Shown on the Scheduled box."""
     hours = day[shift]
-    if default_scheduled(shift, day) or shift_slots(shift, hours) is None:
+    window = shift_windows(day)[shift]
+    if default_scheduled(shift, day) or shift_slots(shift, window) is None:
         return None
-    if hours > DEFAULT_SHIFT_HOURS:
+    if window > DEFAULT_SHIFT_HOURS:
         return (
-            f"A {hours}h night crew ({shift_span(shift, hours)}) is the exception, "
+            f"A {hours}h night crew ({shift_span(shift, hours, window)}) is the exception, "
             "so this starts unticked unless set. Tick it if one ran."
         )
     return (
         "This machine has a short shift today, so this starts unticked: on those "
         "days not every crew runs. Tick it if this machine ran."
     )
+
+
+def _blocked_options(shift: str, explicit: dict[str, int]) -> dict[str, str]:
+    """Length options on `shift`'s page that would overlap another shift on
+    the machine's day, keyed by radio value ("8", "10", "12", "short"), each
+    with the conflict message. `explicit` is the machine's day as set.
+
+    Every short length shares a window, so one stands for all of them.
+    """
+    options = {str(hours): hours for hours in long_length_options(shift)}
+    options["short"] = SHORT_SHIFT_HOURS[0]
+    blocked = {}
+    for value, hours in options.items():
+        conflict = shift_length_conflict(resolve_day_lengths({**explicit, shift: hours}))
+        if conflict:
+            blocked[value] = conflict
+    return blocked
 
 
 def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
@@ -205,34 +223,33 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
     for machine_id in _all_machines():
         row = _blank_row()
         day = machine_day_lengths(lengths, machine_id)
+        windows = shift_windows(day)
         hours = day[shift]
+        window = windows[shift]
         row["shift_hours"] = hours
-        row["shift_exists"] = shift_slots(shift, hours) is not None
-        row["span"] = shift_span(shift, hours) or ""
-        row["window_span"] = window_span(shift, hours) or ""
+        row["shift_exists"] = shift_slots(shift, window) is not None
+        row["span"] = shift_span(shift, hours, window) or ""
+        row["window_span"] = window_span(shift, hours, window) or ""
         row["shift_minutes"] = hours * 60
         row["short_value"] = str(hours) if hours < DEFAULT_SHIFT_HOURS else ""
         row["hours_explicit"] = (machine_id, shift) in lengths
         row["explicit"] = {
             s_label: h for (m, s_label), h in lengths.items() if m == machine_id
         }
-        if index > 0:
-            row["min_pattern"] = pattern_hours(day[SHIFT_ORDER[index - 1]])
-        later_explicit = [
-            row["explicit"][s_label] for s_label in SHIFT_ORDER[index + 1:]
-            if s_label in row["explicit"]
-        ]
-        if later_explicit:
-            limit = min(later_explicit, key=pattern_hours)
-            row["max_pattern"] = pattern_hours(limit)
-            row["max_label"] = f"{limit}h"
+        row["blocked"] = _blocked_options(shift, row["explicit"])
+        # A short shift takes the window of the shift before it.
+        row["short_window"] = (
+            windows[SHIFT_ORDER[index - 1]] if index > 0 else DEFAULT_SHIFT_HOURS
+        )
+        row["short_window_span"] = shift_span(shift, row["short_window"]) or ""
         if not row["shift_exists"]:
             # No inputs are rendered for this row and the POST ignores it.
             previous = SHIFT_ORDER[index - 1]
             row["covered_by"] = {
                 "shift": previous,
                 "hours": day[previous],
-                "span": shift_span(previous, day[previous]),
+                "span": shift_span(previous, day[previous], windows[previous]),
+                "window_span": window_span(previous, day[previous], windows[previous]),
             }
             row["scheduled"] = False
             rows[machine_id] = row
@@ -536,21 +553,22 @@ async def console_oee_submit(request: Request):
         day_after = resolve_day_lengths(
             {**previous["explicit"], selected_shift: submitted_hours}
         )
+        window_after = shift_windows(day_after)[selected_shift]
 
         row = _blank_row()
         row.update(
             {
                 "shift_hours": submitted_hours,
                 "shift_exists": True,
-                "span": shift_span(selected_shift, submitted_hours),
-                "window_span": window_span(selected_shift, submitted_hours),
+                "span": shift_span(selected_shift, submitted_hours, window_after),
+                "window_span": window_span(selected_shift, submitted_hours, window_after),
                 "shift_minutes": submitted_hours * 60,
                 "short_value": (
                     str(submitted_hours) if submitted_hours < DEFAULT_SHIFT_HOURS else ""
                 ),
-                "min_pattern": previous["min_pattern"],
-                "max_pattern": previous["max_pattern"],
-                "max_label": previous["max_label"],
+                "blocked": previous["blocked"],
+                "short_window": previous["short_window"],
+                "short_window_span": previous["short_window_span"],
                 "unticked_hint": _unticked_hint(selected_shift, day_after),
                 "hours_explicit": previous["hours_explicit"] or raw_hours is not None,
                 "explicit": previous["explicit"],

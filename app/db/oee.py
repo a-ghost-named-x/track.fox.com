@@ -16,9 +16,10 @@ Shift length
 Each machine's shift can be 8, 10 or 12 hours, or a short shift of 2, 4 or 6
 (see "Shift length" in app/models.py). The length decides which checkpoints
 the shift has, how many minutes it is, and whether it exists at all (there is
-no 3rd Shift after a 12-hour 2nd). A short shift keeps its 8-hour shift's
-checkpoints, so its minutes are the scheduled hours x 60, not checkpoints x
-120.
+no 3rd Shift after a 12-hour 2nd). A short shift keeps the checkpoints of its
+window (shift_windows(): usually the 8-hour shift, the long night shift after
+a 10 or 12-hour 1st Shift), so its minutes are the scheduled hours x 60, not
+checkpoints x 120.
 
 The production day
 ------------------
@@ -96,6 +97,7 @@ from app.models import (
     resolve_day_lengths,
     shift_slot_dates,
     shift_span,
+    shift_windows,
     window_span,
 )
 
@@ -923,7 +925,8 @@ def _machine_shift(
     for the default. `standard` is the stored 8-hour target.
     """
     hours = day_lengths[shift_label]
-    dated_slots = shift_slot_dates(shift_label, production_day, hours)
+    window = shift_windows(day_lengths)[shift_label]
+    dated_slots = shift_slot_dates(shift_label, production_day, window)
     if dated_slots is None:
         return _absent_shift(hours, production_day, day_lengths)
 
@@ -1002,10 +1005,12 @@ def _machine_shift(
         "shift_exists": True,
         "shift_hours": hours,
         "shift_minutes": hours * 60,
-        "span": shift_span(shift_label, hours),
+        "span": shift_span(shift_label, hours, window),
         # Differs from `span` only on a short shift (the 2PM-10PM shift around
         # a scheduled 2PM-8PM).
-        "window_span": window_span(shift_label, hours),
+        "window_span": window_span(shift_label, hours, window),
+        # 10 or 12 when this shift is, or sits inside, a long night shift.
+        "window_hours": window,
         # This shift or an earlier one that day is short, which is why a
         # later shift starts unticked. Lets /oee say so.
         "short_day": any(
@@ -1050,14 +1055,15 @@ def _machine_shift(
 
 
 def _absent_shift(hours: int, production_day: date_type, day_lengths: dict[str, int]) -> dict:
-    """The row for a shift the day has no room for (the 3rd Shift after a 10
-    or 12-hour 2nd).
+    """The row for a shift the day has no room for (the 3rd Shift after a 2nd
+    Shift that is, or sits inside, a 10 or 12-hour one).
 
     scheduled=False keeps it out of every rollup. shift_exists=False and
     `covered_by` let the page say "no 3rd shift" and why. Anything entered
     under that shift is ignored, because those hours belong to the 2nd Shift.
     """
     previous = SHIFT_ORDER[-2]
+    previous_window = shift_windows(day_lengths)[previous]
     return {
         "scheduled": False,
         "shift_exists": False,
@@ -1065,10 +1071,14 @@ def _absent_shift(hours: int, production_day: date_type, day_lengths: dict[str, 
         "shift_minutes": 0,
         "span": None,
         "window_span": None,
+        "window_hours": None,
         "covered_by": {
             "shift": previous,
             "hours": day_lengths[previous],
-            "span": shift_span(previous, day_lengths[previous]),
+            "span": shift_span(previous, day_lengths[previous], previous_window),
+            # Differs from `span` when the 2nd Shift is a short crew inside a
+            # long night shift.
+            "window_span": window_span(previous, day_lengths[previous], previous_window),
         },
         "production_day": production_day.isoformat(),
         "operator": None,

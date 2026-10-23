@@ -502,9 +502,9 @@ reset()
 stored_lengths[("C1", "1st Shift")] = 12
 second = client.get(f"/console/oee?shift=2nd%20Shift&entry_date={DAY.isoformat()}").text
 c1_hours = second.split('aria-label="Shift length for C1"')[1].split("</div>")[0]
-check("on the 2nd Shift page, 8h, 10h and the short shift are disabled after a 12h 1st",
+check("on the 2nd Shift page, 8h and 10h are disabled after a 12h 1st",
       [radio_disabled(second, "C1", v) for v in ("8", "10", "12", "short")]
-      == [True, True, False, True], c1_hours[:400])
+      == [True, True, False, False], c1_hours[:400])
 check("...and say why", "would start inside it" in c1_hours)
 res = client.post("/console/oee", data={"entered_by": "9001", "shift": "2nd Shift",
                                         "entry_date": DAY.isoformat(), "hours_C1": "8"})
@@ -516,7 +516,9 @@ stored_lengths[("C1", "2nd Shift")] = 8
 first = client.get(f"/console/oee?shift=1st%20Shift&entry_date={DAY.isoformat()}").text
 c1_hours = first.split('aria-label="Shift length for C1"')[1].split("</div>")[0]
 check("on the 1st Shift page, 10h and 12h are disabled when the 2nd is set to 8h",
-      c1_hours.count("disabled") == 2 and "Change that first" in c1_hours, c1_hours[:400])
+      [radio_disabled(first, "C1", v) for v in ("8", "10", "12", "short")]
+      == [False, True, True, False], c1_hours[:400])
+check("...and the tooltip says to change the 2nd", "Set 2nd Shift to 10h or more" in c1_hours)
 res = post({"hours_C1": "12"})
 check("posting a longer 1st Shift anyway is refused", written["length"] == [],
       str(written["length"]))
@@ -728,25 +730,69 @@ check("4 hours on the 3rd Shift saves as the 3rd Shift's",
 check("with the night crew ticked on",
       len(written["schedule"]) == 1 and written["schedule"][0].scheduled is True)
 
-print("\n== SHORT SHIFTS: never inside a longer shift ==")
+print("\n== SHORT SHIFTS: a short crew after a 12h day starts when it ends ==")
 reset()
-stored_lengths[("C1", "1st Shift")] = 10
+stored_lengths[("C1", "1st Shift")] = 12
 second = client.get(SECOND_URL).text
-check("the short shift is disabled on the 2nd Shift after a 10h 1st",
-      radio_disabled(second, "C1", "short") and "disabled" in short_box(second, "C1"))
-res = post_shift("2nd Shift", {"hours_C1": "short", "short_hours_C1": "4"})
-check("posting it anyway is refused, saying why",
-      written["length"] == [] and "shorter than 1st Shift" in res.text)
+check("the short shift is open on the 2nd Shift after a 12h 1st",
+      not radio_disabled(second, "C1", "short") and "disabled" not in short_box(second, "C1"))
+check("...its tooltip names the 6PM-6AM night", "It stays inside 6PM-6AM" in second)
+check("...and the row tells the JS which window it takes", 'data-short-window="12"' in second)
+check("an ordinary machine's short shift stays inside 2PM-10PM", 'data-short-window="8"' in second)
+res = post_shift("2nd Shift", {"hours_C1": "short", "short_hours_C1": "4",
+                               "sched_present_C1": "1", "scheduled_C1": "1"})
+check("4 hours saves as the 2nd Shift's",
+      [(w.shift, w.shift_hours) for w in written["length"]] == [("2nd Shift", 4)],
+      str(written["length"]))
+check("the row shows 6PM-10PM, not 2PM-6PM",
+      "6PM-10PM" in res.text and "2PM-6PM" not in res.text)
+check("and ticking it is written, since a night crew starts unticked",
+      len(written["schedule"]) == 1 and written["schedule"][0].scheduled is True,
+      str(written["schedule"]))
+
+reset()
+stored_lengths[("C1", "1st Shift")] = 12
+stored_lengths[("C1", "2nd Shift")] = 4
+second = client.get(SECOND_URL).text
+c1_row = second.split('data-machine="C1"')[1].split("</tr>")[0]
+check("a stored 4h night crew shows 6PM-10PM", "6PM-10PM" in c1_row)
+check("its minutes boxes are capped at 240", 'max="240"' in c1_row)
+check("its Scheduled box says it's a night crew",
+      "A 4h night crew (6PM-10PM)" in c1_row.split('name="scheduled_C1"')[1][:400])
+res = post_shift("2nd Shift", {"hours_C1": "short", "short_hours_C1": "4",
+                               "dt_on_C1_SETUP": "1", "dt_min_C1_SETUP": "280"})
+check("280 minutes of downtime don't fit 4 hours",
+      written["downtime"] == [] and "240-minute" in res.text, res.text[:300])
+third = client.get(THIRD_URL).text
+check("there is no 3rd Shift after it",
+      "2nd Shift covers 6PM-6AM on this machine (a 4h crew, 6PM-10PM)" in third)
+check("...and no inputs for it", 'name="hours_C1"' not in third)
+
+print("\n== SHORT SHIFTS: lengthening the 1st moves a short 2nd along ==")
 reset()
 stored_lengths[("C1", "2nd Shift")] = 6
 first = client.get(FIRST_URL).text
-check("with a short 2nd Shift set, the 1st can be 8h or short, not 10h or 12h",
+check("with a short 2nd Shift set, every 1st Shift length is open",
+      not any(radio_disabled(first, "C1", v) for v in ("8", "10", "12", "short")))
+post({"hours_C1": "12"})
+check("...and 12h saves", [w.shift_hours for w in written["length"]] == [12],
+      str(written["length"]))
+reset()
+stored_lengths[("C1", "1st Shift")] = 12
+stored_lengths[("C1", "2nd Shift")] = 6
+check("the 2nd's 6 hours then start at 6PM", "6PM-12AM" in client.get(SECOND_URL).text)
+
+reset()
+stored_lengths[("C1", "2nd Shift")] = 4
+stored_lengths[("C1", "3rd Shift")] = 8
+first = client.get(FIRST_URL).text
+check("an 8h 3rd Shift set after a short 2nd still keeps the 1st at 8h",
       [radio_disabled(first, "C1", v) for v in ("8", "10", "12", "short")]
       == [False, True, True, False])
-check("...and the tooltip names the later shift", "set to 6h" in first)
-res = post({"hours_C1": "10"})
-check("...and lengthening it anyway is refused",
-      written["length"] == [] and "shorter than 1st Shift" in res.text)
+res = post({"hours_C1": "12"})
+check("...and lengthening it anyway is refused, naming the shift to shorten",
+      written["length"] == [] and "inside 6PM-6AM" in res.text
+      and "or shorten 1st Shift" in res.text, res.text[:300])
 reset()
 
 print("\n== THE PRODUCTION DAY: the 3rd Shift page defaults to the day it started ==")

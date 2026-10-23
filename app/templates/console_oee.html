@@ -139,6 +139,7 @@
                     <tr class="batch-row{% if row.status %} batch-row-{{ row.status }}{% endif %}{% if not row.shift_exists %} batch-row-absent{% endif %}"
                         data-machine="{{ machine }}"
                         data-shift-minutes="{{ row.shift_minutes }}"
+                        data-short-window="{{ row.short_window }}"
                         {% if not is_first_shift %}data-night-crew="1"{% endif %}>
                         <td class="machine-col">
                             {{ machine }}
@@ -149,29 +150,34 @@
                         </td>
 
                         {% if not row.shift_exists %}
-                        {# No 3rd Shift after a 10 or 12-hour 2nd. No inputs,
-                           so nothing posts for this row. #}
+                        {# No 3rd Shift after a 2nd that is, or sits inside, a
+                           10 or 12-hour shift. No inputs, so nothing posts
+                           for this row. #}
+                        {% set by = row.covered_by %}
                         <td class="shift-absent" colspan="5">
-                            No {{ shift.split(' ')[0] }} shift — {{ row.covered_by.shift }} ran {{ row.covered_by.hours }}h ({{ row.covered_by.span }}), so the night is entered there.
+                            {% if by.window_span and by.window_span != by.span %}
+                            No {{ shift.split(' ')[0] }} shift — {{ by.shift }} covers {{ by.window_span }} on this machine (a {{ by.hours }}h crew, {{ by.span }}), so the night is entered there.
+                            {% else %}
+                            No {{ shift.split(' ')[0] }} shift — {{ by.shift }} ran {{ by.hours }}h ({{ by.span }}), so the night is entered there.
+                            {% endif %}
                         </td>
                         {% else %}
 
                         <td class="hours-col">
                             {# A radio group always posts its checked value, so
                                absence in the POST means the control wasn't on
-                               the page. Overlapping options are disabled here
-                               and re-checked on the server. The short shift is
-                               the fourth radio; its number box only counts
-                               when that radio is picked. It sits inside the
-                               8-hour shift, so it's blocked exactly when 8h is. #}
+                               the page. Options that would overlap another
+                               shift are disabled here, with the reason as the
+                               tooltip, and re-checked on the server. The short
+                               shift is the fourth radio; its number box only
+                               counts when that radio is picked. #}
                             {% set is_short = row.shift_hours < default_shift_hours %}
-                            {% set short_blocked = row.min_pattern > default_shift_hours %}
+                            {% set short_blocked = row.blocked.get('short') %}
                             <div class="hours-toggle" role="group" aria-label="Shift length for {{ machine }}">
                                 {% for hours in shift_length_options %}
-                                {% set blocked = hours < row.min_pattern or hours > row.max_pattern %}
+                                {% set blocked = row.blocked.get(hours|string) %}
                                 <label class="hours-option{% if blocked %} is-blocked{% endif %}"
-                                       {% if hours < row.min_pattern %}title="Can't be shorter than the shift before it ({{ row.min_pattern }}h) — it would start inside it."
-                                       {% elif hours > row.max_pattern %}title="A later shift is set to {{ row.max_label }} and would start inside this one. Change that first."{% endif %}>
+                                       {% if blocked %}title="{{ blocked }}"{% endif %}>
                                     <input type="radio" name="hours_{{ machine }}" value="{{ hours }}"
                                            {% if row.shift_hours == hours %}checked{% endif %}
                                            {% if blocked and row.shift_hours != hours %}disabled{% endif %}>
@@ -179,8 +185,8 @@
                                 </label>
                                 {% endfor %}
                                 <label class="hours-option hours-option-short{% if short_blocked %} is-blocked{% endif %}"
-                                       {% if short_blocked %}title="A short shift sits inside the normal 8-hour shift, which would start inside the {{ row.min_pattern }}h shift before it."
-                                       {% else %}title="Short shift: type the hours this machine was scheduled for, {{ short_hours_text }}. It stays inside the normal shift ({{ default_span }})."{% endif %}>
+                                       {% if short_blocked %}title="{{ short_blocked }}"
+                                       {% else %}title="Short shift: type the hours this machine was scheduled for, {{ short_hours_text }}. It stays inside {{ row.short_window_span }}."{% endif %}>
                                     <input type="radio" name="hours_{{ machine }}" value="short"
                                            {% if is_short %}checked{% endif %}
                                            {% if short_blocked and not is_short %}disabled{% endif %}>

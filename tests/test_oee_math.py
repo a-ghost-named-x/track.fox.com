@@ -14,6 +14,7 @@ No database is touched. Importing the functions pulls in app.db.postgres,
 which needs psycopg and a password, hence the two shims. The psycopg shim only
 applies if the real driver isn't installed.
 """
+import itertools
 import os
 import sys
 import types
@@ -41,7 +42,9 @@ from app.db.oee import (  # noqa: E402
 )
 from app.models import (  # noqa: E402
     SHIFT_MINUTES,
+    SHIFT_ORDER,
     SHIFT_SLOTS,
+    TIME_SLOTS,
     default_production_day,
     default_scheduled,
     elapsed_dated_slots,
@@ -52,6 +55,7 @@ from app.models import (  # noqa: E402
     shift_slot_dates,
     shift_slots,
     shift_span,
+    shift_windows,
 )
 
 failures = []
@@ -298,6 +302,104 @@ check_eq("12 then 10 overlaps too",
 check_eq("a 3rd Shift explicitly shorter than a long 2nd is caught",
          shift_length_conflict(resolve_day_lengths({"2nd Shift": 12, "3rd Shift": 8})) is not None,
          True)
+
+print("\n== every day the old rules accepted reads exactly as before ==")
+# The rules before a short shift could follow a 10 or 12-hour one: a short
+# shift was always inside its 8-hour shift. Any day those rules accepted must
+# keep its lengths, checkpoints, spans and Scheduled defaults, since stored
+# history was entered under them.
+
+
+def old_pattern(hours):
+    return max(hours, 8)
+
+
+def old_resolve(explicit):
+    lengths, previous = {}, 8
+    for label in SHIFT_ORDER:
+        previous = explicit.get(label, old_pattern(previous))
+        lengths[label] = previous
+    return lengths
+
+
+def old_slots(shift, hours):
+    per_shift = old_pattern(hours) // 2
+    index = SHIFT_ORDER.index(shift)
+    chunk = TIME_SLOTS[index * per_shift:(index + 1) * per_shift]
+    return chunk if len(chunk) == per_shift else None
+
+
+def old_span(shift, hours):
+    if old_slots(shift, hours) is None:
+        return None
+    if hours < 8 and shift == SHIFT_ORDER[0]:
+        return f"within {old_span(shift, 8)}"
+    start = 6 + SHIFT_ORDER.index(shift) * old_pattern(hours)
+    label = lambda h: f"{(h % 12) or 12}{'AM' if h % 24 < 12 else 'PM'}"  # noqa: E731
+    return f"{label(start)}-{label(start + hours)}"
+
+
+def old_default_scheduled(shift, lengths):
+    if old_slots(shift, lengths[shift]) is None:
+        return False
+    index = SHIFT_ORDER.index(shift)
+    return index == 0 or all(lengths[s] == 8 for s in SHIFT_ORDER[:index + 1])
+
+
+compared = mismatched = 0
+for combo in itertools.product([None, 2, 4, 6, 8, 10, 12], [None, 2, 4, 6, 8, 10, 12],
+                               [None, 2, 4, 6, 8]):
+    explicit = {s: h for s, h in zip(SHIFT_ORDER, combo) if h is not None}
+    old = old_resolve(explicit)
+    if any(old_pattern(old[c]) < old_pattern(old[p]) for p, c in zip(SHIFT_ORDER, SHIFT_ORDER[1:])):
+        continue
+    compared += 1
+    new = resolve_day_lengths(explicit)
+    windows = shift_windows(new)
+    same = new == old and shift_length_conflict(new) is None and all(
+        shift_slots(s, windows[s]) == old_slots(s, old[s])
+        and shift_span(s, new[s], windows[s]) == old_span(s, old[s])
+        and default_scheduled(s, new) == old_default_scheduled(s, old)
+        for s in SHIFT_ORDER
+    )
+    if not same:
+        mismatched += 1
+        print(f"    differs: {explicit}")
+check_eq(f"all {compared} days the old rules accepted are unchanged", mismatched, 0)
+
+print("\n== a short shift after a 10 or 12-hour 1st Shift sits inside the long night ==")
+check_eq("12h then 4h is a valid day",
+         shift_length_conflict(resolve_day_lengths({"1st Shift": 12, "2nd Shift": 4})), None)
+day = resolve_day_lengths({"1st Shift": 12, "2nd Shift": 4})
+check_eq("its windows: 12 for both, so no room for a 3rd", shift_windows(day),
+         {"1st Shift": 12, "2nd Shift": 12, "3rd Shift": 12})
+check_eq("the 3rd inherits the 12h window, not a full 8", day["3rd Shift"], 12)
+check_eq("the 4h crew starts when the day crew leaves",
+         shift_span("2nd Shift", 4, 12), "6PM-10PM")
+check_eq("...and owns the night's checkpoints", shift_slots("2nd Shift", 12),
+         ["8PM", "10PM", "12AM", "2AM", "4AM", "6AM"])
+check_eq("after a 10h 1st, 4 hours is 4PM-8PM",
+         shift_span("2nd Shift", 4, shift_windows(resolve_day_lengths(
+             {"1st Shift": 10, "2nd Shift": 4}))["2nd Shift"]), "4PM-8PM")
+check_eq("a 4h night crew starts unticked; there is no 3rd Shift",
+         [default_scheduled(s, day) for s in SHIFT_ORDER], [True, False, False])
+msg = shift_length_conflict(resolve_day_lengths(
+    {"1st Shift": 12, "2nd Shift": 4, "3rd Shift": 8}))
+check_eq("an 8h 3rd Shift after it still overlaps the 6PM-6AM night",
+         msg is not None and "inside 6PM-6AM" in msg, True)
+check_eq("...and the fix named is the 12h 1st Shift", "shorten 1st Shift" in (msg or ""), True)
+try:
+    shift_slots("2nd Shift", 4)
+    raised = False
+except ValueError:
+    raised = True
+check_eq("passing a short shift's hours where a window belongs raises", raised, True)
+try:
+    shift_span("2nd Shift", 4)
+    raised = False
+except ValueError:
+    raised = True
+check_eq("...and so does a short span with no window", raised, True)
 
 print("\n== the production day and the rounds' calendar dates ==")
 # 12AM-6AM checkpoints carry the next calendar date, as the rounds file them.

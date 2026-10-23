@@ -127,13 +127,20 @@ function hourLabel(hour) {
     return `${h - 12}PM`;
 }
 
-/** The clock span a length means on this page's shift; see shift_span() in app/models.py. */
-function spanFor(hours) {
-    const pattern = Math.max(hours, DEFAULT_SHIFT_HOURS);
-    const start = DAY_START_HOUR + SHIFT_INDEX * pattern;
+/**
+ * The clock span a length means on this row's shift; see shift_span() in
+ * app/models.py. A short shift sits in the window of the shift before it,
+ * which the server puts on the row.
+ */
+function spanFor(row, hours) {
+    const short = hours < DEFAULT_SHIFT_HOURS;
+    const window = short
+        ? parseInt(row.dataset.shortWindow, 10) || DEFAULT_SHIFT_HOURS
+        : hours;
+    const start = DAY_START_HOUR + SHIFT_INDEX * window;
     // A short 1st Shift's crew can start at 6, 8 or 10AM, so it has no fixed span.
-    if (hours < DEFAULT_SHIFT_HOURS && SHIFT_INDEX === 0) {
-        return `within ${hourLabel(start)}-${hourLabel(start + pattern)}`;
+    if (short && SHIFT_INDEX === 0) {
+        return `within ${hourLabel(start)}-${hourLabel(start + window)}`;
     }
     return `${hourLabel(start)}-${hourLabel(start + hours)}`;
 }
@@ -165,7 +172,7 @@ function applyLength(row) {
     const cell = row.querySelector(".dt-cell");
     if (cell) refreshSummary(cell);
     if (spanLine) {
-        spanLine.textContent = spanFor(hours);
+        spanLine.textContent = spanFor(row, hours);
         spanLine.hidden = hours === DEFAULT_SHIFT_HOURS;
     }
 }

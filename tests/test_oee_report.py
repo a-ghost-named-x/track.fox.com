@@ -35,6 +35,10 @@ Then a short Saturday (SAT), short shifts inside their normal 8-hour shifts:
     WS5  a 6h morning, then an 8h 2nd Shift         -> starts unticked
     WS6  an 8h 1st Shift, then a 4h 2nd crew        -> 2PM-6PM
 
+and a short crew after a long day (TUE):
+
+    C4   12h 1st Shift, then a 4h crew from 6PM     -> 6PM-10PM, 240 min, no 3rd
+
 and the 7/30-day view over all of it (compute_oee_range), with a day in the
 week before for the comparison.
 
@@ -366,7 +370,7 @@ ws3_3rd = report["shifts"]["3rd Shift"]["machines"]["WS3"]
 check("no 3rd Shift that night", ws3_3rd["shift_exists"], False)
 check("so it is not scheduled", ws3_3rd["scheduled"], False)
 check("and says who covered the night", ws3_3rd["covered_by"],
-      {"shift": "2nd Shift", "hours": 12, "span": "6PM-6AM"})
+      {"shift": "2nd Shift", "hours": 12, "span": "6PM-6AM", "window_span": "6PM-6AM"})
 check("3rd Shift completeness leaves it out (WS1, WS2, WS3, P1 have none)",
       report["shifts"]["3rd Shift"]["completeness"]["machines"], len(MACHINE_IDS) - 4)
 
@@ -473,16 +477,18 @@ check("ppt is 360", ws2_night["shift"]["ppt_minutes"], 360)
 print("\n== SHORT SHIFTS: inside the normal 8-hour shift, as geometry ==")
 from app.models import (  # noqa: E402
     SHORT_SHIFT_HOURS, default_scheduled, resolve_day_lengths, shift_length_conflict,
-    shift_plan, shift_span, window_span,
+    shift_slots, shift_span, shift_windows, window_span,
 )
 check("a short shift is 2, 4 or 6 hours, never odd", SHORT_SHIFT_HOURS, [2, 4, 6])
-check("2, 4 and 6 hours keep the 8-hour checkpoints",
-      (shift_plan(2), shift_plan(4), shift_plan(6)), (SHIFT_SLOTS, SHIFT_SLOTS, SHIFT_SLOTS))
-check("a short 2nd Shift starts at 2PM", shift_span("2nd Shift", 6), "2PM-8PM")
-check("a short 3rd Shift starts at 10PM", shift_span("3rd Shift", 4), "10PM-2AM")
+check("on an ordinary day 2, 4 and 6 hours keep the 8-hour checkpoints",
+      [{s: shift_slots(s, shift_windows(resolve_day_lengths({s: h}))[s]) for s in SHIFT_SLOTS}
+       for h in (2, 4, 6)],
+      [SHIFT_SLOTS] * 3)
+check("a short 2nd Shift starts at 2PM", shift_span("2nd Shift", 6, 8), "2PM-8PM")
+check("a short 3rd Shift starts at 10PM", shift_span("3rd Shift", 4, 8), "10PM-2AM")
 check("a short 1st Shift has no fixed start (6, 8 or 10AM)",
-      shift_span("1st Shift", 4), "within 6AM-2PM")
-check("...inside the 6AM-2PM shift", window_span("1st Shift", 4), "6AM-2PM")
+      shift_span("1st Shift", 4, 8), "within 6AM-2PM")
+check("...inside the 6AM-2PM shift", window_span("1st Shift", 4, 8), "6AM-2PM")
 check("a later shift inherits a full 8 hours, not the typed hours",
       resolve_day_lengths({"1st Shift": 4}),
       {"1st Shift": 4, "2nd Shift": 8, "3rd Shift": 8})
@@ -490,9 +496,8 @@ check("6 then 6 then 4 is a valid day",
       shift_length_conflict({"1st Shift": 6, "2nd Shift": 6, "3rd Shift": 4}), None)
 check("an 8h 1st Shift, then a short 2nd, is a valid day",
       shift_length_conflict(resolve_day_lengths({"2nd Shift": 4})), None)
-conflict = shift_length_conflict(resolve_day_lengths({"1st Shift": 10, "2nd Shift": 4}))
-check("a short 2nd Shift after a 10h 1st starts inside it",
-      conflict is not None and "shorter than 1st Shift" in conflict, True)
+check("a short 2nd Shift after a 10h 1st is a valid day, inside 4PM-2AM",
+      shift_length_conflict(resolve_day_lengths({"1st Shift": 10, "2nd Shift": 4})), None)
 check("a short 1st Shift defaults to scheduled",
       default_scheduled("1st Shift", resolve_day_lengths({"1st Shift": 4})), True)
 check("after a short 1st, the 8h 2nd and 3rd default to NOT scheduled",
@@ -592,6 +597,68 @@ check("at 9AM FM1 has 120 minutes so far",
 after_sat = oee.compute_oee_report(SAT, now=datetime(2026, 9, 12, 15, 0))
 check("at 3PM it is capped at its 6 hours, though all four slots have closed",
       after_sat["shifts"][SHIFT]["machines"]["FM1"]["shift"]["ppt_minutes"], 360)
+
+# --- a short crew after a 12-hour day -----------------------------------------
+# C4's real night: a 12h 1st Shift at standard, then a new operator from 6PM
+# to 10PM and nobody after. The rounds have 8PM and 10PM, the 12AM-6AM boxes
+# are blank. After the period tests' last day, so it can't change them.
+TUE = date(2026, 9, 15)
+TUE_AFTER = date(2026, 9, 16)
+NOW_TUE = datetime(2026, 9, 17, 9, 0)
+entries_by_date[TUE] = []
+entries_by_date[TUE_AFTER] = []
+add("C4", [11700, 23400, 35100, 46800, 58500, 70200], slots=TIME_SLOTS[:6], day=TUE)
+add("C4", [9000, 16000], slots=["8PM", "10PM"], day=TUE)
+lengths_by_day[TUE] = {("C4", "1st Shift"): 12, ("C4", "2nd Shift"): 4}
+downtime_by_day[TUE] = {
+    ("C4", SHIFT): dict(clean),
+    ("C4", "2nd Shift"): {
+        "note": None, "planned_minutes": 0, "unplanned_minutes": 80,
+        "reasons": [{"code": "ROLL_CHANGE", "label": "Roll Change",
+                     "minutes": 80, "is_planned": False}],
+    },
+}
+scrap_by_day[TUE] = {("C4", SHIFT): 0, ("C4", "2nd Shift"): 1083}
+schedule_by_day[TUE] = {("C4", "2nd Shift"): True}
+
+print("\n== C4: a 12h day, then a 4-hour crew from 6PM ==")
+tue = oee.compute_oee_report(TUE, now=NOW_TUE)
+c4_1st = tue["shifts"][SHIFT]["machines"]["C4"]
+c4_2nd = tue["shifts"]["2nd Shift"]["machines"]["C4"]
+check("the 1st Shift is an ordinary 12h one", c4_1st["span"], "6AM-6PM")
+check("...at standard", c4_1st["shift"]["oee"], 0.75)
+check("the night crew is 4h, 6PM-10PM", (c4_2nd["shift_hours"], c4_2nd["span"]), (4, "6PM-10PM"))
+check("inside the 6PM-6AM night", (c4_2nd["window_span"], c4_2nd["window_hours"]), ("6PM-6AM", 12))
+check("it owns the night's checkpoints, the 12AM-6AM ones from the next date",
+      [(c["slot"], c["date"]) for c in c4_2nd["checkpoints"]],
+      [("8PM", "2026-09-15"), ("10PM", "2026-09-15"), ("12AM", "2026-09-16"),
+       ("2AM", "2026-09-16"), ("4AM", "2026-09-16"), ("6AM", "2026-09-16")])
+check("good is the 10PM reading; the blanks after it are unchanged", c4_2nd["shift"]["good"], 16000)
+check("ppt is 240, not 720", c4_2nd["shift"]["ppt_minutes"], 240)
+check("run is 160", c4_2nd["shift"]["run_minutes"], 160)
+check("the standard is half the 8-hour one", c4_2nd["shift"]["standard"], 23400)
+check("oee is good / (ideal x 240 minutes)", c4_2nd["shift"]["oee"], 16000 / (130 * 240))
+check("nothing flagged", c4_2nd["flags"], [])
+check("the operator is the night crew's", c4_2nd["operator"], "Okafor")
+c4_3rd = tue["shifts"]["3rd Shift"]["machines"]["C4"]
+check("there is no 3rd Shift that night", (c4_3rd["shift_exists"], c4_3rd["scheduled"]), (False, False))
+check("...covered by the 2nd Shift's 6PM-6AM",
+      c4_3rd["covered_by"],
+      {"shift": "2nd Shift", "hours": 4, "span": "6PM-10PM", "window_span": "6PM-6AM"})
+check("the 2nd Shift rollup counts C4 at 240 minutes",
+      (tue["shifts"]["2nd Shift"]["rollup"]["machines"],
+       tue["shifts"]["2nd Shift"]["rollup"]["ppt_minutes"]), (1, 240))
+mid_night = oee.compute_oee_report(TUE, now=datetime(2026, 9, 15, 21, 0))
+check("at 9PM the crew has 120 minutes so far",
+      mid_night["shifts"]["2nd Shift"]["machines"]["C4"]["shift"]["ppt_minutes"], 120)
+late_night = oee.compute_oee_report(TUE, now=datetime(2026, 9, 16, 3, 0))
+check("at 3AM it is capped at 240, though four slots have closed",
+      late_night["shifts"]["2nd Shift"]["machines"]["C4"]["shift"]["ppt_minutes"], 240)
+del schedule_by_day[TUE][("C4", "2nd Shift")]
+unticked = oee.compute_oee_report(TUE, now=NOW_TUE)["shifts"]["2nd Shift"]["machines"]["C4"]
+check("left unticked, a short night crew is not scheduled", unticked["scheduled"], False)
+schedule_by_day[TUE][("C4", "2nd Shift")] = True
+json.dumps(tue)
 
 # --- 7 and 30 days ------------------------------------------------------------
 # Two more days. PREV is in the week before SAT's week, so it's what the

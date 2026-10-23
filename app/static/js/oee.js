@@ -409,6 +409,19 @@ function clearGrid() {
  * than 8 hours is highlighted, since those rows aren't directly comparable
  * with their neighbours.
  */
+/**
+ * Why a shift doesn't exist on a machine's day, from its `covered_by`: the
+ * 2nd Shift ran long, or a short crew sits inside a long night shift.
+ */
+function coveredText(by) {
+    const shift = by.shift || "The previous shift";
+    if (by.window_span && by.window_span !== by.span) {
+        return `${shift}'s ${by.window_span} covers the night on this machine ` +
+            `(a ${by.hours}-hour crew, ${by.span})`;
+    }
+    return `${shift} ran ${by.hours} hours (${by.span}), which covers the night`;
+}
+
 function fillShiftLength(row, machine) {
     const tag = row.querySelector(".shift-length");
     if (!tag) return;
@@ -420,13 +433,11 @@ function fillShiftLength(row, machine) {
         // The shift doesn't exist; show the length of the one covering it.
         const by = machine.covered_by || {};
         tag.textContent = by.hours ? `${by.hours}h` : "";
-        tag.title = by.shift
-            ? `${by.shift} ran ${by.hours} hours (${by.span}), which covers the night.`
-            : "";
+        tag.title = by.shift ? `${coveredText(by)}.` : "";
         return;
     }
     if (machine.window_span && machine.window_span !== machine.span) {
-        // A short shift: scheduled for part of its 8-hour shift.
+        // A short shift: scheduled for part of its window.
         tag.title =
             `Short shift: scheduled for ${hours} hour${hours === 1 ? "" : "s"}, ${machine.span}, ` +
             `so the machine is judged against ${machine.shift_minutes} minutes. Production ` +
@@ -454,12 +465,11 @@ function fillMachineRow(row, machine) {
     };
 
     if (machine.shift_exists === false) {
-        // No 3rd Shift after a 10 or 12-hour 2nd.
+        // No 3rd Shift after a 2nd that is, or sits inside, a 10 or 12-hour one.
         const by = machine.covered_by || {};
         row.setAttribute("data-unscheduled", "");
         set("oee", `no ${shortShift(currentShift)} shift`,
-            `${by.shift || "The previous shift"} ran ${by.hours} hours (${by.span}), ` +
-            "which covers the night. Left out of the rollup entirely.");
+            `${coveredText(by)}. Left out of the rollup entirely.`);
         return;
     }
 
@@ -469,15 +479,16 @@ function fillMachineRow(row, machine) {
         const lateShift = currentShift !== SHIFT_ORDER[0];
         let why = "Marked as not scheduled to run this shift on /console/oee, so it is " +
             "left out of the zone rollup entirely — not counted as 0%.";
-        if (lateShift && machine.short_day) {
+        // A night crew first: a short crew after a 12h day is one too.
+        if (lateShift && machine.window_hours > 8) {
+            why = `A ${machine.shift_hours}-hour night crew (${machine.span}) is the exception, ` +
+                "so this shift starts as not scheduled. Tick Scheduled on /console/oee " +
+                "if one ran. Left out of the rollup entirely — not 0%.";
+        } else if (lateShift && machine.short_day) {
             why = `This machine had a short shift that day, so this shift (${machine.window_span}) ` +
                 "starts as not scheduled, since on those days not every crew runs. Tick " +
                 "Scheduled on /console/oee if this machine ran. Left out of the rollup " +
                 "entirely — not 0%.";
-        } else if (lateShift && machine.shift_hours !== 8) {
-            why = `A ${machine.shift_hours}-hour night crew (${machine.span}) is the exception, ` +
-                "so this shift starts as not scheduled. Tick Scheduled on /console/oee " +
-                "if one ran. Left out of the rollup entirely — not 0%.";
         }
         set("oee", "not scheduled", why);
         return;
