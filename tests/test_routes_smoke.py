@@ -14,9 +14,12 @@ What it checks:
   2. /console/<zone> records good units only; no scrap or downtime fields.
   3. /console/oee writes nothing for a machine whose values are unchanged.
   4. Shift length: the 8/10/12h control on the 1st and 2nd Shift pages (8h
-     on the 3rd), a later shift can't be shorter than the one before, a
-     10/12h 2nd Shift is unticked by default and removes the same date's 3rd
-     Shift row, and the downtime cap follows the machine's length.
+     on the 3rd), a shift can't start before the one before it is over or
+     run past 6AM, a 10/12h 2nd Shift is unticked by default and a 6PM-6AM
+     one removes the same date's 3rd Shift row, and the downtime cap follows
+     the machine's length.
+  4b. Start times on the 2nd and 3rd Shift pages: pre-set to when the shift
+     before ends, stored only when changed, and checked with the length.
   5. Short shifts: the 2/4/6 hours box, which only counts with the short
      option picked, inside the normal 8-hour shift on every page, and later
      shifts starting unticked after one.
@@ -105,12 +108,14 @@ stored_scrap = {}
 stored_downtime = {}
 stored_schedule = {}
 stored_lengths = {}   # (machine_id, shift) -> hours, all for DAY
+stored_starts = {}    # (machine_id, shift) -> clock hour, all for DAY
 
 for mod in (oee_mod, console_oee_mod):
     mod.get_latest_scrap_for_date = lambda d: dict(stored_scrap)
     mod.get_latest_downtime_for_date = lambda d: dict(stored_downtime)
     mod.get_schedule_for_date = lambda d: dict(stored_schedule)
     mod.get_shift_lengths = lambda d: dict(stored_lengths) if d == DAY else {}
+    mod.get_shift_starts = lambda d: dict(stored_starts) if d == DAY else {}
     mod.get_downtime_reasons = (
         lambda active_only=True: dict(REASONS if active_only else ALL_REASONS)
     )
@@ -118,6 +123,9 @@ for mod in (oee_mod, console_oee_mod):
 # of it filed under DAY).
 oee_mod.get_shift_lengths_for_range = lambda s, e: (
     {(m, DAY, sh): h for (m, sh), h in stored_lengths.items()} if s <= DAY <= e else {}
+)
+oee_mod.get_shift_starts_for_range = lambda s, e: (
+    {(m, DAY, sh): h for (m, sh), h in stored_starts.items()} if s <= DAY <= e else {}
 )
 oee_mod.get_downtime_for_range = lambda s, e: (
     {(m, DAY, sh): v for (m, sh), v in stored_downtime.items()} if s <= DAY <= e else {}
@@ -139,11 +147,12 @@ oee_mod.get_shift_standards = lambda: {
 }
 
 # --- capture every write ---------------------------------------------------
-written = {"entry": [], "scrap": [], "downtime": [], "schedule": [], "length": []}
+written = {"entry": [], "scrap": [], "downtime": [], "schedule": [], "length": [], "start": []}
 console_mod.create_entry = lambda p: written["entry"].append(p) or 1
 console_oee_mod.create_shift_scrap = lambda p: written["scrap"].append(p) or 1
 console_oee_mod.create_schedule_exception = lambda p: written["schedule"].append(p) or 1
 console_oee_mod.create_shift_length = lambda p: written["length"].append(p) or 1
+console_oee_mod.create_shift_start = lambda p: written["start"].append(p) or 1
 
 
 def fake_downtime(payload, *, shift_minutes=480):
@@ -182,6 +191,24 @@ def radio_tag(html, machine, value):
 
 def radio_disabled(html, machine, value):
     return "disabled" in radio_tag(html, machine, value)
+
+
+def start_select(html, machine):
+    """The <select> of one machine's start picker."""
+    start = html.index(f'name="start_{machine}"')
+    return html[start:html.index("</select>", start)]
+
+
+def start_values(html, machine):
+    """The clock hours a machine's start picker offers, in order."""
+    return [part.split('"')[0] for part in start_select(html, machine).split('value="')[1:]]
+
+
+def start_option(html, machine, hour):
+    """The <option ...> tag for one start hour."""
+    select = start_select(html, machine)
+    start = select.index(f'value="{hour}"')
+    return select[start:select.index(">", start)]
 
 
 print("\n== every page renders ==")
@@ -258,6 +285,7 @@ def reset():
     stored_downtime.clear()
     stored_schedule.clear()
     stored_lengths.clear()
+    stored_starts.clear()
 
 
 print("\n== the flow the floor asked for: tick several reasons, minutes on each ==")
@@ -497,31 +525,34 @@ reset()
 res = post({"hours_C1": "9"})
 check("an unknown length is refused", written["length"] == [] and "8, 10 or 12" in res.text)
 
-print("\n== SHIFT LENGTH: as long or longer, never shorter ==")
+print("\n== SHIFT LENGTH: the day has to fit ==")
 reset()
 stored_lengths[("C1", "1st Shift")] = 12
 second = client.get(f"/console/oee?shift=2nd%20Shift&entry_date={DAY.isoformat()}").text
-c1_hours = second.split('aria-label="Shift length for C1"')[1].split("</div>")[0]
-check("on the 2nd Shift page, 8h and 10h are disabled after a 12h 1st",
-      [radio_disabled(second, "C1", v) for v in ("8", "10", "12", "short")]
-      == [True, True, False, False], c1_hours[:400])
-check("...and say why", "would start inside it" in c1_hours)
+check("after a 12h 1st, every 2nd Shift length fits from 6PM",
+      not any(radio_disabled(second, "C1", v) for v in ("8", "10", "12", "short")))
+check("...and the start picker begins at 6PM",
+      'name="start_C1"' in second and start_values(second, "C1")[:2] == ["18", "20"])
 res = client.post("/console/oee", data={"entered_by": "9001", "shift": "2nd Shift",
                                         "entry_date": DAY.isoformat(), "hours_C1": "8"})
-check("posting a shorter 2nd Shift anyway is refused", written["length"] == [])
-check("...naming both shifts", "2nd Shift" in res.text and "shorter than 1st Shift" in res.text)
+check("an 8h crew after a 12h day saves (6PM-2AM)",
+      [w.shift_hours for w in written["length"]] == [8] and "6PM-2AM" in res.text,
+      str(written["length"]))
 
 reset()
-stored_lengths[("C1", "2nd Shift")] = 8
+stored_starts[("C1", "2nd Shift")] = 16
 first = client.get(f"/console/oee?shift=1st%20Shift&entry_date={DAY.isoformat()}").text
 c1_hours = first.split('aria-label="Shift length for C1"')[1].split("</div>")[0]
-check("on the 1st Shift page, 10h and 12h are disabled when the 2nd is set to 8h",
+check("on the 1st Shift page, 12h is disabled when the 2nd is set to start at 4PM",
       [radio_disabled(first, "C1", v) for v in ("8", "10", "12", "short")]
-      == [False, True, True, False], c1_hours[:400])
-check("...and the tooltip says to change the 2nd", "Set 2nd Shift to 10h or more" in c1_hours)
+      == [False, False, True, False], c1_hours[:400])
+check("...and the tooltip says why and what to change",
+      "2nd Shift can&#39;t start at 4PM: 1st Shift (12h, 6AM-6PM) runs until 6PM" in c1_hours,
+      c1_hours[:600])
 res = post({"hours_C1": "12"})
-check("posting a longer 1st Shift anyway is refused", written["length"] == [],
+check("posting a 12h 1st Shift anyway is refused", written["length"] == [],
       str(written["length"]))
+check("...naming both shifts", "2nd Shift can't start at 4PM" in res.text.replace("&#39;", "'"))
 # ...but an inherited 2nd Shift follows the 1st, so raising the 1st is fine.
 reset()
 post({"hours_C1": "12"})
@@ -736,9 +767,9 @@ stored_lengths[("C1", "1st Shift")] = 12
 second = client.get(SECOND_URL).text
 check("the short shift is open on the 2nd Shift after a 12h 1st",
       not radio_disabled(second, "C1", "short") and "disabled" not in short_box(second, "C1"))
-check("...its tooltip names the 6PM-6AM night", "It stays inside 6PM-6AM" in second)
-check("...and the row tells the JS which window it takes", 'data-short-window="12"' in second)
-check("an ordinary machine's short shift stays inside 2PM-10PM", 'data-short-window="8"' in second)
+check("...its tooltip names the 6PM-6AM night", "Its checkpoints are 6PM-6AM" in second)
+check("an ordinary machine's short shift stays inside 2PM-10PM",
+      "Its checkpoints are 2PM-10PM" in second.split('data-machine="C2"')[1])
 res = post_shift("2nd Shift", {"hours_C1": "short", "short_hours_C1": "4",
                                "sched_present_C1": "1", "scheduled_C1": "1"})
 check("4 hours saves as the 2nd Shift's",
@@ -793,6 +824,135 @@ res = post({"hours_C1": "12"})
 check("...and lengthening it anyway is refused, naming the shift to shorten",
       written["length"] == [] and "inside 6PM-6AM" in res.text
       and "or shorten 1st Shift" in res.text, res.text[:300])
+reset()
+
+print("\n== START TIMES: the 2nd and 3rd Shift pages ==")
+reset()
+first = client.get(FIRST_URL).text
+check("the 1st Shift page has no start picker", 'name="start_' not in first)
+check("...and no conflict table for the JS", "data-conflicts=" not in first)
+second = client.get(SECOND_URL).text
+check("every 2nd Shift row has a start picker", second.count('name="start_') == len(MACHINE_IDS),
+      str(second.count('name="start_')))
+check("...offering 2PM to 4AM", start_values(second, "C1"),
+      ["14", "16", "18", "20", "22", "0", "2", "4"])
+check("...on 2PM, marked as when the 1st ends",
+      "selected" in start_option(second, "C1", 14)
+      and "2PM (when the 1st ends)" in start_select(second, "C1"))
+check("...and the span is shown even on an 8h row", ">2PM-10PM</summary>" in second)
+check("...with the conflict table for the JS", "data-conflicts=" in second)
+check("starts where 8h would run past 6AM are disabled",
+      "disabled" in start_option(second, "C1", 0) and "disabled" not in start_option(second, "C1", 22))
+res = post_shift("2nd Shift", {"hours_C1": "8", "start_C1": "14"})
+check("posting the default start writes nothing", written["start"] == [] and written["length"] == [],
+      str(written))
+
+print("\n== START TIMES: WS5 and WS6, 2PM-12AM then a 3rd crew to 6AM ==")
+reset()
+res = post_shift("2nd Shift", {"hours_WS5": "10", "start_WS5": "14",
+                               "sched_present_WS5": "1", "scheduled_WS5": "1"})
+check("a 10h 2nd Shift after an 8h day saves as 10h, with no start row",
+      [(w.machine_id, w.shift_hours) for w in written["length"]] == [("WS5", 10)]
+      and written["start"] == [], str(written))
+check("the row shows 2PM-12AM", "2PM-12AM" in res.text.split('data-machine="WS5"')[1][:4000])
+check("and the night crew's tick is written",
+      [(w.machine_id, w.scheduled) for w in written["schedule"]] == [("WS5", True)])
+reset()
+stored_lengths[("WS5", "2nd Shift")] = 10
+third = client.get(THIRD_URL).text
+ws5_row = third.split('data-machine="WS5"')[1].split("</tr>")[0]
+check("the 3rd Shift has a row for it", 'name="scrap_WS5"' in ws5_row and "No 3rd shift" not in ws5_row)
+check("...12AM-6AM, a 6h short shift following the 2nd",
+      ">12AM-6AM</summary>" in ws5_row and 'value="6"' in short_box(third, "WS5")
+      and "checked" in radio_tag(third, "WS5", "short") and "follows 2nd" in ws5_row)
+check("...8h is disabled (it would run past 6AM)", radio_disabled(third, "WS5", "8"))
+check("...its start picker offers 12AM to 4AM", start_values(third, "WS5"), ["0", "2", "4"])
+check("...and Scheduled starts unticked after a long 2nd Shift",
+      "checked" not in ws5_row.split('name="scheduled_WS5"')[1].split(">")[0])
+res = post_shift("3rd Shift", {"hours_WS5": "short", "short_hours_WS5": "6", "start_WS5": "0",
+                               "sched_present_WS5": "1", "scheduled_WS5": "1",
+                               "dt_none_WS5": "1"})
+check("entering the 3rd crew saves its tick and downtime, nothing else",
+      written["length"] == [] and written["start"] == []
+      and [w.scheduled for w in written["schedule"]] == [True]
+      and [w.machine_id for w in written["downtime"]] == ["WS5"], str(written))
+check("...with its downtime capped at 360 minutes",
+      'class="dt-min"' in res.text and 'max="360"' in res.text.split('data-machine="WS5"')[1].split("</tr>")[0])
+
+print("\n== START TIMES: a crew that came on later ==")
+reset()
+res = post_shift("2nd Shift", {"hours_C1": "10", "start_C1": "16",
+                               "sched_present_C1": "1", "scheduled_C1": "1"})
+check("a 10h crew from 4PM saves the length and the start",
+      [w.shift_hours for w in written["length"]] == [10]
+      and [(w.shift, w.start_hour) for w in written["start"]] == [("2nd Shift", 16)], str(written))
+check("the badge names the start", "starts 4PM" in res.text)
+check("the row shows 4PM-2AM", "4PM-2AM" in res.text)
+reset()
+stored_lengths[("C1", "2nd Shift")] = 10
+stored_starts[("C1", "2nd Shift")] = 16
+second = client.get(SECOND_URL).text
+check("a stored start is selected", "selected" in start_option(second, "C1", 16))
+check("...and the default is still marked", "2PM (when the 1st ends)" in start_select(second, "C1"))
+post_shift("2nd Shift", {"hours_C1": "10", "start_C1": "16"})
+check("re-saving it untouched writes nothing", written["start"] == [] and written["length"] == [])
+res = post_shift("2nd Shift", {"hours_C1": "10", "start_C1": "14"})
+check("going back to the default start stores 'follows' (NULL), not 2PM",
+      [w.start_hour for w in written["start"]] == [None], str(written["start"]))
+check("...and says so", "starts when the 1st Shift ends" in res.text)
+reset()
+res = post_shift("2nd Shift", {"hours_C1": "12", "start_C1": "20"})
+check("a 12h crew from 8PM is refused (past 6AM)",
+      written["length"] == [] and written["start"] == []
+      and "would run past 6AM" in res.text, str(written))
+reset()
+res = post_shift("2nd Shift", {"hours_C1": "8", "start_C1": "0"})
+check("an inherited 8h from 12AM is refused, not quietly cut to 6h",
+      written["length"] == [] and written["start"] == []
+      and "8h from 12AM) would run past 6AM" in res.text, str(written))
+reset()
+stored_lengths[("C1", "2nd Shift")] = 10
+res = post_shift("3rd Shift", {"hours_C1": "short", "short_hours_C1": "6", "start_C1": "2"})
+check("the 3rd's inherited 6h from 2AM is refused too",
+      written["length"] == [] and written["start"] == [] and "would run past 6AM" in res.text,
+      str(written))
+res = post_shift("3rd Shift", {"hours_C1": "short", "short_hours_C1": "4", "start_C1": "2"})
+check("...while 4h from 2AM saves the start (4h is what it follows into from there)",
+      written["length"] == [] and [w.start_hour for w in written["start"]] == [2], str(written))
+reset()
+res = post_shift("2nd Shift", {"hours_C1": "8", "start_C1": "12"})
+check("a start that isn't offered is refused",
+      written["start"] == [] and "Start must be" in res.text, str(written))
+reset()
+stored_lengths[("C1", "2nd Shift")] = 8
+stored_starts[("C1", "2nd Shift")] = 20
+second = client.get(SECOND_URL).text
+check("from 8PM, 12h is disabled and 10h fits",
+      [radio_disabled(second, "C1", v) for v in ("8", "10", "12")] == [False, False, True])
+third = client.get(THIRD_URL).text
+check("the 3rd Shift then starts at 4AM, 2h", ">4AM-6AM</summary>" in third.split('data-machine="C1"')[1])
+
+print("\n== START TIMES: a 3rd crew after a short night crew ==")
+reset()
+stored_lengths[("C1", "1st Shift")] = 12
+stored_lengths[("C1", "2nd Shift")] = 4
+third = client.get(THIRD_URL).text
+c1_row = third.split('data-machine="C1"')[1].split("</tr>")[0]
+check("there is no 3rd Shift unless it's given a start", "No 3rd shift" in c1_row)
+check("...but the row offers one, from 10PM", start_values(third, "C1"), ["", "22", "0", "2", "4"])
+check("...defaulting to no crew", 'value="" selected' in start_select(third, "C1"))
+res = post_shift("3rd Shift", {"start_C1": ""})
+check("leaving it writes nothing", written["start"] == [], str(written["start"]))
+res = post_shift("3rd Shift", {"start_C1": "22"})
+check("picking 10PM saves the 3rd Shift's start",
+      [(w.shift, w.start_hour) for w in written["start"]] == [("3rd Shift", 22)], str(written["start"]))
+check("...and the row comes back with its inputs", 'name="scrap_C1"' in res.text
+      and ">10PM-6AM</summary>" in res.text)
+reset()
+stored_lengths[("C1", "1st Shift")] = 12
+third = client.get(THIRD_URL).text
+check("after a 6PM-6AM night there is nothing to offer",
+      "No 3rd shift" in third and 'name="start_C1"' not in third)
 reset()
 
 print("\n== THE PRODUCTION DAY: the 3rd Shift page defaults to the day it started ==")

@@ -183,64 +183,59 @@ ALL_SHIFTS_LABEL: str = "All"
 
 
 # ---------------------------------------------------------------------------
-# Shift length (OEE only)
+# Shift length and start (OEE only)
 #
 # A machine can be run by one crew for 10 or 12 hours instead of the usual
-# 8. The 2-hour rounds and the floor screens stay on the 8-hour rotation (the
-# crew keeps writing the running count into the 4PM and 6PM boxes), but OEE
-# has to judge the machine against the minutes it actually ran.
+# 8, or for only part of a shift. The 2-hour rounds and the floor screens stay
+# on the 8-hour rotation (the crew keeps writing its running count into the
+# boxes it's there for), but OEE has to judge the machine against the hours
+# it was scheduled for, from the checkpoints that crew wrote.
 #
-# Rules:
-#   - The production day always starts at 6AM.
-#   - A shift's length decides where it starts: the Nth L-hour shift starts
-#     at 6AM + N x L. So a 12h 2nd Shift is 6PM-6AM, a 10h one 4PM-2AM, an
-#     8h one 2PM-10PM.
-#   - Each shift is set per machine per day. C1 can run an 8h 1st Shift, sit
-#     idle 2PM-6PM, then have a 12h crew from 6PM (1st = 8, 2nd = 12).
-#   - A later shift can be as long or longer than the one before it, never
-#     shorter; a shorter one would start inside it and count slots twice.
-#     Valid days: 8/8/8, 8/10, 8/12, 10/10, 10/12, 12/12. A 3rd Shift only
-#     exists after a 2nd Shift whose window (below) is 8 hours.
-#   - A shift with no length set inherits the window of the one before it
-#     (the 1st defaults to 8).
+# Each shift on a machine's day has a length and a start. With nothing set:
+#   - The production day starts at 6AM, and so does the 1st Shift.
+#   - A later shift starts when the one before it ends: 2PM after an 8h 1st
+#     Shift, 4PM or 6PM after a 10h or 12h one, 10PM for a 3rd after an 8h
+#     2nd Shift that started at 2PM.
+#   - A shift's length follows the one before it (the 1st defaults to 8), but
+#     never past 6AM. After a 2PM-12AM 2nd Shift the 3rd is 12AM-6AM, 6h.
+#   - A 3rd Shift only exists if the 2nd ends before 6AM.
+#
+# The 2nd and 3rd Shift's start can be set to any later checkpoint, for a crew
+# that came on after the one before it left (a 10h crew from 4PM after an 8h
+# day). A shift can't start before the one before it is over, and every shift
+# is over by 6AM (day_conflict()).
 #
 # Short shifts
 # ------------
-# A crew can also be scheduled for only part of a shift (mostly on
-# Saturdays): 2, 4 or 6 hours, since production is only read every 2 hours
-# and an odd number would end between two checkpoints. A short shift sits
-# inside the shift it would otherwise have inherited, its window (see
-# shift_windows()):
+# A crew can be scheduled for only part of a shift (mostly on Saturdays): 2,
+# 4 or 6 hours, since production is only read every 2 hours and an odd number
+# would end between two checkpoints. A short shift keeps the checkpoints of
+# the shift it would otherwise have been, its window: a 6h 2nd Shift from 2PM
+# owns 4PM to 10PM, so it doesn't matter which of those boxes holds its final
+# count, and the 3rd still starts at 10PM. A crew set to start inside that
+# window cuts it short.
 #
-#   - After an 8-hour or short shift, that's the normal 8-hour shift. The 2nd
-#     Shift always starts at 2PM and the 3rd at 10PM, so a 6-hour 2nd Shift
-#     is 2PM-8PM.
-#   - After a 10 or 12-hour 1st Shift, it's the long 2nd Shift that would
-#     follow. The crew starts when the day crew leaves, so 4 hours after a
-#     12h 1st Shift is 6PM-10PM, inside 6PM-6AM. As after any long 2nd
-#     Shift, there is no 3rd Shift that night.
-#   - The 1st Shift's crew can start at 6, 8 or 10AM but is always done by
-#     2PM. The start isn't recorded because it doesn't change the numbers:
-#     boxes before the crew arrives are blank (the counter was at zero), boxes
-#     after it leaves are blank (unchanged), so production is still the last
-#     reading. Pages say "within 6AM-2PM" instead of a clock time.
+# The 1st Shift's short crew can start at 6, 8 or 10AM but is always done by
+# 2PM. The start isn't recorded because it doesn't change the numbers: boxes
+# before the crew arrives are blank (the counter was at zero), boxes after it
+# leaves are blank (unchanged), so production is still the last reading.
+# Pages say "within 6AM-2PM" instead of a clock time.
 #
-# So for every rule above a short shift counts as its window: it owns the
-# window's checkpoints, and the as-long-or-longer check compares windows, so a
-# short shift never clashes with the shift before it. Lengthening an earlier
-# shift moves a short shift after it along. Only the minutes differ: Planned
-# Production Time is the scheduled hours x 60, and the standard scales with
-# it.
-#
-# The hours are scheduled time, not time run. A 6-hour shift where the
+# The hours are scheduled time, not time run: Planned Production Time is the
+# hours x 60, and the standard scales with them. A 6-hour shift where the
 # operator missed two hours is 6 with 120 minutes of Lack of Operator;
 # entering 4 would hide that loss.
 #
-# Each crew starts counting from zero. A shift after a short one inherits its
-# window, and starts unticked (see default_scheduled()).
+# Each crew starts counting from zero. A later shift starts unticked unless
+# it and every shift before it are 8 hours (see default_scheduled()).
 #
-# Lengths are stored per (machine, production day, shift) in
-# `machine_shift_length`; no row means inherit.
+# Lengths are stored in `machine_shift_length` and starts in
+# `machine_shift_start`, per (machine, production day, shift); no row means
+# the default above.
+#
+# Inside this module a time of day is counted in hours after 6AM (2PM is 8,
+# 6AM the next morning is 24), so a day's hours run 0 to 24 without wrapping.
+# Stored starts are clock hours (14 = 2PM); start_offset() converts.
 #
 # The production day
 # ------------------
@@ -268,6 +263,10 @@ MAX_SHIFT_MINUTES: int = max(SHIFT_LENGTH_HOURS) * 60
 
 DAY_START_HOUR: int = SHIFTS[0][0]
 
+# Hours between two checkpoints, and in a whole production day.
+SLOT_HOURS: int = SLOT_MINUTES // 60
+DAY_HOURS: int = SLOT_HOURS * len(TIME_SLOTS)
+
 # Slots closing at or before the day start (12AM, 2AM, 4AM, 6AM). They
 # belong to the production day that started the evening before, but the
 # rounds file them under the next calendar date.
@@ -276,145 +275,195 @@ NIGHT_SLOTS: list[str] = [
 ]
 
 
-def shift_windows(lengths: dict[str, int]) -> dict[str, int]:
-    """The 8, 10 or 12-hour shift each shift's checkpoints come from, for one
-    machine's whole day (resolve_day_lengths()).
+def start_offset(clock_hour: int) -> int:
+    """A clock hour (14 for 2PM) as hours after the day's 6AM start (8)."""
+    return (clock_hour - DAY_START_HOUR) % DAY_HOURS
 
-    An 8, 10 or 12-hour shift is its own window. A short one takes the window
-    of the shift before it, which is 8 for the 1st Shift: a 4h 2nd Shift is
-    inside 2PM-10PM after an 8h 1st, and inside 6PM-6AM after a 12h one.
+
+def clock_hour(offset: int) -> int:
+    """Hours after 6AM back to a clock hour: 8 -> 14, 20 -> 2."""
+    return (DAY_START_HOUR + offset) % DAY_HOURS
+
+
+def day_plan(lengths: dict[str, int], starts: dict[str, int] | None = None) -> dict[str, dict]:
+    """Where each shift sits on one machine's production day.
+
+    `lengths` ({shift: hours}) and `starts` ({shift: clock hour}) hold only
+    what was set; everything else is the default (see the notes above). Each
+    shift gets:
+
+        hours       scheduled hours
+        window      the 8, 10 or 12-hour shift a short one sits in
+        start, end  hours after 6AM; its checkpoints are the slots closing
+                    after `start`, up to and including `end`
+        slots       those checkpoints, or None if the day has no room for it
+        hours_set, start_set   whether each was set rather than defaulted
+
+    A day that breaks the rules (day_conflict()) still gets a plan, so the
+    form can show it.
     """
-    windows: dict[str, int] = {}
+    starts = starts or {}
+    plan: dict[str, dict] = {}
     window = DEFAULT_SHIFT_HOURS
+    previous_end = 0
     for label in SHIFT_ORDER:
-        if lengths[label] >= DEFAULT_SHIFT_HOURS:
-            window = lengths[label]
-        windows[label] = window
-    return windows
+        if label == SHIFT_ORDER[0]:
+            start = 0
+        elif label in starts:
+            start = start_offset(starts[label])
+        else:
+            start = previous_end
+        room = DAY_HOURS - start
+        hours = lengths.get(label)
+        if hours is None:
+            hours = min(window, room) if room >= SLOT_HOURS else window
+        if hours >= DEFAULT_SHIFT_HOURS:
+            window = hours
+        previous_end = min(start + window, DAY_HOURS)
+        plan[label] = {
+            "hours": hours,
+            "window": window,
+            "start": start,
+            "end": previous_end,
+            "hours_set": label in lengths,
+            "start_set": label in starts,
+        }
 
+    # A shift's checkpoints stop where the next one starts. That only moves
+    # anything when a crew was set to start inside a short shift's window.
+    for current, following in zip(SHIFT_ORDER, SHIFT_ORDER[1:]):
+        shift = plan[current]
+        shift["end"] = max(shift["start"], min(shift["end"], plan[following]["start"]))
 
-def _window(shift_hours: int, window: int | None) -> int:
-    """`window` if given, else `shift_hours`, which must then be 8, 10 or 12.
-    A short shift's window depends on its day, so it has to be passed."""
-    if window is not None:
-        return window
-    if shift_hours not in SHIFT_LENGTH_HOURS:
-        raise ValueError(f"a {shift_hours}h shift needs its window, see shift_windows()")
-    return shift_hours
-
-
-def shift_slots(shift: str, window: int) -> list[str] | None:
-    """The checkpoints of `shift` in a `window`-hour shift (8, 10 or 12), or
-    None if the day has no room for it.
-
-    The Nth L-hour shift is the Nth chunk of L/2 slots out of TIME_SLOTS:
-
-        1st, 8h  -> 8AM..2PM      2nd, 8h  -> 4PM..10PM    3rd, 8h -> 12AM..6AM
-        1st, 10h -> 8AM..4PM      2nd, 10h -> 6PM..2AM     3rd, 10h: none
-        1st, 12h -> 8AM..6PM      2nd, 12h -> 8PM..6AM     3rd, 12h: none
-
-    A short shift owns its window's checkpoints whatever hours were entered,
-    so it doesn't matter which of its boxes holds the final count. Passing a
-    short shift's hours here is a mistake, so it raises.
-    """
-    if window not in SHIFT_LENGTH_HOURS:
-        raise ValueError(f"window must be one of {SHIFT_LENGTH_HOURS}, not {window}")
-    per_shift = window * 60 // SLOT_MINUTES
-    index = SHIFT_ORDER.index(shift)
-    chunk = TIME_SLOTS[index * per_shift:(index + 1) * per_shift]
-    return chunk if len(chunk) == per_shift else None
-
-
-def shift_plan(window: int) -> dict[str, list[str]]:
-    """Every shift's slots on a day where all shifts are `window` hours long.
-    The 8-hour plan must equal SHIFT_SLOTS (asserted at the bottom of this
-    file)."""
-    plan: dict[str, list[str]] = {}
-    for label in SHIFT_ORDER:
-        slots = shift_slots(label, window)
-        if slots is not None:
-            plan[label] = slots
+    for shift in plan.values():
+        fits = shift["start"] + SLOT_HOURS <= DAY_HOURS
+        shift["slots"] = (
+            TIME_SLOTS[shift["start"] // SLOT_HOURS:shift["end"] // SLOT_HOURS] if fits else None
+        )
     return plan
 
 
-def resolve_day_lengths(explicit: dict[str, int]) -> dict[str, int]:
-    """Each shift's length for one machine on one day, given what was set.
-
-    The 1st Shift defaults to 8 and each later shift inherits the window of
-    the one before it. After a 4-hour 1st Shift the 2nd is a full 8; after a
-    12-hour 1st and a 4-hour 2nd, the 3rd is 12 and so doesn't exist.
-
-    Returns a length for all three shifts even when one can't exist at that
-    length; shift_slots() with the shift's window is the existence test.
-    """
-    lengths: dict[str, int] = {}
-    window = DEFAULT_SHIFT_HOURS
-    for label in SHIFT_ORDER:
-        lengths[label] = explicit.get(label, window)
-        if lengths[label] >= DEFAULT_SHIFT_HOURS:
-            window = lengths[label]
-    return lengths
+def _busy_until(shift: str, plan: dict[str, dict]) -> int:
+    """When `shift`'s crew is done, in hours after 6AM. A short 1st Shift's
+    crew can be there until 2PM, since its start isn't recorded."""
+    entry = plan[shift]
+    if shift == SHIFT_ORDER[0]:
+        return min(entry["window"], DAY_HOURS)
+    return entry["start"] + entry["hours"]
 
 
-def _length_text(shift: str, lengths: dict[str, int], windows: dict[str, int]) -> str:
-    """A shift's length for conflict messages: "12h, 6AM-6PM", or "4h,
-    6PM-10PM, inside 6PM-6AM" for a short shift in a 10 or 12-hour window."""
-    hours, window = lengths[shift], windows[shift]
-    text = f"{hours}h, {shift_span(shift, hours, window)}"
-    if hours < DEFAULT_SHIFT_HOURS and window > DEFAULT_SHIFT_HOURS:
-        text += f", inside {window_span(shift, hours, window)}"
+def offset_label(offset: int) -> str:
+    """Hours after 6AM to a slot-style label: 8 -> "2PM"."""
+    return _hour_label(DAY_START_HOUR + offset)
+
+
+def _length_text(shift: str, plan: dict[str, dict]) -> str:
+    """A shift's length for messages: "12h, 6AM-6PM", or "4h, 6PM-10PM,
+    inside 6PM-6AM" for a short shift whose checkpoints run past its hours."""
+    text = f"{plan[shift]['hours']}h, {shift_span(shift, plan)}"
+    whole = window_span(shift, plan)
+    if shift != SHIFT_ORDER[0] and whole != shift_span(shift, plan):
+        text += f", inside {whole}"
     return text
 
 
-def shift_length_conflict(lengths: dict[str, int]) -> str | None:
-    """A message describing the first overlap on the day, or None.
+def day_conflicts(plan: dict[str, dict]) -> list[str]:
+    """Every way the day doesn't fit, as messages for the form.
 
-    Compared on windows, so a short shift never clashes with the shift
-    before it. A later 8, 10 or 12-hour shift can still clash with a short
-    one's window (12h, then 4h, then an 8h 3rd).
+    A later shift can't start before the one before it is over, and every
+    shift has to be over by 6AM. A shift with nothing set that has no room
+    simply doesn't exist that day, so it isn't a conflict.
     """
-    windows = shift_windows(lengths)
-    for index, (previous, current) in enumerate(zip(SHIFT_ORDER, SHIFT_ORDER[1:])):
-        if windows[current] < windows[previous]:
+    messages = []
+    for previous, current in zip(SHIFT_ORDER, SHIFT_ORDER[1:]):
+        shift = plan[current]
+        busy = _busy_until(previous, plan)
+        if shift["slots"] is not None and shift["start"] < busy:
+            messages.append(
+                f"{current} can't start at {offset_label(shift['start'])}: {previous} "
+                f"({_length_text(previous, plan)}) runs until {offset_label(busy)}. "
+                f"Start {current} at {offset_label(busy)} or later, or shorten {previous}."
+            )
+
+    for index, label in enumerate(SHIFT_ORDER):
+        shift = plan[label]
+        if shift["start"] + shift["hours"] <= DAY_HOURS:
+            continue
+        if shift["slots"] is not None:
+            messages.append(
+                f"{label} ({shift['hours']}h from {offset_label(shift['start'])}) "
+                f"would run past 6AM. Make it {DAY_HOURS - shift['start']}h or less, "
+                "or start it earlier."
+            )
+        elif shift["hours_set"]:
+            previous = SHIFT_ORDER[index - 1]
             # The shift to shorten is the one that set the window: `previous`,
             # or the long shift before it when `previous` is short.
             source = next(
-                (label for label in reversed(SHIFT_ORDER[:index + 1])
-                 if lengths[label] == windows[previous]),
+                (earlier for earlier in reversed(SHIFT_ORDER[:index])
+                 if plan[earlier]["hours"] == plan[previous]["window"]),
                 previous,
             )
-            return (
-                f"{current} ({_length_text(current, lengths, windows)}) "
-                f"can't be shorter than {previous} "
-                f"({_length_text(previous, lengths, windows)})"
-                f" — it would start inside it. "
-                f"Set {current} to {windows[previous]}h or more, "
-                f"or shorten {source}."
+            messages.append(
+                f"{label} ({shift['hours']}h) has no room: {previous} "
+                f"({_length_text(previous, plan)}) covers the night until 6AM. "
+                f"Set when {label} started on its page, or shorten {source}."
             )
-    return None
+    return messages
 
 
-def _slot_day_offset(slot: str) -> int:
-    """1 if the rounds file this slot under the next morning, else 0."""
-    return 1 if slot in NIGHT_SLOTS else 0
+def day_conflict(plan: dict[str, dict]) -> str | None:
+    """The first of day_conflicts(), or None when the day fits."""
+    messages = day_conflicts(plan)
+    return messages[0] if messages else None
+
+
+def new_conflict(before: dict[str, dict], after: dict[str, dict]) -> str | None:
+    """The first conflict `after` has that `before` didn't, or None.
+
+    A day can already break the rules, for instance a short 3rd Shift set
+    before the 2nd was lengthened. Holding that against every other change
+    would lock the whole day, so only a change that makes things worse is
+    refused.
+    """
+    existing = set(day_conflicts(before))
+    return next((m for m in day_conflicts(after) if m not in existing), None)
+
+
+def start_options(shift: str, plan: dict[str, dict]) -> list[int]:
+    """The clock hours `shift` can start at: every checkpoint from when the
+    shift before it is over until 4AM. Empty for the 1st Shift, and for a
+    3rd Shift after a 2nd that runs until 6AM."""
+    index = SHIFT_ORDER.index(shift)
+    if index == 0:
+        return []
+    earliest = _busy_until(SHIFT_ORDER[index - 1], plan)
+    return [clock_hour(offset) for offset in range(earliest, DAY_HOURS, SLOT_HOURS)]
+
+
+def default_start(shift: str, lengths: dict[str, int], starts: dict[str, int]) -> int:
+    """The clock hour `shift` starts at when its own start isn't set, given
+    the rest of the machine's day."""
+    others = {label: hour for label, hour in starts.items() if label != shift}
+    return clock_hour(day_plan(lengths, others)[shift]["start"])
+
+
+def slot_dates(slots: list[str], production_day: date_type) -> list[tuple[str, date_type]]:
+    """Each checkpoint with the calendar date the rounds filed it under,
+    which is the next morning for 12AM-6AM."""
+    return [
+        (slot, production_day + timedelta(days=1 if slot in NIGHT_SLOTS else 0))
+        for slot in slots
+    ]
 
 
 def shift_slot_dates(
-    shift: str, production_day: date_type, window: int = DEFAULT_SHIFT_HOURS
+    shift: str, production_day: date_type, plan: dict[str, dict] | None = None
 ) -> list[tuple[str, date_type]] | None:
-    """The (slot, calendar date) checkpoints of one shift in a `window`-hour
-    shift (see shift_windows()), or None if the shift doesn't fit in the day.
-
-    Each date is the one the rounds filed the reading under, which is the
-    next morning for 12AM-6AM slots.
-    """
-    slots = shift_slots(shift, window)
-    if slots is None:
-        return None
-    return [
-        (slot, production_day + timedelta(days=_slot_day_offset(slot)))
-        for slot in slots
-    ]
+    """The (slot, calendar date) checkpoints of one shift (an ordinary 8-hour
+    day unless a day_plan() is given), or None if the shift doesn't fit."""
+    slots = (plan or day_plan({}))[shift]["slots"]
+    return None if slots is None else slot_dates(slots, production_day)
 
 
 def _hour_label(hour: int) -> str:
@@ -429,55 +478,52 @@ def _hour_label(hour: int) -> str:
     return f"{hour - 12}PM"
 
 
-def shift_span(
-    shift: str, shift_hours: int = DEFAULT_SHIFT_HOURS, window: int | None = None
-) -> str | None:
-    """Clock span of `shift` at that length, e.g. "6PM-6AM", or None if it
-    doesn't fit. A short shift needs its `window` (shift_windows()).
+def shift_span(shift: str, plan: dict[str, dict] | None = None) -> str | None:
+    """Clock span of `shift`'s scheduled hours, e.g. "2PM-12AM", or None if
+    it doesn't fit (an ordinary 8-hour day unless a day_plan() is given).
 
-    For a short shift this is the scheduled part from the start of its window
-    ("2PM-8PM", or "6PM-10PM" after a 12h 1st Shift), except on the 1st
-    Shift, whose crew can start at 6, 8 or 10AM: that reads "within
-    6AM-2PM". See window_span() for the whole shift."""
-    window = _window(shift_hours, window)
-    if shift_slots(shift, window) is None:
+    A short 1st Shift reads "within 6AM-2PM", since its crew can start at 6,
+    8 or 10AM. See window_span() for a short shift's whole window."""
+    entry = (plan or day_plan({}))[shift]
+    if entry["slots"] is None:
         return None
-    if shift_hours < DEFAULT_SHIFT_HOURS and shift == SHIFT_ORDER[0]:
-        return f"within {shift_span(shift, window)}"
-    start = DAY_START_HOUR + SHIFT_ORDER.index(shift) * window
-    return f"{_hour_label(start)}-{_hour_label(start + shift_hours)}"
+    if shift == SHIFT_ORDER[0] and entry["hours"] < DEFAULT_SHIFT_HOURS:
+        return f"within {offset_label(0)}-{offset_label(entry['window'])}"
+    return f"{offset_label(entry['start'])}-{offset_label(entry['start'] + entry['hours'])}"
 
 
-def window_span(
-    shift: str, shift_hours: int = DEFAULT_SHIFT_HOURS, window: int | None = None
-) -> str | None:
-    """The whole shift the checkpoints come from. Differs from shift_span()
+def window_span(shift: str, plan: dict[str, dict] | None = None) -> str | None:
+    """Clock span of the checkpoints `shift` owns. Differs from shift_span()
     only on a short shift."""
-    return shift_span(shift, _window(shift_hours, window))
+    entry = (plan or day_plan({}))[shift]
+    if entry["slots"] is None:
+        return None
+    return f"{offset_label(entry['start'])}-{offset_label(entry['end'])}"
 
 
-def default_scheduled(shift: str, lengths: dict[str, int]) -> bool:
+def default_scheduled(shift: str, plan: dict[str, dict]) -> bool:
     """Whether a machine counts as scheduled for `shift` when nobody has said
-    otherwise. `lengths` is the machine's whole day, from
-    resolve_day_lengths().
+    otherwise, given its day_plan().
 
     The 1st Shift: yes. A later shift: only if it and every shift before it
-    are 8 hours. A 10/12-hour 2nd Shift is a night crew, which is the
-    exception, and a day with a short shift is usually a Saturday where only
-    some crews run. Without this, those machines would show a missing shift.
+    are 8 hours. A crew after a long shift is the exception, and a day with a
+    short shift is usually a Saturday where only some crews run. Without
+    this, those machines would show a missing shift.
     """
-    if shift_slots(shift, shift_windows(lengths)[shift]) is None:
+    if plan[shift]["slots"] is None:
         return False
     index = SHIFT_ORDER.index(shift)
     return index == 0 or all(
-        lengths[label] == DEFAULT_SHIFT_HOURS for label in SHIFT_ORDER[:index + 1]
+        plan[label]["hours"] == DEFAULT_SHIFT_HOURS for label in SHIFT_ORDER[:index + 1]
     )
 
 
 def long_length_options(shift: str) -> list[int]:
-    """Which of 8/10/12 hours `shift` can be. The 3rd Shift can only be 8,
-    since a longer one would run past 6AM."""
-    return [hours for hours in SHIFT_LENGTH_HOURS if shift_slots(shift, hours) is not None]
+    """Which of 8/10/12 hours `shift`'s page offers. The 3rd Shift only
+    offers 8: a night crew of 10 or 12 hours is entered as the 2nd Shift."""
+    if shift == SHIFT_ORDER[-1]:
+        return [DEFAULT_SHIFT_HOURS]
+    return SHIFT_LENGTH_HOURS
 
 
 def default_production_day(shift: str, now: datetime) -> date_type:
@@ -576,9 +622,9 @@ class ScheduleCreate(BaseModel):
 class ShiftLengthCreate(BaseModel):
     """How many hours one shift ran on one machine on one production day.
 
-    `shift_hours` is 8, 10 or 12, or 2, 4 or 6 for a short shift. The as-long-or-
-    longer rule is checked by the caller (shift_length_conflict()), since
-    this model only sees one shift.
+    `shift_hours` is 8, 10 or 12, or 2, 4 or 6 for a short shift. Whether
+    the day still fits is checked by the caller (day_conflict()), since this
+    model only sees one shift.
     """
 
     machine_id: str
@@ -602,13 +648,43 @@ class ShiftLengthCreate(BaseModel):
         return value
 
 
+class ShiftStartCreate(BaseModel):
+    """When a 2nd or 3rd Shift started on one machine on one production day.
+
+    `start_hour` is a clock hour on a checkpoint (14 for 2PM, 0 for 12AM), or
+    None to go back to starting when the shift before it ends. Whether the
+    day still fits is checked by the caller (day_conflict()).
+    """
+
+    machine_id: str
+    entry_date: date_type
+    shift: str
+    start_hour: int | None
+    entered_by: str = Field(min_length=1, max_length=20)
+
+    @field_validator("shift")
+    @classmethod
+    def _later_shift(cls, value: str) -> str:
+        if value not in SHIFT_ORDER[1:]:
+            raise ValueError(f"shift must be one of {SHIFT_ORDER[1:]}")
+        return value
+
+    @field_validator("start_hour")
+    @classmethod
+    def _on_a_checkpoint(cls, value: int | None) -> int | None:
+        if value is not None and (value not in range(24) or value % SLOT_HOURS):
+            raise ValueError("start_hour must be an even clock hour, 0 to 22")
+        return value
+
+
 # Every machine belongs to exactly one zone, or it would have no board, no
 # rounds form and no section on the review pages.
 assert sorted(m for zone in DASHBOARD_ZONES.values() for m in zone) == sorted(MACHINE_IDS), (
     "MACHINE_IDS and DASHBOARD_ZONES must list the same machines, each once"
 )
 
-# The boards use SHIFT_SLOTS and OEE uses shift_plan(); they must agree.
-assert shift_plan(DEFAULT_SHIFT_HOURS) == SHIFT_SLOTS, (
-    "shift_plan(8) must equal SHIFT_SLOTS - TIME_SLOTS or SHIFT_SLOTS was reordered"
+# The boards use SHIFT_SLOTS and OEE uses day_plan(); on a day with nothing
+# set they must agree.
+assert {label: shift["slots"] for label, shift in day_plan({}).items()} == SHIFT_SLOTS, (
+    "day_plan({}) must equal SHIFT_SLOTS - TIME_SLOTS or SHIFT_SLOTS was reordered"
 )

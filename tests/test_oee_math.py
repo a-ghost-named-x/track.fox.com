@@ -45,17 +45,18 @@ from app.models import (  # noqa: E402
     SHIFT_ORDER,
     SHIFT_SLOTS,
     TIME_SLOTS,
+    day_conflict,
+    day_conflicts,
+    day_plan,
     default_production_day,
     default_scheduled,
+    default_start,
     elapsed_dated_slots,
     elapsed_slots,
-    resolve_day_lengths,
-    shift_length_conflict,
-    shift_plan,
     shift_slot_dates,
-    shift_slots,
     shift_span,
-    shift_windows,
+    start_options,
+    window_span,
 )
 
 failures = []
@@ -261,145 +262,224 @@ check_eq("3rd shift of 9/3 at 3:30AM on 9/4: two slots in",
          elapsed_slots("3rd Shift", date(2026, 9, 3), datetime(2026, 9, 4, 3, 30)),
          ["12AM", "2AM"])
 
-print("\n== shift length geometry: the Nth L-hour shift starts at 6AM + N x L ==")
-check_eq("8h reproduces SHIFT_SLOTS", shift_plan(8), SHIFT_SLOTS)
-check_eq("1st, 10h runs to 4PM", shift_slots("1st Shift", 10), ["8AM", "10AM", "12PM", "2PM", "4PM"])
-check_eq("2nd, 10h is 4PM-2AM", shift_slots("2nd Shift", 10), ["6PM", "8PM", "10PM", "12AM", "2AM"])
-check_eq("3rd, 10h has no room", shift_slots("3rd Shift", 10), None)
-check_eq("1st, 12h runs to 6PM", shift_slots("1st Shift", 12),
-         ["8AM", "10AM", "12PM", "2PM", "4PM", "6PM"])
-check_eq("2nd, 12h is 6PM-6AM (never 2PM-2AM)", shift_slots("2nd Shift", 12),
+def plan_of(lengths=None, starts=None):
+    return day_plan(lengths or {}, starts or {})
+
+
+def spans(plan):
+    return [shift_span(s, plan) for s in SHIFT_ORDER]
+
+
+def slots_of(plan):
+    return [plan[s]["slots"] for s in SHIFT_ORDER]
+
+
+print("\n== shift geometry: each shift starts when the one before it ends ==")
+check_eq("nothing set reproduces SHIFT_SLOTS",
+         {s: p["slots"] for s, p in plan_of().items()}, SHIFT_SLOTS)
+check_eq("spans at 8h", spans(plan_of()), ["6AM-2PM", "2PM-10PM", "10PM-6AM"])
+check_eq("1st, 10h runs to 4PM", plan_of({"1st Shift": 10})["1st Shift"]["slots"],
+         ["8AM", "10AM", "12PM", "2PM", "4PM"])
+check_eq("...and the 2nd follows it at 10h: 4PM-2AM, then a 4h 3rd to 6AM",
+         spans(plan_of({"1st Shift": 10})), ["6AM-4PM", "4PM-2AM", "2AM-6AM"])
+check_eq("1st = 12 -> 6AM-6PM, 6PM-6AM, and no room for a 3rd",
+         spans(plan_of({"1st Shift": 12})), ["6AM-6PM", "6PM-6AM", None])
+check_eq("...the night owns 8PM to 6AM", plan_of({"1st Shift": 12})["2nd Shift"]["slots"],
          ["8PM", "10PM", "12AM", "2AM", "4AM", "6AM"])
-check_eq("3rd, 12h has no room", shift_slots("3rd Shift", 12), None)
-check_eq("spans at 12h", [shift_span(s, 12) for s in SHIFT_SLOTS], ["6AM-6PM", "6PM-6AM", None])
-check_eq("spans at 10h", [shift_span(s, 10) for s in SHIFT_SLOTS], ["6AM-4PM", "4PM-2AM", None])
-check_eq("spans at 8h", [shift_span(s, 8) for s in SHIFT_SLOTS], ["6AM-2PM", "2PM-10PM", "10PM-6AM"])
 
-print("\n== each shift inherits the one before it ==")
-check_eq("nothing set -> 8/8/8", resolve_day_lengths({}),
-         {"1st Shift": 8, "2nd Shift": 8, "3rd Shift": 8})
-check_eq("1st = 12 -> the night follows", resolve_day_lengths({"1st Shift": 12}),
-         {"1st Shift": 12, "2nd Shift": 12, "3rd Shift": 12})
-# 8-hour 1st Shift, idle 2PM-6PM, then a 12-hour crew at 6PM.
-check_eq("2nd = 12 on its own", resolve_day_lengths({"2nd Shift": 12}),
-         {"1st Shift": 8, "2nd Shift": 12, "3rd Shift": 12})
-check_eq("...so 1st is 6AM-2PM and 2nd is 6PM-6AM",
-         [shift_span(s, h) for s, h in resolve_day_lengths({"2nd Shift": 12}).items()],
-         ["6AM-2PM", "6PM-6AM", None])
+print("\n== WS5/WS6: an 8h day, a 10h 2nd Shift from 2PM, a 3rd crew to 6AM ==")
+ws5 = plan_of({"2nd Shift": 10})
+check_eq("the 2nd Shift is 2PM-12AM, not 4PM-2AM", shift_span("2nd Shift", ws5), "2PM-12AM")
+check_eq("...owning 4PM to 12AM", ws5["2nd Shift"]["slots"], ["4PM", "6PM", "8PM", "10PM", "12AM"])
+check_eq("a 3rd Shift exists after it, 12AM-6AM", shift_span("3rd Shift", ws5), "12AM-6AM")
+check_eq("...6 hours, the rest of the night", ws5["3rd Shift"]["hours"], 6)
+check_eq("...owning 2AM to 6AM", ws5["3rd Shift"]["slots"], ["2AM", "4AM", "6AM"])
+check_eq("the day fits", day_conflict(ws5), None)
+check_eq("the 2nd and 3rd start unticked after a long shift",
+         [default_scheduled(s, ws5) for s in SHIFT_ORDER], [True, False, False])
+ws5_set = plan_of({"2nd Shift": 10, "3rd Shift": 6})
+check_eq("setting the 3rd to 6h changes nothing else", spans(ws5_set), spans(ws5))
+check_eq("an 8h 3rd won't fit after it",
+         day_conflict(plan_of({"2nd Shift": 10, "3rd Shift": 8})),
+         "3rd Shift (8h from 12AM) would run past 6AM. Make it 6h or less, or start it earlier.")
 
-print("\n== the as-long-or-longer rule ==")
-for combo in ({}, {"1st Shift": 12}, {"2nd Shift": 12}, {"1st Shift": 10, "2nd Shift": 12},
-              {"2nd Shift": 10}, {"1st Shift": 10}):
-    check_eq(f"{combo or '8/8/8'} is fine",
-             shift_length_conflict(resolve_day_lengths(combo)), None)
-msg = shift_length_conflict(resolve_day_lengths({"1st Shift": 12, "2nd Shift": 8}))
-check_eq("12 then 8 overlaps", msg is not None, True)
-check_eq("...and the message names both shifts",
-         "2nd Shift" in (msg or "") and "1st Shift" in (msg or "") and "6AM-6PM" in (msg or ""), True)
-check_eq("12 then 10 overlaps too",
-         shift_length_conflict(resolve_day_lengths({"1st Shift": 12, "2nd Shift": 10})) is not None,
-         True)
-check_eq("a 3rd Shift explicitly shorter than a long 2nd is caught",
-         shift_length_conflict(resolve_day_lengths({"2nd Shift": 12, "3rd Shift": 8})) is not None,
-         True)
+print("\n== a start can be set for a crew that came on later ==")
+late10 = plan_of({"2nd Shift": 10}, {"2nd Shift": 16})
+check_eq("a 10h crew from 4PM after an 8h day", spans(late10), ["6AM-2PM", "4PM-2AM", "2AM-6AM"])
+check_eq("...owns 6PM to 2AM; the 4PM box is nobody's",
+         late10["2nd Shift"]["slots"], ["6PM", "8PM", "10PM", "12AM", "2AM"])
+late12 = plan_of({"2nd Shift": 12}, {"2nd Shift": 18})
+check_eq("a 12h crew from 6PM after an 8h day is the 6PM-6AM night",
+         spans(late12), ["6AM-2PM", "6PM-6AM", None])
+check_eq("a 12h crew after an 8h day starts at 2PM unless set",
+         spans(plan_of({"2nd Shift": 12})), ["6AM-2PM", "2PM-2AM", "2AM-6AM"])
+check_eq("a 3rd crew from 2AM after an ordinary 2nd Shift",
+         spans(plan_of({"3rd Shift": 4}, {"3rd Shift": 2})), ["6AM-2PM", "2PM-10PM", "2AM-6AM"])
+check_eq("...the 2nd still owns its own four boxes",
+         plan_of({"3rd Shift": 4}, {"3rd Shift": 2})["2nd Shift"]["slots"], SHIFT_SLOTS["2nd Shift"])
+check_eq("start options for a 2nd Shift after an 8h day: 2PM to 4AM",
+         start_options("2nd Shift", plan_of()), [14, 16, 18, 20, 22, 0, 2, 4])
+check_eq("...after a 12h day: 6PM to 4AM",
+         start_options("2nd Shift", plan_of({"1st Shift": 12})), [18, 20, 22, 0, 2, 4])
+check_eq("a 3rd Shift's options start when the 2nd Shift is over",
+         start_options("3rd Shift", ws5), [0, 2, 4])
+check_eq("...none after a 2nd that runs until 6AM",
+         start_options("3rd Shift", plan_of({"1st Shift": 12})), [])
+check_eq("the 1st Shift has no start to set", start_options("1st Shift", plan_of()), [])
+check_eq("the default start ignores the shift's own setting",
+         default_start("2nd Shift", {"2nd Shift": 10}, {"2nd Shift": 16}), 14)
+check_eq("...and follows a long 1st Shift",
+         default_start("2nd Shift", {"1st Shift": 10}, {}), 16)
+
+print("\n== the day has to fit ==")
+for lengths, starts in (({}, {}), ({"1st Shift": 12}, {}), ({"2nd Shift": 12}, {}),
+                        ({"1st Shift": 10, "2nd Shift": 12}, {}), ({"2nd Shift": 10}, {}),
+                        ({"1st Shift": 12, "2nd Shift": 8}, {}),
+                        ({"2nd Shift": 12}, {"2nd Shift": 18})):
+    check_eq(f"{lengths or '8/8/8'} {starts or ''} is fine", day_conflict(plan_of(lengths, starts)), None)
+msg = day_conflict(plan_of({"1st Shift": 12}, {"2nd Shift": 16}))
+check_eq("a 2nd Shift can't start inside the 1st", msg,
+         "2nd Shift can't start at 4PM: 1st Shift (12h, 6AM-6PM) runs until 6PM. "
+         "Start 2nd Shift at 6PM or later, or shorten 1st Shift.")
+check_eq("a short 1st Shift's crew can be there until 2PM",
+         day_conflict(plan_of({"1st Shift": 4}, {"2nd Shift": 12})) is not None, True)
+check_eq("a 12h night can't start at 8PM (past 6AM)",
+         day_conflict(plan_of({"2nd Shift": 12}, {"2nd Shift": 20})),
+         "2nd Shift (12h from 8PM) would run past 6AM. Make it 10h or less, or start it earlier.")
+check_eq("a 3rd crew can't start before the 2nd is over",
+         day_conflict(plan_of({"2nd Shift": 10}, {"3rd Shift": 22})) is not None, True)
+
+print("\n== a short shift sits inside its window ==")
+short2 = plan_of({"2nd Shift": 6})
+check_eq("a 6h 2nd Shift is 2PM-8PM", shift_span("2nd Shift", short2), "2PM-8PM")
+check_eq("...inside 2PM-10PM", window_span("2nd Shift", short2), "2PM-10PM")
+check_eq("...so the 3rd still starts at 10PM", shift_span("3rd Shift", short2), "10PM-6AM")
+cut = plan_of({"2nd Shift": 4, "3rd Shift": 8}, {"3rd Shift": 18})
+check_eq("a crew set to start inside the window cuts it short",
+         (window_span("2nd Shift", cut), cut["2nd Shift"]["slots"]), ("2PM-6PM", ["4PM", "6PM"]))
+check_eq("...and owns the rest", cut["3rd Shift"]["slots"],
+         ["8PM", "10PM", "12AM", "2AM"])
+check_eq("a short 1st Shift has no fixed start", shift_span("1st Shift", plan_of({"1st Shift": 4})),
+         "within 6AM-2PM")
+check_eq("...inside the 6AM-2PM shift", window_span("1st Shift", plan_of({"1st Shift": 4})),
+         "6AM-2PM")
+
+print("\n== a short shift after a 10 or 12-hour 1st Shift sits inside the long night ==")
+night = plan_of({"1st Shift": 12, "2nd Shift": 4})
+check_eq("12h then 4h is a valid day", day_conflict(night), None)
+check_eq("the 4h crew starts when the day crew leaves", shift_span("2nd Shift", night), "6PM-10PM")
+check_eq("...and owns the night's checkpoints", night["2nd Shift"]["slots"],
+         ["8PM", "10PM", "12AM", "2AM", "4AM", "6AM"])
+check_eq("so there is no 3rd Shift unless one is given a start", night["3rd Shift"]["slots"], None)
+check_eq("after a 10h 1st, 4 hours is 4PM-8PM",
+         shift_span("2nd Shift", plan_of({"1st Shift": 10, "2nd Shift": 4})), "4PM-8PM")
+check_eq("a 4h night crew starts unticked; there is no 3rd Shift",
+         [default_scheduled(s, night) for s in SHIFT_ORDER], [True, False, False])
+check_eq("a 3rd crew from 10PM fits after the 4h crew",
+         spans(plan_of({"1st Shift": 12, "2nd Shift": 4}, {"3rd Shift": 22})),
+         ["6AM-6PM", "6PM-10PM", "10PM-6AM"])
+msg = day_conflict(plan_of({"1st Shift": 12, "2nd Shift": 4, "3rd Shift": 8}))
+check_eq("an 8h 3rd Shift with no start has no room in the 6PM-6AM night",
+         msg is not None and "inside 6PM-6AM" in msg and "has no room" in msg, True)
+check_eq("...and the fix named is the 12h 1st Shift", "shorten 1st Shift" in (msg or ""), True)
 
 print("\n== every day the old rules accepted reads exactly as before ==")
-# The rules before a short shift could follow a 10 or 12-hour one: a short
-# shift was always inside its 8-hour shift. Any day those rules accepted must
-# keep its lengths, checkpoints, spans and Scheduled defaults, since stored
-# history was entered under them.
+# Before start times, the Nth L-hour shift started at 6AM + N x L and a later
+# shift couldn't be shorter than the one before. Every day those rules
+# accepted must keep its checkpoints, spans and Scheduled defaults, except a
+# 10/12h 2nd Shift longer than the 1st Shift's window, which now starts when
+# the 1st ends unless its old start is stored.
 
 
-def old_pattern(hours):
+def old_window(hours):
     return max(hours, 8)
 
 
 def old_resolve(explicit):
-    lengths, previous = {}, 8
+    lengths, window = {}, 8
     for label in SHIFT_ORDER:
-        previous = explicit.get(label, old_pattern(previous))
-        lengths[label] = previous
+        lengths[label] = explicit.get(label, window)
+        if lengths[label] >= 8:
+            window = lengths[label]
     return lengths
 
 
-def old_slots(shift, hours):
-    per_shift = old_pattern(hours) // 2
+def old_windows(lengths):
+    windows, window = {}, 8
+    for label in SHIFT_ORDER:
+        if lengths[label] >= 8:
+            window = lengths[label]
+        windows[label] = window
+    return windows
+
+
+def old_slots(shift, window):
+    per_shift = window // 2
     index = SHIFT_ORDER.index(shift)
     chunk = TIME_SLOTS[index * per_shift:(index + 1) * per_shift]
     return chunk if len(chunk) == per_shift else None
 
 
-def old_span(shift, hours):
-    if old_slots(shift, hours) is None:
+def label_of(h):
+    return f"{(h % 12) or 12}{'AM' if h % 24 < 12 else 'PM'}"
+
+
+def old_span(shift, hours, window):
+    if old_slots(shift, window) is None:
         return None
     if hours < 8 and shift == SHIFT_ORDER[0]:
-        return f"within {old_span(shift, 8)}"
-    start = 6 + SHIFT_ORDER.index(shift) * old_pattern(hours)
-    label = lambda h: f"{(h % 12) or 12}{'AM' if h % 24 < 12 else 'PM'}"  # noqa: E731
-    return f"{label(start)}-{label(start + hours)}"
+        return f"within {old_span(shift, window, window)}"
+    start = 6 + SHIFT_ORDER.index(shift) * window
+    return f"{label_of(start)}-{label_of(start + hours)}"
 
 
-def old_default_scheduled(shift, lengths):
-    if old_slots(shift, lengths[shift]) is None:
+def old_default_scheduled(shift, lengths, windows):
+    if old_slots(shift, windows[shift]) is None:
         return False
     index = SHIFT_ORDER.index(shift)
     return index == 0 or all(lengths[s] == 8 for s in SHIFT_ORDER[:index + 1])
 
 
-compared = mismatched = 0
+compared = moved = mismatched = 0
 for combo in itertools.product([None, 2, 4, 6, 8, 10, 12], [None, 2, 4, 6, 8, 10, 12],
                                [None, 2, 4, 6, 8]):
     explicit = {s: h for s, h in zip(SHIFT_ORDER, combo) if h is not None}
     old = old_resolve(explicit)
-    if any(old_pattern(old[c]) < old_pattern(old[p]) for p, c in zip(SHIFT_ORDER, SHIFT_ORDER[1:])):
-        continue
+    windows = old_windows(old)
+    if any(windows[c] < windows[p] for p, c in zip(SHIFT_ORDER, SHIFT_ORDER[1:])):
+        continue  # the old rules refused this day
     compared += 1
-    new = resolve_day_lengths(explicit)
-    windows = shift_windows(new)
-    same = new == old and shift_length_conflict(new) is None and all(
-        shift_slots(s, windows[s]) == old_slots(s, old[s])
-        and shift_span(s, new[s], windows[s]) == old_span(s, old[s])
-        and default_scheduled(s, new) == old_default_scheduled(s, old)
+    starts = {}
+    changed = old["2nd Shift"] >= 10 and old["2nd Shift"] > windows["1st Shift"]
+    if changed:
+        moved += 1
+        # The old start, as 21_keep_old_shift_starts.sql stores it.
+        starts = {"2nd Shift": (6 + old["2nd Shift"]) % 24}
+    new = day_plan(explicit, starts)
+    # A length typed on a 3rd Shift the old rules had no room for meant
+    # nothing then, and may not fit now. That's the only conflict allowed.
+    absent = [s for s in SHIFT_ORDER if old_slots(s, windows[s]) is None]
+    same = all(
+        any(message.startswith(s) for s in absent) for message in day_conflicts(new)
+    ) and all(
+        new[s]["slots"] == old_slots(s, windows[s])
+        and shift_span(s, new) == old_span(s, old[s], windows[s])
+        and default_scheduled(s, new) == old_default_scheduled(s, old, windows)
         for s in SHIFT_ORDER
+        # A 3rd Shift the old rules had no room for may exist now, but only
+        # ever unticked, so it changes no number.
+        if old_slots(s, windows[s]) is not None
+    ) and all(
+        not default_scheduled(s, new)
+        for s in SHIFT_ORDER if old_slots(s, windows[s]) is None
     )
     if not same:
         mismatched += 1
-        print(f"    differs: {explicit}")
-check_eq(f"all {compared} days the old rules accepted are unchanged", mismatched, 0)
-
-print("\n== a short shift after a 10 or 12-hour 1st Shift sits inside the long night ==")
-check_eq("12h then 4h is a valid day",
-         shift_length_conflict(resolve_day_lengths({"1st Shift": 12, "2nd Shift": 4})), None)
-day = resolve_day_lengths({"1st Shift": 12, "2nd Shift": 4})
-check_eq("its windows: 12 for both, so no room for a 3rd", shift_windows(day),
-         {"1st Shift": 12, "2nd Shift": 12, "3rd Shift": 12})
-check_eq("the 3rd inherits the 12h window, not a full 8", day["3rd Shift"], 12)
-check_eq("the 4h crew starts when the day crew leaves",
-         shift_span("2nd Shift", 4, 12), "6PM-10PM")
-check_eq("...and owns the night's checkpoints", shift_slots("2nd Shift", 12),
-         ["8PM", "10PM", "12AM", "2AM", "4AM", "6AM"])
-check_eq("after a 10h 1st, 4 hours is 4PM-8PM",
-         shift_span("2nd Shift", 4, shift_windows(resolve_day_lengths(
-             {"1st Shift": 10, "2nd Shift": 4}))["2nd Shift"]), "4PM-8PM")
-check_eq("a 4h night crew starts unticked; there is no 3rd Shift",
-         [default_scheduled(s, day) for s in SHIFT_ORDER], [True, False, False])
-msg = shift_length_conflict(resolve_day_lengths(
-    {"1st Shift": 12, "2nd Shift": 4, "3rd Shift": 8}))
-check_eq("an 8h 3rd Shift after it still overlaps the 6PM-6AM night",
-         msg is not None and "inside 6PM-6AM" in msg, True)
-check_eq("...and the fix named is the 12h 1st Shift", "shorten 1st Shift" in (msg or ""), True)
-try:
-    shift_slots("2nd Shift", 4)
-    raised = False
-except ValueError:
-    raised = True
-check_eq("passing a short shift's hours where a window belongs raises", raised, True)
-try:
-    shift_span("2nd Shift", 4)
-    raised = False
-except ValueError:
-    raised = True
-check_eq("...and so does a short span with no window", raised, True)
+        print(f"    differs: {explicit} {starts}")
+check_eq(f"all {compared} days the old rules accepted are unchanged "
+         f"({moved} of them with their old start stored)", mismatched, 0)
+check_eq("the days that move are 8->10, 8->12 and 10->12 (with or without a short 3rd)",
+         moved > 0, True)
 
 print("\n== the production day and the rounds' calendar dates ==")
 # 12AM-6AM checkpoints carry the next calendar date, as the rounds file them.
@@ -407,22 +487,23 @@ check_eq("3rd Shift of 9/18 lands on 9/19",
          shift_slot_dates("3rd Shift", date(2026, 9, 18)),
          [(s, date(2026, 9, 19)) for s in ("12AM", "2AM", "4AM", "6AM")])
 check_eq("12h 2nd Shift of 9/15 straddles midnight",
-         shift_slot_dates("2nd Shift", date(2026, 9, 15), 12),
+         shift_slot_dates("2nd Shift", date(2026, 9, 15), plan_of({"1st Shift": 12})),
          [("8PM", date(2026, 9, 15)), ("10PM", date(2026, 9, 15)),
           ("12AM", date(2026, 9, 16)), ("2AM", date(2026, 9, 16)),
           ("4AM", date(2026, 9, 16)), ("6AM", date(2026, 9, 16))])
 check_eq("a shift the day has no room for is None",
-         shift_slot_dates("3rd Shift", date(2026, 9, 15), 12), None)
+         shift_slot_dates("3rd Shift", date(2026, 9, 15), plan_of({"1st Shift": 12})), None)
 check_eq("elapsed follows each slot's own date",
-         elapsed_dated_slots(shift_slot_dates("2nd Shift", date(2026, 9, 15), 12),
+         elapsed_dated_slots(shift_slot_dates("2nd Shift", date(2026, 9, 15),
+                                              plan_of({"1st Shift": 12})),
                              datetime(2026, 9, 16, 2, 0)),
          ["8PM", "10PM", "12AM", "2AM"])
 
 print("\n== defaults ==")
 check_eq("8h: everything scheduled by default",
-         [default_scheduled(s, resolve_day_lengths({})) for s in SHIFT_SLOTS], [True, True, True])
+         [default_scheduled(s, plan_of()) for s in SHIFT_SLOTS], [True, True, True])
 check_eq("12h: 1st yes, 2nd no (night crew is the exception), 3rd doesn't exist",
-         [default_scheduled(s, resolve_day_lengths({"1st Shift": 12})) for s in SHIFT_SLOTS],
+         [default_scheduled(s, plan_of({"1st Shift": 12})) for s in SHIFT_SLOTS],
          [True, False, False])
 # The form's date box: 3rd Shift is entered the morning after it started.
 check_eq("3rd Shift page at 6:30AM Fri -> Thu",

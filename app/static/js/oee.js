@@ -58,7 +58,24 @@ const WARNING_LABELS = {
             "at its rated speed allow, so its numbers are shown as-is. On a machine " +
             "that ran long or short, check its shift length on /console/oee first.",
     },
+    reading_after_shift: {
+        title: "A higher reading after the shift ended",
+        detail: "Still counted, but without that reading. If the crew started or ran " +
+            "later than /console/oee says, set its start time or length there and the " +
+            "shift picks the reading up.",
+    },
 };
+
+/** One warning for a machine's tooltip, with the reading it's about when it has one. */
+function warningText(machine, code) {
+    const late = machine.late_reading;
+    if (code === "reading_after_shift" && late) {
+        const entry = WARNING_LABELS[code];
+        return `${entry.title}: ${late.slot} reads ${count(late.reading)}, after this shift ` +
+            `ended at ${late.shift_ended}. ${entry.detail}`;
+    }
+    return describeCode(code, WARNING_LABELS);
+}
 
 /**
  * Why a machine-shift was left out of a 7/30-day number: what's missing, or
@@ -465,7 +482,7 @@ function fillMachineRow(row, machine) {
     };
 
     if (machine.shift_exists === false) {
-        // No 3rd Shift after a 2nd that is, or sits inside, a 10 or 12-hour one.
+        // No 3rd Shift after a 2nd whose checkpoints run until 6AM.
         const by = machine.covered_by || {};
         row.setAttribute("data-unscheduled", "");
         set("oee", `no ${shortShift(currentShift)} shift`,
@@ -484,6 +501,11 @@ function fillMachineRow(row, machine) {
             why = `A ${machine.shift_hours}-hour night crew (${machine.span}) is the exception, ` +
                 "so this shift starts as not scheduled. Tick Scheduled on /console/oee " +
                 "if one ran. Left out of the rollup entirely — not 0%.";
+        } else if (lateShift && machine.long_day) {
+            why = `This machine ran a longer shift earlier that day, so a crew after it ` +
+                `(${machine.span}) is the exception and this shift starts as not scheduled. ` +
+                "Tick Scheduled on /console/oee if one ran. Left out of the rollup " +
+                "entirely, not counted as 0%.";
         } else if (lateShift && machine.short_day) {
             why = `This machine had a short shift that day, so this shift (${machine.window_span}) ` +
                 "starts as not scheduled, since on those days not every crew runs. Tick " +
@@ -534,8 +556,7 @@ function fillMachineRow(row, machine) {
     if (machine.warnings && machine.warnings.length) {
         const cell = row.querySelector('[data-field="oee"]');
         cell.setAttribute("data-warned", "");
-        cell.title = machine.warnings
-            .map((w) => describeCode(w, WARNING_LABELS)).join("\n");
+        cell.title = machine.warnings.map((w) => warningText(machine, w)).join("\n");
     }
 
     set("availability", pct(shift.availability),
@@ -1122,6 +1143,16 @@ function renderFlags(shiftData) {
         lead.className = "flag-lead flag-lead-warning";
         lead.textContent = "Worth a look, but still counted.";
         flagsBanner.appendChild(lead);
+        // Name the box each late reading is in, so it can be found.
+        const late = warningGroups.get("reading_after_shift");
+        if (late) {
+            warningGroups.set("reading_after_shift", late.map((id) => {
+                const reading = shiftData.machines[id].late_reading;
+                return reading
+                    ? { label: id, dates: [`${reading.slot}, after ${reading.shift_ended}`] }
+                    : id;
+            }));
+        }
         appendFlagGroup(flagsBanner, warningGroups, WARNING_LABELS);
     }
 }

@@ -19,7 +19,8 @@ Plus the long-shift cases (shift length is per machine, per day, per shift):
     WS1  12-hour 1st Shift at standard               -> 720 min, 6 slots, 0.75
          ...its 2nd Shift inherits 12h and defaults to NOT scheduled
     WS2  12-hour day with a 6PM-6AM crew ticked on   -> stitched across two dates
-    WS3  8-hour 1st Shift, then a 12-hour crew at 6PM
+    WS3  8-hour 1st Shift, then a 12-hour crew set to start at 6PM
+         ...left at the default it would read 2PM-2AM and warn about 4AM
     P1   10-hour 1st Shift at standard               -> 600 min, 5 slots, 0.75
 
 And the production-day rule: C1's 3rd Shift on DAY is DAY 10PM -> DAY_AFTER
@@ -38,6 +39,13 @@ Then a short Saturday (SAT), short shifts inside their normal 8-hour shifts:
 and a short crew after a long day (TUE):
 
     C4   12h 1st Shift, then a 4h crew from 6PM     -> 6PM-10PM, 240 min, no 3rd
+
+and start times (LATE), after an 8h 1st Shift:
+
+    WS5  10h 2nd from 2PM, a 6h 3rd crew to 6AM     -> 2PM-12AM, 12AM-6AM, 0.75 each
+    WS6  the same with the 3rd's length left unset  -> it fills the rest of the night
+    WS4  10h 2nd set to start at 4PM                -> 4PM-2AM, reads the 2AM box
+    WS3  a 4PM crew with no start set               -> reads 4PM-12AM, warns about 2AM
 
 and the 7/30-day view over all of it (compute_oee_range), with a day in the
 week before for the comparison.
@@ -218,7 +226,11 @@ sat_scrap = {("FM1", SHIFT): 0, ("FM2", SHIFT): 0, ("FM3", SHIFT): 0,
 sat_schedule = {("FM3", "2nd Shift"): True, ("FM3", "3rd Shift"): True,
                 ("WS6", "2nd Shift"): True}
 
+# Explicitly-set starts (clock hours) per (machine, shift) for DAY.
+shift_starts = {("WS3", "2nd Shift"): 18}
+
 lengths_by_day = {DAY: shift_lengths, SAT: sat_lengths}
+starts_by_day = {DAY: shift_starts}
 downtime_by_day = {DAY: downtime, SAT: sat_downtime}
 scrap_by_day = {DAY: scrap, SAT: sat_scrap}
 schedule_by_day = {DAY: schedule, SAT: sat_schedule}
@@ -238,6 +250,7 @@ def by_range(table, start, end):
 real_downtime_for_date = oee.get_latest_downtime_for_date
 real_schedule_for_date = oee.get_schedule_for_date
 real_lengths_for_date = oee.get_shift_lengths
+real_starts_for_date = oee.get_shift_starts
 
 entries_mod.get_latest_entries_for_date = lambda d: list(entries_by_date.get(d, []))
 entries_mod.get_readings_for_range = lambda start, end: {
@@ -252,6 +265,8 @@ oee.get_latest_downtime_for_date = lambda d: dict(downtime_by_day.get(d, {}))
 oee.get_schedule_for_date = lambda d: dict(schedule_by_day.get(d, {}))
 oee.get_shift_lengths = lambda d: dict(lengths_by_day.get(d, {}))
 oee.get_shift_lengths_for_range = lambda s, e: by_range(lengths_by_day, s, e)
+oee.get_shift_starts = lambda d: dict(starts_by_day.get(d, {}))
+oee.get_shift_starts_for_range = lambda s, e: by_range(starts_by_day, s, e)
 oee.get_downtime_for_range = lambda s, e: by_range(downtime_by_day, s, e)
 oee.get_schedule_for_range = lambda s, e: by_range(schedule_by_day, s, e)
 oee.get_ideal_rates = lambda: {m: inc / 1.5 for m, inc in INCREMENTS.items()}
@@ -357,7 +372,7 @@ check("oee", ws2_2nd["shift"]["oee"], 0.75)
 check("it is in the 2nd Shift rollup",
       report["shifts"]["2nd Shift"]["rollup"]["machines"], 2)
 
-print("\n== WS3, the manager's case: 8h 1st Shift, then a 12h crew at 6PM ==")
+print("\n== WS3, the manager's case: 8h 1st Shift, then a 12h crew set to start at 6PM ==")
 check("1st Shift is an ordinary 8-hour one", M["WS3"]["shift_hours"], 8)
 check("1st Shift span", M["WS3"]["span"], "6AM-2PM")
 check("1st Shift oee", M["WS3"]["shift"]["oee"], 0.75)
@@ -371,8 +386,20 @@ check("no 3rd Shift that night", ws3_3rd["shift_exists"], False)
 check("so it is not scheduled", ws3_3rd["scheduled"], False)
 check("and says who covered the night", ws3_3rd["covered_by"],
       {"shift": "2nd Shift", "hours": 12, "span": "6PM-6AM", "window_span": "6PM-6AM"})
-check("3rd Shift completeness leaves it out (WS1, WS2, WS3, P1 have none)",
+check("3rd Shift completeness leaves it out (WS1, WS2, WS3 have none, P1's is unticked)",
       report["shifts"]["3rd Shift"]["completeness"]["machines"], len(MACHINE_IDS) - 4)
+check("no warning: the 4PM and 6PM boxes before the crew are blank",
+      (M["WS3"]["warnings"], ws3_2nd["warnings"]), ([], []))
+
+del shift_starts[("WS3", "2nd Shift")]
+unset = oee.compute_oee_report(DAY, now=NOW)["shifts"]["2nd Shift"]["machines"]["WS3"]
+check("with no start set, a 12h 2nd Shift after an 8h day is 2PM-2AM", unset["span"], "2PM-2AM")
+check("...which stops at the 2AM reading", unset["shift"]["good"], 39600)
+check("...and says the crew was still counting at 4AM",
+      (unset["warnings"], unset["late_reading"]),
+      (["reading_after_shift"],
+       {"slot": "4AM", "date": "2026-09-09", "reading": 49500, "shift_ended": "2AM"}))
+shift_starts[("WS3", "2nd Shift")] = 18
 
 print("\n== the production day: C1's 3rd Shift is DAY 10PM -> DAY_AFTER 6AM ==")
 c1_3rd = report["shifts"]["3rd Shift"]["machines"]["C1"]
@@ -394,8 +421,10 @@ check("standard is 57,600 x 1.25", p1["shift"]["standard"], 72000)
 check("oee is exactly 0.75", p1["shift"]["oee"], 0.75)
 check("its 2nd Shift inherits 10h: 4PM-2AM",
       report["shifts"]["2nd Shift"]["machines"]["P1"]["span"], "4PM-2AM")
-check("and there is no 3rd",
-      report["shifts"]["3rd Shift"]["machines"]["P1"]["shift_exists"], False)
+p1_3rd = report["shifts"]["3rd Shift"]["machines"]["P1"]
+check("a 3rd fits after it, 2AM-6AM, but starts unticked",
+      (p1_3rd["shift_exists"], p1_3rd["span"], p1_3rd["shift_hours"], p1_3rd["scheduled"]),
+      (True, "2AM-6AM", 4, False))
 
 print("\n== ordinary machines are untouched by all of this ==")
 check("C1 still has four checkpoints", len(M["C1"]["checkpoints"]), 4)
@@ -476,38 +505,39 @@ check("ppt is 360", ws2_night["shift"]["ppt_minutes"], 360)
 
 print("\n== SHORT SHIFTS: inside the normal 8-hour shift, as geometry ==")
 from app.models import (  # noqa: E402
-    SHORT_SHIFT_HOURS, default_scheduled, resolve_day_lengths, shift_length_conflict,
-    shift_slots, shift_span, shift_windows, window_span,
+    SHORT_SHIFT_HOURS, day_conflict, day_plan, default_scheduled, shift_span, window_span,
 )
 check("a short shift is 2, 4 or 6 hours, never odd", SHORT_SHIFT_HOURS, [2, 4, 6])
 check("on an ordinary day 2, 4 and 6 hours keep the 8-hour checkpoints",
-      [{s: shift_slots(s, shift_windows(resolve_day_lengths({s: h}))[s]) for s in SHIFT_SLOTS}
-       for h in (2, 4, 6)],
+      [{s: day_plan({s: h})[s]["slots"] for s in SHIFT_SLOTS} for h in (2, 4, 6)],
       [SHIFT_SLOTS] * 3)
-check("a short 2nd Shift starts at 2PM", shift_span("2nd Shift", 6, 8), "2PM-8PM")
-check("a short 3rd Shift starts at 10PM", shift_span("3rd Shift", 4, 8), "10PM-2AM")
+check("a short 2nd Shift starts at 2PM", shift_span("2nd Shift", day_plan({"2nd Shift": 6})),
+      "2PM-8PM")
+check("a short 3rd Shift starts at 10PM", shift_span("3rd Shift", day_plan({"3rd Shift": 4})),
+      "10PM-2AM")
 check("a short 1st Shift has no fixed start (6, 8 or 10AM)",
-      shift_span("1st Shift", 4, 8), "within 6AM-2PM")
-check("...inside the 6AM-2PM shift", window_span("1st Shift", 4, 8), "6AM-2PM")
+      shift_span("1st Shift", day_plan({"1st Shift": 4})), "within 6AM-2PM")
+check("...inside the 6AM-2PM shift", window_span("1st Shift", day_plan({"1st Shift": 4})),
+      "6AM-2PM")
 check("a later shift inherits a full 8 hours, not the typed hours",
-      resolve_day_lengths({"1st Shift": 4}),
-      {"1st Shift": 4, "2nd Shift": 8, "3rd Shift": 8})
+      [p["hours"] for p in day_plan({"1st Shift": 4}).values()], [4, 8, 8])
 check("6 then 6 then 4 is a valid day",
-      shift_length_conflict({"1st Shift": 6, "2nd Shift": 6, "3rd Shift": 4}), None)
+      day_conflict(day_plan({"1st Shift": 6, "2nd Shift": 6, "3rd Shift": 4})), None)
 check("an 8h 1st Shift, then a short 2nd, is a valid day",
-      shift_length_conflict(resolve_day_lengths({"2nd Shift": 4})), None)
+      day_conflict(day_plan({"2nd Shift": 4})), None)
 check("a short 2nd Shift after a 10h 1st is a valid day, inside 4PM-2AM",
-      shift_length_conflict(resolve_day_lengths({"1st Shift": 10, "2nd Shift": 4})), None)
+      (day_conflict(day_plan({"1st Shift": 10, "2nd Shift": 4})),
+       window_span("2nd Shift", day_plan({"1st Shift": 10, "2nd Shift": 4}))), (None, "4PM-2AM"))
 check("a short 1st Shift defaults to scheduled",
-      default_scheduled("1st Shift", resolve_day_lengths({"1st Shift": 4})), True)
+      default_scheduled("1st Shift", day_plan({"1st Shift": 4})), True)
 check("after a short 1st, the 8h 2nd and 3rd default to NOT scheduled",
-      [default_scheduled(s, resolve_day_lengths({"1st Shift": 4}))
-       for s in ("2nd Shift", "3rd Shift")], [False, False])
+      [default_scheduled(s, day_plan({"1st Shift": 4})) for s in ("2nd Shift", "3rd Shift")],
+      [False, False])
 check("a short 2nd after an 8h 1st: only the 1st defaults to scheduled",
-      [default_scheduled(s, resolve_day_lengths({"2nd Shift": 4})) for s in SHIFT_SLOTS],
+      [default_scheduled(s, day_plan({"2nd Shift": 4})) for s in SHIFT_SLOTS],
       [True, False, False])
 check("a short 3rd alone leaves the 1st and 2nd scheduled",
-      [default_scheduled(s, resolve_day_lengths({"3rd Shift": 4})) for s in SHIFT_SLOTS],
+      [default_scheduled(s, day_plan({"3rd Shift": 4})) for s in SHIFT_SLOTS],
       [True, True, False])
 
 sat = oee.compute_oee_report(SAT, now=NOW_SAT)
@@ -659,6 +689,96 @@ unticked = oee.compute_oee_report(TUE, now=NOW_TUE)["shifts"]["2nd Shift"]["mach
 check("left unticked, a short night crew is not scheduled", unticked["scheduled"], False)
 schedule_by_day[TUE][("C4", "2nd Shift")] = True
 json.dumps(tue)
+
+# --- start times ---------------------------------------------------------------
+# An 8h 1st Shift at standard on every machine below, then a 10h 2nd Shift.
+# After the period tests' last day, so it can't change them.
+LATE = date(2026, 9, 19)
+LATE_AFTER = date(2026, 9, 20)
+NOW_LATE = datetime(2026, 9, 21, 9, 0)
+entries_by_date[LATE] = []
+entries_by_date[LATE_AFTER] = []
+NIGHT_SLOTS = ["12AM", "2AM", "4AM", "6AM"]
+for machine in ("WS3", "WS4", "WS5", "WS6"):
+    add(machine, [9900, 19800, 29700, 39600], day=LATE)
+# WS5 and WS6, the floor's case: the 2nd crew from 2PM to 12AM, then a 3rd
+# crew from 12AM to 6AM, each counting from zero.
+for machine in ("WS5", "WS6"):
+    add(machine, [9900, 19800, 29700, 39600], slots=["4PM", "6PM", "8PM", "10PM"], day=LATE)
+    add(machine, [49500, 9900, 19800, 29700], slots=NIGHT_SLOTS, day=LATE_AFTER)
+# WS4 and WS3: a 4PM-2AM crew and nobody after it. WS4's start is set, WS3's
+# was forgotten.
+for machine in ("WS3", "WS4"):
+    add(machine, [9900, 19800, 29700], slots=["6PM", "8PM", "10PM"], day=LATE)
+    add(machine, [39600, 49500], slots=["12AM", "2AM"], day=LATE_AFTER)
+lengths_by_day[LATE] = {
+    ("WS5", "2nd Shift"): 10, ("WS5", "3rd Shift"): 6,
+    ("WS6", "2nd Shift"): 10,
+    ("WS4", "2nd Shift"): 10,
+    ("WS3", "2nd Shift"): 10,
+}
+starts_by_day[LATE] = {("WS4", "2nd Shift"): 16}
+downtime_by_day[LATE] = {
+    (m, s): dict(clean)
+    for m in ("WS3", "WS4", "WS5", "WS6") for s in ("1st Shift", "2nd Shift", "3rd Shift")
+}
+scrap_by_day[LATE] = {}
+# A 10h 2nd Shift starts unticked; so does a 3rd after it.
+schedule_by_day[LATE] = {
+    ("WS5", "2nd Shift"): True, ("WS5", "3rd Shift"): True,
+    ("WS6", "2nd Shift"): True, ("WS6", "3rd Shift"): True,
+    ("WS4", "2nd Shift"): True, ("WS3", "2nd Shift"): True,
+}
+late = oee.compute_oee_report(LATE, now=NOW_LATE)
+LM2 = late["shifts"]["2nd Shift"]["machines"]
+LM3 = late["shifts"]["3rd Shift"]["machines"]
+
+print("\n== WS5: a 10h 2nd Shift from 2PM, then a 3rd crew to 6AM ==")
+check("the 2nd Shift is 2PM-12AM", (LM2["WS5"]["span"], LM2["WS5"]["shift_hours"]), ("2PM-12AM", 10))
+check("...its checkpoints 4PM to 12AM, the last from the next date",
+      [(c["slot"], c["date"]) for c in LM2["WS5"]["checkpoints"]],
+      [("4PM", "2026-09-19"), ("6PM", "2026-09-19"), ("8PM", "2026-09-19"),
+       ("10PM", "2026-09-19"), ("12AM", "2026-09-20")])
+check("good is the 12AM reading, not the 3rd crew's 2AM one", LM2["WS5"]["shift"]["good"], 49500)
+check("ppt is 600", LM2["WS5"]["shift"]["ppt_minutes"], 600)
+check("oee is exactly 0.75", LM2["WS5"]["shift"]["oee"], 0.75)
+check("no flags or warnings", (LM2["WS5"]["flags"], LM2["WS5"]["warnings"]), ([], []))
+check("the 3rd Shift exists, 12AM-6AM, 6h",
+      (LM3["WS5"]["shift_exists"], LM3["WS5"]["span"], LM3["WS5"]["shift_hours"]),
+      (True, "12AM-6AM", 6))
+check("...from the 2AM, 4AM and 6AM boxes", [c["slot"] for c in LM3["WS5"]["checkpoints"]],
+      ["2AM", "4AM", "6AM"])
+check("...good is the 6AM reading", LM3["WS5"]["shift"]["good"], 29700)
+check("...ppt is 360, the standard scaled to 6h",
+      (LM3["WS5"]["shift"]["ppt_minutes"], LM3["WS5"]["shift"]["standard"]), (360, 29700))
+check("...oee is exactly 0.75", LM3["WS5"]["shift"]["oee"], 0.75)
+check("WS6, with the 3rd's length unset, comes out the same",
+      (LM3["WS6"]["shift_hours"], LM3["WS6"]["span"], LM3["WS6"]["shift"]["oee"]),
+      (6, "12AM-6AM", 0.75))
+
+print("\n== WS4: a 10h 2nd Shift set to start at 4PM ==")
+check("4PM-2AM", LM2["WS4"]["span"], "4PM-2AM")
+check("the start is marked as set", (LM2["WS4"]["start_set"], LM2["WS5"]["start_set"]), (True, False))
+check("good is the 2AM reading", LM2["WS4"]["shift"]["good"], 49500)
+check("oee is exactly 0.75", LM2["WS4"]["shift"]["oee"], 0.75)
+check("no warnings", LM2["WS4"]["warnings"], [])
+check("a 3rd fits after it, 2AM-6AM, unticked",
+      (LM3["WS4"]["span"], LM3["WS4"]["scheduled"]), ("2AM-6AM", False))
+
+print("\n== WS3: the same 4PM crew with its start forgotten ==")
+check("read as 2PM-12AM", LM2["WS3"]["span"], "2PM-12AM")
+check("so it stops at the 12AM reading", LM2["WS3"]["shift"]["good"], 39600)
+check("...and is still counted", LM2["WS3"]["flags"], [])
+check("but warns about the higher 2AM reading", LM2["WS3"]["warnings"], ["reading_after_shift"])
+check("...naming the box", LM2["WS3"]["late_reading"],
+      {"slot": "2AM", "date": "2026-09-20", "reading": 49500, "shift_ended": "12AM"})
+check("WS5's 2AM box belongs to its ticked 3rd crew, so no warning there",
+      LM2["WS5"]["late_reading"], None)
+schedule_by_day[LATE][("WS3", "2nd Shift")] = False
+unticked_ws3 = oee.compute_oee_report(LATE, now=NOW_LATE)["shifts"]["2nd Shift"]["machines"]["WS3"]
+check("a shift that isn't scheduled doesn't warn", unticked_ws3["warnings"], [])
+schedule_by_day[LATE][("WS3", "2nd Shift")] = True
+json.dumps(late)
 
 # --- 7 and 30 days ------------------------------------------------------------
 # Two more days. PREV is in the week before SAT's week, so it's what the
@@ -875,9 +995,11 @@ oee.get_downtime_for_range = lambda s, e: {
 }
 oee.get_schedule_for_range = lambda s, e: {("C1", s, SHIFT): False}
 oee.get_shift_lengths_for_range = lambda s, e: {("C1", s, SHIFT): 4}
+oee.get_shift_starts_for_range = lambda s, e: {("C1", s, "2nd Shift"): 16}
 check("downtime", list(real_downtime_for_date(DAY)), [("C1", SHIFT)])
 check("schedule", real_schedule_for_date(DAY), {("C1", SHIFT): False})
 check("lengths", real_lengths_for_date(DAY), {("C1", SHIFT): 4})
+check("starts", real_starts_for_date(DAY), {("C1", "2nd Shift"): 16})
 
 print("\n" + "=" * 60)
 if failures:

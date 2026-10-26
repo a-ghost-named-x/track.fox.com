@@ -1539,6 +1539,44 @@ button.shift-option {
     color: var(--accent);
 }
 
+.hours-span-line.is-over {
+    color: #ff7b72;
+    font-weight: 700;
+}
+
+/* On the 2nd and 3rd Shift pages the span is always shown and opens the
+   start picker. */
+.start-details summary.hours-span-line {
+    cursor: pointer;
+    list-style: none;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+}
+
+.start-details summary.hours-span-line::-webkit-details-marker {
+    display: none;
+}
+
+.entry-form .start-pick {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.3rem;
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+}
+
+.entry-form .start-pick select {
+    padding: 0.15rem 0.3rem;
+    font-size: 0.8rem;
+}
+
+/* The start picker on a "no 3rd shift" row, for a crew after a short one. */
+.entry-form .start-pick-absent {
+    flex-wrap: wrap;
+    margin-top: 0.35rem;
+    font-style: normal;
+}
+
 /* "Set every machine to [ ] hours  Apply", inline in the short-shift hint. */
 .set-all-hours {
     display: flex;

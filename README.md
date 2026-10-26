@@ -18,7 +18,7 @@ It covers 37 machines in six zones, three shifts a day.
 | `/dashboard/<zone>` | The floor screens | One grid per zone. Each cell is a machine's reading at a 2-hour checkpoint, green if it met its standard and red if not. Polls for new data and switches shifts on its own. |
 | `/console/<zone>` | The 2-hour rounds | Enter every machine in a zone on one form. |
 | `/console` | Corrections | One machine at a time. |
-| `/console/oee` | End of shift | One person enters the whole floor's downtime, scrap, scheduling and shift lengths. |
+| `/console/oee` | End of shift | One person enters the whole floor's downtime, scrap, scheduling, shift lengths and start times. |
 | `/supervisor` | Supervisors | Any past day and shift, including machines that never reported. |
 | `/oee` | Supervisors | OEE per machine per shift, or over the last 7 or 30 days compared with the period before, with zone and floor rollups and a downtime Pareto. |
 | `/dashboard` | Everyone | Site menu. |
@@ -109,6 +109,8 @@ repository. The app expects these tables:
 - `shift_scrap`: scrap per machine per shift
 - `machine_schedule`: scheduling exceptions
 - `machine_shift_length`: non-default shift lengths
+- `machine_shift_start`: 2nd and 3rd Shift start times, where a crew came on
+  later than the shift before it ended
 
 The column names can be read from the queries in `app/db/`.
 

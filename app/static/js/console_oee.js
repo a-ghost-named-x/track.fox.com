@@ -10,10 +10,11 @@
  *   - a "tick no downtime on every untouched machine" button
  *   - typing short-shift hours picks the short shift, plus a "set every
  *     machine to N hours" button
+ *   - on the 2nd and 3rd Shift pages, the start picker and the length
+ *     greying out each other's options that won't fit the machine's day
  */
 
 const MAX_SHIFT_MINUTES = window.MAX_SHIFT_MINUTES || 720;
-const SHIFT_INDEX = window.SHIFT_INDEX || 0;
 const DAY_START_HOUR = window.DAY_START_HOUR === undefined ? 6 : window.DAY_START_HOUR;
 // Production is read every 2 hours, so a short shift is 2, 4 or 6 hours.
 const SHORT_SHIFT_HOURS = window.SHORT_SHIFT_HOURS || [2, 4, 6];
@@ -127,22 +128,78 @@ function hourLabel(hour) {
     return `${h - 12}PM`;
 }
 
+/** The row's start picker, on the 2nd and 3rd Shift pages only. */
+function startPicker(row) {
+    return row.querySelector(".start-details .start-pick select");
+}
+
 /**
- * The clock span a length means on this row's shift; see shift_span() in
- * app/models.py. A short shift sits in the window of the shift before it,
- * which the server puts on the row.
+ * The clock span a length means on this row; see shift_span() in
+ * app/models.py. The 1st Shift starts the day, and a short 1st Shift's crew
+ * can start at 6, 8 or 10AM, so it has no fixed span.
  */
 function spanFor(row, hours) {
-    const short = hours < DEFAULT_SHIFT_HOURS;
-    const window = short
-        ? parseInt(row.dataset.shortWindow, 10) || DEFAULT_SHIFT_HOURS
-        : hours;
-    const start = DAY_START_HOUR + SHIFT_INDEX * window;
-    // A short 1st Shift's crew can start at 6, 8 or 10AM, so it has no fixed span.
-    if (short && SHIFT_INDEX === 0) {
-        return `within ${hourLabel(start)}-${hourLabel(start + window)}`;
+    const picker = startPicker(row);
+    if (!picker) {
+        if (hours < DEFAULT_SHIFT_HOURS) {
+            return `within ${hourLabel(DAY_START_HOUR)}-${hourLabel(DAY_START_HOUR + DEFAULT_SHIFT_HOURS)}`;
+        }
+        return `${hourLabel(DAY_START_HOUR)}-${hourLabel(DAY_START_HOUR + hours)}`;
     }
+    const start = parseInt(picker.value, 10);
     return `${hourLabel(start)}-${hourLabel(start + hours)}`;
+}
+
+/**
+ * Which starts each length can't take on this row's day, from the server
+ * ({hours: [clock hours]}), or null on the 1st Shift page.
+ */
+function conflictsFor(row) {
+    if (!row.dataset.conflicts) return null;
+    if (!row.conflictTable) row.conflictTable = JSON.parse(row.dataset.conflicts);
+    return row.conflictTable;
+}
+
+/** Whether `hours` from `start` fits the row's day. True when unknown. */
+function fits(row, hours, start) {
+    const conflicts = conflictsFor(row);
+    if (!conflicts || hours === null || Number.isNaN(start)) return true;
+    return !(conflicts[String(hours)] || []).includes(start);
+}
+
+/**
+ * Greys out the starts that don't fit the length picked, and the lengths
+ * that don't fit the start picked. The picked option itself is never
+ * disabled, since a disabled option isn't posted.
+ */
+function refreshBlocked(row) {
+    const picker = startPicker(row);
+    if (!picker || !conflictsFor(row)) return;
+    const hours = chosenHours(row);
+    const start = parseInt(picker.value, 10);
+
+    // Tooltips are only touched when the state changes, so the server's
+    // exact reasons stay until then.
+    Array.from(picker.options).forEach((option) => {
+        if (option.selected) return;
+        const blocked = !fits(row, hours, parseInt(option.value, 10));
+        if (option.disabled === blocked) return;
+        option.disabled = blocked;
+        option.title = blocked ? "Doesn't fit this machine's day at the length picked." : "";
+    });
+    row.querySelectorAll(".hours-toggle input[type=radio]").forEach((radio) => {
+        if (radio.checked) return;
+        const blocked = radio.value === "short"
+            ? SHORT_SHIFT_HOURS.every((h) => !fits(row, h, start))
+            : !fits(row, parseInt(radio.value, 10), start);
+        const label = radio.closest(".hours-option");
+        radio.disabled = blocked;
+        if (label.classList.contains("is-blocked") === blocked) return;
+        label.classList.toggle("is-blocked", blocked);
+        label.title = blocked
+            ? "Doesn't fit this machine's day from the start picked."
+            : label.dataset.hint || "";
+    });
 }
 
 /**
@@ -158,12 +215,18 @@ function chosenHours(row) {
     return SHORT_SHIFT_HOURS.includes(value) ? value : null;
 }
 
-/** Updates the row's downtime cap, minutes max and span line for a new length. */
+/**
+ * Updates the row's downtime cap, minutes max and span line for a new length
+ * or start. On the 2nd and 3rd Shift pages the span line is always shown,
+ * since it opens the start picker.
+ */
 function applyLength(row) {
+    refreshBlocked(row);
     const hours = chosenHours(row);
     const spanLine = row.querySelector(".hours-span-line");
+    const picker = startPicker(row);
     if (hours === null) {
-        if (spanLine) spanLine.hidden = true;
+        if (spanLine && !picker) spanLine.hidden = true;
         return;
     }
     const minutes = hours * 60;
@@ -172,21 +235,24 @@ function applyLength(row) {
     const cell = row.querySelector(".dt-cell");
     if (cell) refreshSummary(cell);
     if (spanLine) {
-        spanLine.textContent = spanFor(row, hours);
-        spanLine.hidden = hours === DEFAULT_SHIFT_HOURS;
+        const ok = !picker || fits(row, hours, parseInt(picker.value, 10));
+        spanLine.textContent = spanFor(row, hours) + (ok ? "" : " (doesn't fit this machine's day)");
+        spanLine.classList.toggle("is-over", !ok);
+        spanLine.hidden = !picker && hours === DEFAULT_SHIFT_HOURS;
     }
 }
 
 /**
- * On the 2nd and 3rd Shift pages, picking anything but 8 hours ticks
- * Scheduled, since those shifts default to not scheduled and picking a length
- * says a crew ran. It can be unticked.
+ * On the 2nd and 3rd Shift pages, picking anything but 8 hours, or a start,
+ * ticks Scheduled, since those shifts can default to not scheduled and
+ * either says a crew ran. It can be unticked.
  */
-function tickIfCrewRan(row) {
+function tickIfCrewRan(row, startPicked = false) {
     if (!row.dataset.nightCrew) return;
     const scheduled = row.querySelector('input[type="checkbox"][name^="scheduled_"]');
     const hours = chosenHours(row);
-    if (scheduled && hours !== null && hours !== DEFAULT_SHIFT_HOURS) scheduled.checked = true;
+    const notEight = hours !== null && hours !== DEFAULT_SHIFT_HOURS;
+    if (scheduled && (notEight || startPicked)) scheduled.checked = true;
 }
 
 /**
@@ -197,6 +263,9 @@ function tickIfCrewRan(row) {
 function pickLength(row, value, shortHours) {
     const radio = row.querySelector(`.hours-toggle input[type=radio][value="${value}"]`);
     if (!radio || radio.disabled) return false;
+    const picker = startPicker(row);
+    const hours = value === "short" ? shortHours : parseInt(value, 10);
+    if (picker && !fits(row, hours, parseInt(picker.value, 10))) return false;
     radio.checked = true;
     const box = row.querySelector(".hours-short");
     // The server rejects a number in the box beside any other choice.
@@ -233,6 +302,15 @@ function wireLengthToggle(row) {
             applyLength(row);
             tickIfCrewRan(row);
         });
+    }
+
+    const picker = startPicker(row);
+    if (picker) {
+        picker.addEventListener("change", () => {
+            applyLength(row);
+            tickIfCrewRan(row, true);
+        });
+        refreshBlocked(row);
     }
 }
 
@@ -280,7 +358,7 @@ if (setAllInput && setAllApply) {
         setAllResult.textContent =
             `Set ${set} machine${set === 1 ? "" : "s"} to ${hours}h. Not saved until you press Save.` +
             (skipped.length
-                ? ` Skipped ${skipped.join(", ")}: that length would overlap another shift on their day.`
+                ? ` Skipped ${skipped.join(", ")}: that length doesn't fit the rest of their day.`
                 : "");
     };
 

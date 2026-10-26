@@ -28,7 +28,7 @@
         <strong>{{ shift }}</strong> of <strong>{{ day_label }}</strong>
         {%- if crosses_midnight %}: {{ default_span.split('-')[0] }} {{ day_label }} to {{ default_span.split('-')[1] }} {{ next_day_label }}
         {%- else %}: {{ default_span }}{% endif %}
-        <span class="optional">— machines on other shift lengths show their own hours on their row</span>
+        <span class="optional">— machines on other shift lengths or start times show their own hours on their row</span>
     </p>
 
     {% if shift != current_shift %}
@@ -78,16 +78,20 @@
             Change what needs changing and save. Machines you don't touch are left alone.
             {% if is_first_shift %}
             <strong>Shift length:</strong> pick 10h or 12h for a machine that ran long, and OEE judges
-            it against 600 or 720 minutes. The 2nd Shift follows this length unless it is set on its own
-            page. On a 10h/12h night the 2nd Shift starts unticked, so tick it there if a crew ran.
+            it against 600 or 720 minutes. The 2nd Shift follows this length and starts when this shift
+            ends, unless either is set on its own page. After a 10h/12h day the 2nd Shift starts unticked,
+            so tick it there if a crew ran.
             {% elif not is_last_shift %}
-            <strong>Shift length:</strong> a 12h 2nd Shift is 6PM–6AM and a 10h one is 4PM–2AM,
-            whatever the 1st Shift was. It can't be shorter than the 1st Shift (it would start inside it);
-            a short shift counts as 8h for that. Picking 10h, 12h or a short shift ticks Scheduled, since
-            you're saying a crew ran; untick it if not.
+            <strong>Shift length and start:</strong> a 2nd Shift starts when the 1st Shift ends: 2PM after
+            an 8h day, 4PM or 6PM after a 10h or 12h one. So a 10h 2nd Shift after an 8h day is 2PM–12AM.
+            If the crew came on later, click the times under its length and pick when it started.
+            Picking 10h, 12h, a short shift or a later start ticks Scheduled, since you're saying a crew
+            ran; untick it if not.
             {% else %}
-            <strong>Shift length:</strong> a 3rd Shift is 8h, 10PM–6AM, or a short shift from 10PM.
-            A machine whose 2nd Shift ran 10h or 12h has no 3rd Shift; its night is on the 2nd Shift page.
+            <strong>Shift length and start:</strong> a 3rd Shift starts when the 2nd Shift ends (10PM on an
+            ordinary day) and is over by 6AM: 8h, or a short shift. If the crew came on later, click the
+            times under its length and pick when it started. A machine whose 2nd Shift runs until 6AM
+            has no 3rd Shift; its night is on the 2nd Shift page.
             {% endif %}
             <button type="button" class="link-button" id="mark-all-clean">Tick “no downtime” on every untouched machine</button>
         </p>
@@ -98,8 +102,10 @@
             <strong>Short shift:</strong> type the hours ({{ short_hours_text }}, since production is read every
             2 hours) a machine was <em>scheduled</em> for in the box after {{ shift_length_options[-1] }}h.
             {% if is_first_shift %}The crew can start at 6, 8 or 10AM as long as it's done by 2PM.
-            {% elif not is_last_shift %}It starts at 2PM, so 6 hours is 2PM–8PM.
-            {% else %}It starts at 10PM, so 4 hours is 10PM–2AM.{% endif %}
+            {% elif not is_last_shift %}It starts when the 1st Shift ends unless you set a later start,
+            so 6 hours after an 8h day is 2PM–8PM.
+            {% else %}It starts when the 2nd Shift ends unless you set a later start, so 4 hours on an
+            ordinary night is 10PM–2AM.{% endif %}
             OEE judges it against that many hours.
             {% if not is_first_shift %}After a short shift earlier in the day this shift starts unticked,
             since on those days not every crew runs; typing hours here ticks it.{% endif %}
@@ -139,7 +145,7 @@
                     <tr class="batch-row{% if row.status %} batch-row-{{ row.status }}{% endif %}{% if not row.shift_exists %} batch-row-absent{% endif %}"
                         data-machine="{{ machine }}"
                         data-shift-minutes="{{ row.shift_minutes }}"
-                        data-short-window="{{ row.short_window }}"
+                        {% if row.conflicts is not none %}data-conflicts='{{ row.conflicts|tojson }}'{% endif %}
                         {% if not is_first_shift %}data-night-crew="1"{% endif %}>
                         <td class="machine-col">
                             {{ machine }}
@@ -150,15 +156,27 @@
                         </td>
 
                         {% if not row.shift_exists %}
-                        {# No 3rd Shift after a 2nd that is, or sits inside, a
-                           10 or 12-hour shift. No inputs, so nothing posts
-                           for this row. #}
+                        {# No 3rd Shift after a 2nd whose checkpoints run
+                           until 6AM. Only the start picker posts for this
+                           row, when a later crew could still fit. #}
                         {% set by = row.covered_by %}
                         <td class="shift-absent" colspan="5">
                             {% if by.window_span and by.window_span != by.span %}
                             No {{ shift.split(' ')[0] }} shift — {{ by.shift }} covers {{ by.window_span }} on this machine (a {{ by.hours }}h crew, {{ by.span }}), so the night is entered there.
                             {% else %}
                             No {{ shift.split(' ')[0] }} shift — {{ by.shift }} ran {{ by.hours }}h ({{ by.span }}), so the night is entered there.
+                            {% endif %}
+                            {% if row.start_options %}
+                            <label class="start-pick start-pick-absent">
+                                If another crew came on after it, it started at
+                                <select name="start_{{ machine }}" aria-label="Start for {{ machine }}">
+                                    <option value="" selected>no {{ shift.split(' ')[0] }} crew</option>
+                                    {% for option in row.start_options %}
+                                    <option value="{{ option.hour }}">{{ option.label }}</option>
+                                    {% endfor %}
+                                </select>
+                                <span class="optional">then save, and enter its numbers.</span>
+                            </label>
                             {% endif %}
                         </td>
                         {% else %}
@@ -184,9 +202,10 @@
                                     <span>{{ hours }}h</span>
                                 </label>
                                 {% endfor %}
+                                {% set short_hint = "Short shift: type the hours this machine was scheduled for, " ~ short_hours_text ~ ". Its checkpoints are " ~ row.short_window_span ~ "." %}
                                 <label class="hours-option hours-option-short{% if short_blocked %} is-blocked{% endif %}"
-                                       {% if short_blocked %}title="{{ short_blocked }}"
-                                       {% else %}title="Short shift: type the hours this machine was scheduled for, {{ short_hours_text }}. It stays inside {{ row.short_window_span }}."{% endif %}>
+                                       data-hint="{{ short_hint }}"
+                                       title="{{ short_blocked or short_hint }}">
                                     <input type="radio" name="hours_{{ machine }}" value="short"
                                            {% if is_short %}checked{% endif %}
                                            {% if short_blocked and not is_short %}disabled{% endif %}>
@@ -198,11 +217,37 @@
                                                  {% if short_blocked and not is_short %}disabled{% endif %}>h</span>
                                 </label>
                             </div>
+                            {% if is_first_shift %}
                             {# The clock span for any length other than 8
                                hours. Updated by the JS. #}
                             <span class="hours-span-line"{% if row.shift_hours == default_shift_hours %} hidden{% endif %}>{{ row.span }}</span>
-                            {% if not is_first_shift and not row.hours_explicit %}
+                            {% else %}
+                            {# The span is always shown here, and opens the
+                               start picker. A <select> always posts its
+                               value; one equal to the default start stores
+                               nothing. Starts that won't fit this length are
+                               disabled, with the reason, and re-checked on
+                               the server. #}
+                            <details class="start-details">
+                                <summary class="hours-span-line"
+                                         title="{% if row.start_explicit %}Start set on this page.{% else %}Starts when the {{ previous_shift }} Shift ends.{% endif %} Click to change when this crew started.">{{ row.span }}</summary>
+                                <label class="start-pick">
+                                    Started at
+                                    <select name="start_{{ machine }}" aria-label="Start for {{ machine }}">
+                                        {% for option in row.start_options %}
+                                        {% set start_blocked = row.blocked_starts.get(option.hour) %}
+                                        <option value="{{ option.hour }}"
+                                                {% if option.hour == row.start %}selected{% endif %}
+                                                {% if start_blocked and option.hour != row.start %}disabled title="{{ start_blocked }}"{% endif %}>
+                                            {{ option.label }}{% if option.hour == row.default_start %} (when the {{ previous_shift }} ends){% endif %}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </label>
+                            </details>
+                            {% if not row.hours_explicit %}
                             <span class="hours-inherited" title="No length set for this shift; it follows the {{ previous_shift }} Shift.">follows {{ previous_shift }}</span>
+                            {% endif %}
                             {% endif %}
                         </td>
 
@@ -304,7 +349,6 @@
 <script>
     window.MAX_SHIFT_MINUTES = {{ max_shift_minutes|tojson }};
     // Used by the JS to recompute a row's clock span (see shift_span()).
-    window.SHIFT_INDEX = {{ shift_index|tojson }};
     window.DAY_START_HOUR = {{ day_start_hour|tojson }};
     window.SHORT_SHIFT_HOURS = {{ short_shift_hours|tojson }};
     window.DEFAULT_SHIFT_HOURS = {{ default_shift_hours|tojson }};

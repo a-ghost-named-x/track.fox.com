@@ -11,15 +11,15 @@ The OEE tables are separate from `entries` because the grid resolves each
 cell with "newest row wins". A scrap row on `entries` would become the newest
 row for that cell and blank out the units entered earlier.
 
-Shift length
-------------
-Each machine's shift can be 8, 10 or 12 hours, or a short shift of 2, 4 or 6
-(see "Shift length" in app/models.py). The length decides which checkpoints
-the shift has, how many minutes it is, and whether it exists at all (there is
-no 3rd Shift after a 12-hour 2nd). A short shift keeps the checkpoints of its
-window (shift_windows(): usually the 8-hour shift, the long night shift after
-a 10 or 12-hour 1st Shift), so its minutes are the scheduled hours x 60, not
-checkpoints x 120.
+Shift length and start
+----------------------
+Each machine's shift can be 8, 10 or 12 hours, or a short shift of 2, 4 or 6,
+and a 2nd or 3rd Shift can start later than the shift before it ended (see
+"Shift length and start" in app/models.py). day_plan() turns those into the
+checkpoints each shift has, how many minutes it is, and whether it exists at
+all (there is no 3rd Shift after a 2nd that runs until 6AM). A short shift
+keeps the checkpoints of its window, so its minutes are the scheduled hours x
+60, not checkpoints x 120.
 
 The production day
 ------------------
@@ -84,20 +84,25 @@ from app.models import (
     DEFAULT_SHIFT_HOURS,
     MACHINE_IDS,
     OEE_PERIOD_COLUMN_DAYS,
+    DAY_HOURS,
     SHIFT_MINUTES,
     SHIFT_ORDER,
     SHIFT_SLOTS,
+    SLOT_HOURS,
     SLOT_MINUTES,
+    TIME_SLOTS,
     ScheduleCreate,
     ShiftDowntimeCreate,
     ShiftLengthCreate,
     ShiftScrapCreate,
+    ShiftStartCreate,
+    day_plan,
     default_scheduled,
     elapsed_dated_slots,
-    resolve_day_lengths,
+    offset_label,
     shift_slot_dates,
     shift_span,
-    shift_windows,
+    slot_dates,
     window_span,
 )
 
@@ -307,8 +312,8 @@ def create_schedule_exception(payload: ScheduleCreate) -> int:
 
 def create_shift_length(payload: ShiftLengthCreate) -> int:
     """Appends a shift-length record for one machine, production day and
-    shift. The caller checks shift_length_conflict(), since that needs the
-    other shifts' lengths.
+    shift. The caller checks day_conflict(), since that needs the rest of the
+    machine's day.
     """
     with get_pg_connection() as conn:
         row = conn.execute(
@@ -323,6 +328,31 @@ def create_shift_length(payload: ShiftLengthCreate) -> int:
                 payload.entry_date,
                 payload.shift,
                 payload.shift_hours,
+                payload.entered_by,
+            ),
+        ).fetchone()
+        conn.commit()
+    return row[0]
+
+
+def create_shift_start(payload: ShiftStartCreate) -> int:
+    """Appends a start-time record for one machine, production day and
+    shift. A NULL start means the shift starts when the one before it ends.
+    The caller checks day_conflict().
+    """
+    with get_pg_connection() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO machine_shift_start
+                (machine_id, entry_date, shift, start_hour, entered_by)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                payload.machine_id,
+                payload.entry_date,
+                payload.shift,
+                payload.start_hour,
                 payload.entered_by,
             ),
         ).fetchone()
@@ -360,7 +390,7 @@ def get_shift_lengths_for_range(
 def get_shift_lengths(entry_date: date_type) -> dict[tuple[str, str], int]:
     """Latest explicitly-set shift length per (machine_id, shift) for one
     production day. A missing key means inherit; resolve with
-    machine_day_lengths().
+    machine_day_plan().
     """
     return {
         (machine_id, shift): hours
@@ -369,13 +399,51 @@ def get_shift_lengths(entry_date: date_type) -> dict[tuple[str, str], int]:
     }
 
 
-def machine_day_lengths(
-    lengths: dict[tuple[str, str], int], machine_id: str
-) -> dict[str, int]:
-    """One machine's length for every shift of the day, inheritance applied.
-    `lengths` is get_shift_lengths()' result for that day."""
-    return resolve_day_lengths(
-        {shift: hours for (m, shift), hours in lengths.items() if m == machine_id}
+def get_shift_starts_for_range(
+    start: date_type, end: date_type
+) -> dict[tuple[str, date_type, str], int]:
+    """Latest explicitly-set start (a clock hour) per (machine_id,
+    production day, shift), for every day from `start` to `end` inclusive.
+    A newest record of NULL means the shift follows the one before it again,
+    so it's left out like a missing one."""
+    with get_pg_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ON (machine_id, entry_date, shift)
+                machine_id, entry_date, shift, start_hour
+            FROM machine_shift_start
+            WHERE entry_date BETWEEN %s AND %s
+            ORDER BY machine_id, entry_date, shift, created_at DESC
+            """,
+            (start, end),
+        ).fetchall()
+    return {
+        (machine_id, day, shift): hour
+        for machine_id, day, shift, hour in rows
+        if hour is not None
+    }
+
+
+def get_shift_starts(entry_date: date_type) -> dict[tuple[str, str], int]:
+    """Latest explicitly-set start per (machine_id, shift) for one production
+    day. A missing key means the shift starts when the one before it ends."""
+    return {
+        (machine_id, shift): hour
+        for (machine_id, _, shift), hour
+        in get_shift_starts_for_range(entry_date, entry_date).items()
+    }
+
+
+def machine_day_plan(
+    lengths: dict[tuple[str, str], int],
+    starts: dict[tuple[str, str], int],
+    machine_id: str,
+) -> dict[str, dict]:
+    """One machine's day_plan(). `lengths` and `starts` are
+    get_shift_lengths() and get_shift_starts() for that day."""
+    return day_plan(
+        {shift: hours for (m, shift), hours in lengths.items() if m == machine_id},
+        {shift: hour for (m, shift), hour in starts.items() if m == machine_id},
     )
 
 
@@ -823,11 +891,11 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
 
     Machines that weren't scheduled are left out of the rollups (not scored
     0%). A machine with no ideal rate gets no OEE. A shift that doesn't exist
-    for a machine (the 3rd after a 12-hour 2nd) comes back with
+    for a machine (the 3rd after a 2nd that runs until 6AM) comes back with
     scheduled=False and shift_exists=False, so rollups skip it the same way.
 
-    `entry_date` is the production day; its 3rd Shift starts at 10PM that
-    day.
+    `entry_date` is the production day; its 3rd Shift usually starts at 10PM
+    that day.
     """
     now = now or datetime.now()
 
@@ -837,6 +905,7 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
     production_day = entry_date
     next_day = production_day + timedelta(days=1)
     lengths = get_shift_lengths(production_day)
+    starts = get_shift_starts(production_day)
 
     # 12AM-6AM checkpoints are filed under the next calendar date, so read
     # both days.
@@ -853,7 +922,11 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
     schedule_map = get_schedule_for_date(production_day)
     ideal_rates = get_ideal_rates()
     standards = get_shift_standards()
-    day_lengths = {m: machine_day_lengths(lengths, m) for m in MACHINE_IDS}
+    plans = {m: machine_day_plan(lengths, starts, m) for m in MACHINE_IDS}
+    schedules = {
+        m: {s: on for (machine_id, s), on in schedule_map.items() if machine_id == m}
+        for m in MACHINE_IDS
+    }
 
     shifts: dict[str, dict] = {}
 
@@ -868,10 +941,10 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
                 machine_id,
                 shift_label,
                 production_day,
-                day_lengths[machine_id],
+                plans[machine_id],
                 units=units_map,
                 operators=operator_map,
-                scheduled=schedule_map.get((machine_id, shift_label)),
+                schedule=schedules[machine_id],
                 downtime=downtime_map.get((machine_id, shift_label)),
                 scrap=scrap_map.get((machine_id, shift_label)),
                 ideal_per_hour=ideal_rates.get(machine_id),
@@ -902,14 +975,57 @@ def compute_oee_report(entry_date: date_type, *, now: datetime | None = None) ->
     }
 
 
+def _is_scheduled(shift: str, plan: dict[str, dict], schedule: dict[str, bool]) -> bool:
+    """The machine_schedule record for `shift`, or the default for its day."""
+    record = schedule.get(shift)
+    return default_scheduled(shift, plan) if record is None else record
+
+
+def _reading_after_shift(
+    machine_id: str,
+    shift_label: str,
+    production_day: date_type,
+    plan: dict[str, dict],
+    schedule: dict[str, bool],
+    units: dict[tuple[str, date_type, str], int],
+    last: int,
+) -> dict | None:
+    """The first reading after `shift_label`'s checkpoints end that is higher
+    than anything in the shift, before the next crew that was on, or None.
+
+    A crew that started or ran later than the form says leaves its final
+    count in a box the shift doesn't own, so the shift reads low with no
+    other sign. Boxes belonging to a later crew are skipped, since that crew
+    counts from zero.
+    """
+    index = SHIFT_ORDER.index(shift_label)
+    until = DAY_HOURS
+    for later in SHIFT_ORDER[index + 1:]:
+        if plan[later]["slots"] is not None and _is_scheduled(later, plan, schedule):
+            until = plan[later]["start"]
+            break
+    end = plan[shift_label]["end"]
+    tail = TIME_SLOTS[end // SLOT_HOURS:until // SLOT_HOURS]
+    for slot, slot_date in slot_dates(tail, production_day):
+        reading = units.get((machine_id, slot_date, slot))
+        if reading is not None and reading > last:
+            return {
+                "slot": slot,
+                "date": slot_date.isoformat(),
+                "reading": reading,
+                "shift_ended": offset_label(end),
+            }
+    return None
+
+
 def _machine_shift(
     machine_id: str,
     shift_label: str,
     production_day: date_type,
-    day_lengths: dict[str, int],
+    plan: dict[str, dict],
     *,
     units: dict[tuple[str, date_type, str], int],
-    scheduled: bool | None,
+    schedule: dict[str, bool],
     downtime: dict | None,
     scrap: int | None,
     ideal_per_hour: float | None,
@@ -920,22 +1036,21 @@ def _machine_shift(
     """One machine's OEE row for one shift of one production day. Used by the
     one-day report and the 7/30-day range.
 
-    `units` (and `operators`) are keyed (machine_id, calendar date, slot), as
-    the rounds file them. `scheduled` is the machine_schedule record, or None
-    for the default. `standard` is the stored 8-hour target.
+    `plan` is the machine's day_plan(). `units` (and `operators`) are keyed
+    (machine_id, calendar date, slot), as the rounds file them. `schedule` is
+    the machine's machine_schedule records for that day, keyed by shift; a
+    missing shift means the default. `standard` is the stored 8-hour target.
     """
-    hours = day_lengths[shift_label]
-    window = shift_windows(day_lengths)[shift_label]
-    dated_slots = shift_slot_dates(shift_label, production_day, window)
+    hours = plan[shift_label]["hours"]
+    dated_slots = shift_slot_dates(shift_label, production_day, plan)
     if dated_slots is None:
-        return _absent_shift(hours, production_day, day_lengths)
+        return _absent_shift(shift_label, production_day, plan)
 
     slots = [slot for slot, _ in dated_slots]
     elapsed = elapsed_dated_slots(dated_slots, now)
     elapsed_set = set(elapsed)
 
-    if scheduled is None:
-        scheduled = default_scheduled(shift_label, day_lengths)
+    scheduled = _is_scheduled(shift_label, plan, schedule)
 
     readings = {
         slot: units.get((machine_id, slot_date, slot))
@@ -947,6 +1062,13 @@ def _machine_shift(
     flags = list(production["flags"])
     if ideal_per_hour is None:
         flags.append("no_ideal_rate")
+
+    late_reading = None
+    if scheduled:
+        late_reading = _reading_after_shift(
+            machine_id, shift_label, production_day, plan, schedule, units,
+            last=max((r for r in readings.values() if r is not None), default=0),
+        )
 
     # Planned Production Time is the elapsed part of the shift, minus planned
     # downtime (currently always zero; no reason codes are planned).
@@ -999,24 +1121,40 @@ def _machine_shift(
             ideal_at_run=ideal_per_minute * run,
         )
 
+    production_warnings = list(production["warnings"])
+    if late_reading is not None:
+        production_warnings.append("reading_after_shift")
+
     operators = operators or {}
     return {
         "scheduled": scheduled,
         "shift_exists": True,
         "shift_hours": hours,
         "shift_minutes": hours * 60,
-        "span": shift_span(shift_label, hours, window),
+        "span": shift_span(shift_label, plan),
         # Differs from `span` only on a short shift (the 2PM-10PM shift around
         # a scheduled 2PM-8PM).
-        "window_span": window_span(shift_label, hours, window),
+        "window_span": window_span(shift_label, plan),
         # 10 or 12 when this shift is, or sits inside, a long night shift.
-        "window_hours": window,
+        "window_hours": plan[shift_label]["window"],
+        # Whether the 2nd/3rd Shift's start was set on /console/oee rather
+        # than following the shift before it.
+        "start_set": plan[shift_label]["start_set"],
         # This shift or an earlier one that day is short, which is why a
         # later shift starts unticked. Lets /oee say so.
         "short_day": any(
-            day_lengths[label] < DEFAULT_SHIFT_HOURS
+            plan[label]["hours"] < DEFAULT_SHIFT_HOURS
             for label in SHIFT_ORDER[:SHIFT_ORDER.index(shift_label) + 1]
         ),
+        # An earlier shift that day ran long, the other reason a later one
+        # starts unticked.
+        "long_day": any(
+            plan[label]["hours"] > DEFAULT_SHIFT_HOURS
+            for label in SHIFT_ORDER[:SHIFT_ORDER.index(shift_label)]
+        ),
+        # A reading after this shift's checkpoints that looks like its crew
+        # was still counting (see _reading_after_shift()).
+        "late_reading": late_reading,
         "production_day": production_day.isoformat(),
         "operator": next(
             (
@@ -1050,35 +1188,36 @@ def _machine_shift(
         "elapsed_minutes": elapsed_minutes,
         "elapsed_count": len(elapsed),
         "flags": sorted(set(flags)),
-        "warnings": _machine_warnings(result, production["warnings"]),
+        "warnings": _machine_warnings(result, production_warnings),
     }
 
 
-def _absent_shift(hours: int, production_day: date_type, day_lengths: dict[str, int]) -> dict:
+def _absent_shift(shift_label: str, production_day: date_type, plan: dict[str, dict]) -> dict:
     """The row for a shift the day has no room for (the 3rd Shift after a 2nd
-    Shift that is, or sits inside, a 10 or 12-hour one).
+    Shift whose checkpoints run until 6AM).
 
     scheduled=False keeps it out of every rollup. shift_exists=False and
     `covered_by` let the page say "no 3rd shift" and why. Anything entered
     under that shift is ignored, because those hours belong to the 2nd Shift.
     """
-    previous = SHIFT_ORDER[-2]
-    previous_window = shift_windows(day_lengths)[previous]
+    previous = SHIFT_ORDER[SHIFT_ORDER.index(shift_label) - 1]
     return {
         "scheduled": False,
         "shift_exists": False,
-        "shift_hours": hours,
+        "shift_hours": plan[shift_label]["hours"],
         "shift_minutes": 0,
         "span": None,
         "window_span": None,
         "window_hours": None,
+        "start_set": False,
+        "late_reading": None,
         "covered_by": {
             "shift": previous,
-            "hours": day_lengths[previous],
-            "span": shift_span(previous, day_lengths[previous], previous_window),
+            "hours": plan[previous]["hours"],
+            "span": shift_span(previous, plan),
             # Differs from `span` when the 2nd Shift is a short crew inside a
             # long night shift.
-            "window_span": window_span(previous, day_lengths[previous], previous_window),
+            "window_span": window_span(previous, plan),
         },
         "production_day": production_day.isoformat(),
         "operator": None,
@@ -1192,6 +1331,7 @@ def compute_oee_range(
     previous_usable = previous_tracked_days * 2 >= days
 
     explicit_lengths = get_shift_lengths_for_range(previous_start, end_day)
+    explicit_starts = get_shift_starts_for_range(previous_start, end_day)
     schedule = get_schedule_for_range(previous_start, end_day)
     downtime = get_downtime_for_range(previous_start, end_day)
     scrap = get_scrap_for_range(previous_start, end_day)
@@ -1200,9 +1340,16 @@ def compute_oee_range(
     ideal_rates = get_ideal_rates()
     standards = get_shift_standards()
 
-    explicit_by_day: dict[tuple[str, date_type], dict[str, int]] = {}
-    for (machine_id, day, shift), hours in explicit_lengths.items():
-        explicit_by_day.setdefault((machine_id, day), {})[shift] = hours
+    # Each table regrouped by machine-day: {(machine_id, day): {shift: value}}.
+    def by_machine_day(table: dict) -> dict[tuple[str, date_type], dict]:
+        grouped: dict[tuple[str, date_type], dict] = {}
+        for (machine_id, day, shift), value in table.items():
+            grouped.setdefault((machine_id, day), {})[shift] = value
+        return grouped
+
+    lengths_by_day = by_machine_day(explicit_lengths)
+    starts_by_day = by_machine_day(explicit_starts)
+    schedule_by_day = by_machine_day(schedule)
 
     keys = [ALL_SHIFTS_LABEL, *SHIFT_ORDER]
     tallies = {
@@ -1223,16 +1370,19 @@ def compute_oee_range(
             if not tracked(day):
                 continue
             period = "previous" if day < start else "current"
-            day_lengths = resolve_day_lengths(explicit_by_day.get((machine_id, day), {}))
+            plan = day_plan(
+                lengths_by_day.get((machine_id, day), {}),
+                starts_by_day.get((machine_id, day), {}),
+            )
 
             for shift in SHIFT_ORDER:
                 row = _machine_shift(
                     machine_id,
                     shift,
                     day,
-                    day_lengths,
+                    plan,
                     units=units,
-                    scheduled=schedule.get((machine_id, day, shift)),
+                    schedule=schedule_by_day.get((machine_id, day), {}),
                     downtime=downtime.get((machine_id, day, shift)),
                     scrap=scrap.get((machine_id, day, shift)),
                     ideal_per_hour=ideal_rates.get(machine_id),

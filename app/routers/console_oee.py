@@ -22,19 +22,21 @@ a later correction carries it forward. Otherwise, because the newest
 submission replaces the whole set, re-saving the shift would drop those
 minutes.
 
-Shift length
-------------
+Shift length and start
+----------------------
 Each shift's length is set on that shift's page: 8, 10 or 12 hours (just 8 on
-the 3rd Shift), or a short shift of 2, 4 or 6 (rules in "Shift length" in
-app/models.py). Options that would overlap another shift are disabled on the
-page and rejected on save by shift_length_conflict(). A 10 or 12-hour 2nd
-Shift, or a short one inside it after a long 1st Shift, defaults to not
-scheduled and leaves no 3rd Shift that night; that row shows "no 3rd shift"
-with no inputs.
+the 3rd Shift), or a short shift of 2, 4 or 6. The 2nd and 3rd Shift pages
+also take when the shift started, which defaults to when the shift before it
+ends (rules in "Shift length and start" in app/models.py). Options that would
+overlap another shift or run past 6AM are disabled on the page and rejected
+on save by new_conflict(). A 3rd Shift after a 2nd that runs until 6AM shows
+"no 3rd shift" and, if a later crew could still fit, only a start picker.
 
 The short shift is a fourth radio with a number box inside it, so the radio
 group always posts exactly one value. A number typed in the box while 8, 10
-or 12 is picked is rejected as contradictory.
+or 12 is picked is rejected as contradictory. The start is a <select>, which
+also always posts its value; picking the default start stores "follows the
+shift before" rather than a fixed hour.
 
 The date is the production day the shift started on. The 3rd Shift page
 defaults to yesterday when opened in the morning.
@@ -53,12 +55,13 @@ from app.db.oee import (
     create_shift_downtime,
     create_shift_length,
     create_shift_scrap,
+    create_shift_start,
     get_downtime_reasons,
     get_latest_downtime_for_date,
     get_latest_scrap_for_date,
     get_schedule_for_date,
     get_shift_lengths,
-    machine_day_lengths,
+    get_shift_starts,
 )
 from app.models import (
     DASHBOARD_ZONE_LABELS,
@@ -74,16 +77,20 @@ from app.models import (
     ShiftDowntimeCreate,
     ShiftLengthCreate,
     ShiftScrapCreate,
+    ShiftStartCreate,
+    clock_hour,
+    day_plan,
     default_production_day,
     default_scheduled,
+    default_start,
     get_current_shift,
     long_length_options,
-    resolve_day_lengths,
+    new_conflict,
+    offset_label,
     resolve_shift,
-    shift_length_conflict,
-    shift_slots,
     shift_span,
-    shift_windows,
+    start_offset,
+    start_options,
     window_span,
 )
 
@@ -132,11 +139,20 @@ def _blank_row() -> dict:
         "window_span": "",
         "shift_minutes": DEFAULT_SHIFT_HOURS * 60,
         # Length options that would overlap another shift on this machine's
-        # day, keyed by radio value, with the reason (see _blocked_options()).
+        # day, keyed by radio value, with the reason (see _fill_geometry()).
         "blocked": {},
-        # The window a short shift would sit in on this row, and its span,
-        # for the tooltip and the JS.
-        "short_window": DEFAULT_SHIFT_HOURS,
+        # The 2nd/3rd Shift's start as a clock hour, the hours it can be set
+        # to, and the one it takes when nothing is set. None on the 1st Shift.
+        "start": None,
+        "start_options": [],
+        "default_start": None,
+        "start_explicit": False,
+        # Start options that don't fit with this row's current length, with
+        # the reason.
+        "blocked_starts": {},
+        # For the JS: which starts each length can't take, keyed by hours.
+        "conflicts": None,
+        # Where a short shift on this row would sit, for its tooltip.
         "short_window_span": "",
         # Short-shift box value: the stored hours on a short shift, else empty.
         "short_value": "",
@@ -149,9 +165,10 @@ def _blank_row() -> dict:
         "scheduled_explicit": False,
         # For a shift that doesn't exist: which shift covers the night.
         "covered_by": None,
-        # Every explicitly set length on this machine's day, for the overlap
-        # check.
+        # Every explicitly set length and start on this machine's day, for
+        # the overlap check.
         "explicit": {},
+        "explicit_starts": {},
         "scheduled": True,
         "ran_clean": False,
         "scrap": "",
@@ -164,6 +181,11 @@ def _blank_row() -> dict:
     }
 
 
+def _hour_text(hour: int) -> str:
+    """A clock hour as the pages write it: 14 -> "2PM"."""
+    return offset_label(start_offset(hour))
+
+
 def _retired_on_row(codes, active: dict, all_reasons: dict) -> list[dict]:
     """Which of `codes` are retired, with labels, so the form can show them.
     `codes` comes from the record (GET) or the submitted form (POST)."""
@@ -174,17 +196,26 @@ def _retired_on_row(codes, active: dict, all_reasons: dict) -> list[dict]:
     ]
 
 
-def _unticked_hint(shift: str, day: dict[str, int]) -> str | None:
+def _unticked_hint(shift: str, plan: dict[str, dict]) -> str | None:
     """Why `shift` starts unticked on a machine's day, or None when it starts
     ticked (or doesn't exist). Shown on the Scheduled box."""
-    hours = day[shift]
-    window = shift_windows(day)[shift]
-    if default_scheduled(shift, day) or shift_slots(shift, window) is None:
+    entry = plan[shift]
+    if default_scheduled(shift, plan) or entry["slots"] is None:
         return None
-    if window > DEFAULT_SHIFT_HOURS:
+    if entry["window"] > DEFAULT_SHIFT_HOURS:
         return (
-            f"A {hours}h night crew ({shift_span(shift, hours, window)}) is the exception, "
+            f"A {entry['hours']}h night crew ({shift_span(shift, plan)}) is the exception, "
             "so this starts unticked unless set. Tick it if one ran."
+        )
+    earlier_long = next(
+        (label for label in SHIFT_ORDER[:SHIFT_ORDER.index(shift)]
+         if plan[label]["hours"] > DEFAULT_SHIFT_HOURS),
+        None,
+    )
+    if earlier_long:
+        return (
+            f"The {earlier_long} ran {plan[earlier_long]['hours']}h today, so a crew after "
+            "it is the exception and this starts unticked. Tick it if one ran."
         )
     return (
         "This machine has a short shift today, so this starts unticked: on those "
@@ -192,21 +223,84 @@ def _unticked_hint(shift: str, day: dict[str, int]) -> str | None:
     )
 
 
-def _blocked_options(shift: str, explicit: dict[str, int]) -> dict[str, str]:
-    """Length options on `shift`'s page that would overlap another shift on
-    the machine's day, keyed by radio value ("8", "10", "12", "short"), each
-    with the conflict message. `explicit` is the machine's day as set.
+def _fill_geometry(row: dict, shift: str, lengths: dict[str, int], starts: dict[str, int]) -> None:
+    """Fills a row's length, start and overlap fields for `shift` from the
+    machine's day as set (`lengths` and `starts` hold only what was set)."""
+    plan = day_plan(lengths, starts)
+    entry = plan[shift]
+    index = SHIFT_ORDER.index(shift)
+    hours = entry["hours"]
 
-    Every short length shares a window, so one stands for all of them.
-    """
-    options = {str(hours): hours for hours in long_length_options(shift)}
-    options["short"] = SHORT_SHIFT_HOURS[0]
-    blocked = {}
-    for value, hours in options.items():
-        conflict = shift_length_conflict(resolve_day_lengths({**explicit, shift: hours}))
-        if conflict:
-            blocked[value] = conflict
-    return blocked
+    row["explicit"] = dict(lengths)
+    row["explicit_starts"] = dict(starts)
+    row["shift_hours"] = hours
+    row["shift_exists"] = entry["slots"] is not None
+    row["span"] = shift_span(shift, plan) or ""
+    row["window_span"] = window_span(shift, plan) or ""
+    row["shift_minutes"] = hours * 60
+    row["short_value"] = str(hours) if hours < DEFAULT_SHIFT_HOURS else ""
+    row["hours_explicit"] = entry["hours_set"]
+    row["start_explicit"] = entry["start_set"]
+    row["short_window_span"] = (
+        window_span(shift, day_plan({**lengths, shift: SHORT_SHIFT_HOURS[0]}, starts)) or ""
+    )
+    row["unticked_hint"] = _unticked_hint(shift, plan)
+
+    if not row["shift_exists"]:
+        previous = SHIFT_ORDER[index - 1]
+        row["covered_by"] = {
+            "shift": previous,
+            "hours": plan[previous]["hours"],
+            "span": shift_span(previous, plan),
+            "window_span": window_span(previous, plan),
+        }
+        # A later crew can still be given a start when the shift before ends
+        # early inside a long night (a 4h crew after a 12h day).
+        row["start_options"] = [
+            {"hour": h, "label": _hour_text(h)} for h in start_options(shift, plan)
+        ]
+        row["start"] = clock_hour(entry["start"])
+        row["default_start"] = row["start"]
+        return
+    row["covered_by"] = None
+
+    # Every length the page offers, the short ones by their hours.
+    candidates = {str(h): h for h in long_length_options(shift)}
+    candidates.update({str(h): h for h in SHORT_SHIFT_HOURS})
+
+    def conflict(hours_value: int | None, start_value: int | None) -> str | None:
+        trial_lengths = lengths if hours_value is None else {**lengths, shift: hours_value}
+        trial_starts = starts if start_value is None else {**starts, shift: start_value}
+        return new_conflict(plan, day_plan(trial_lengths, trial_starts))
+
+    # Lengths that won't fit at the current start. The short radio is only
+    # blocked when no short length fits; the JS checks the typed hours.
+    blocked = {
+        str(h): message for h in long_length_options(shift) if (message := conflict(h, None))
+    }
+    short_messages = [conflict(h, None) for h in SHORT_SHIFT_HOURS]
+    if all(short_messages):
+        blocked["short"] = short_messages[0]
+    row["blocked"] = blocked
+
+    if index == 0:
+        return
+
+    row["start"] = clock_hour(entry["start"])
+    row["default_start"] = default_start(shift, lengths, starts)
+    options = start_options(shift, plan)
+    if row["start"] not in options:
+        options = [row["start"], *options]
+    row["start_options"] = [{"hour": h, "label": _hour_text(h)} for h in options]
+    # Checked against the length shown, even an inherited one: picking a
+    # start keeps that length (see the POST), so 8h from 12AM doesn't fit.
+    row["blocked_starts"] = {
+        h: message for h in options if (message := conflict(hours, h))
+    }
+    row["conflicts"] = {
+        value: [h for h in options if conflict(option, h)]
+        for value, option in candidates.items()
+    }
 
 
 def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
@@ -217,48 +311,24 @@ def _existing_rows(entry_date: date, shift: str) -> dict[str, dict]:
     schedule = get_schedule_for_date(entry_date)
     active = get_downtime_reasons()
     lengths = get_shift_lengths(entry_date)
-    index = SHIFT_ORDER.index(shift)
+    starts = get_shift_starts(entry_date)
 
     rows: dict[str, dict] = {}
     for machine_id in _all_machines():
         row = _blank_row()
-        day = machine_day_lengths(lengths, machine_id)
-        windows = shift_windows(day)
-        hours = day[shift]
-        window = windows[shift]
-        row["shift_hours"] = hours
-        row["shift_exists"] = shift_slots(shift, window) is not None
-        row["span"] = shift_span(shift, hours, window) or ""
-        row["window_span"] = window_span(shift, hours, window) or ""
-        row["shift_minutes"] = hours * 60
-        row["short_value"] = str(hours) if hours < DEFAULT_SHIFT_HOURS else ""
-        row["hours_explicit"] = (machine_id, shift) in lengths
-        row["explicit"] = {
-            s_label: h for (m, s_label), h in lengths.items() if m == machine_id
-        }
-        row["blocked"] = _blocked_options(shift, row["explicit"])
-        # A short shift takes the window of the shift before it.
-        row["short_window"] = (
-            windows[SHIFT_ORDER[index - 1]] if index > 0 else DEFAULT_SHIFT_HOURS
-        )
-        row["short_window_span"] = shift_span(shift, row["short_window"]) or ""
+        machine_lengths = {s: h for (m, s), h in lengths.items() if m == machine_id}
+        machine_starts = {s: h for (m, s), h in starts.items() if m == machine_id}
+        _fill_geometry(row, shift, machine_lengths, machine_starts)
         if not row["shift_exists"]:
-            # No inputs are rendered for this row and the POST ignores it.
-            previous = SHIFT_ORDER[index - 1]
-            row["covered_by"] = {
-                "shift": previous,
-                "hours": day[previous],
-                "span": shift_span(previous, day[previous], windows[previous]),
-                "window_span": window_span(previous, day[previous], windows[previous]),
-            }
+            # Nothing but the start picker is rendered for this row.
             row["scheduled"] = False
             rows[machine_id] = row
             continue
+        plan = day_plan(machine_lengths, machine_starts)
         row["scheduled_explicit"] = (machine_id, shift) in schedule
         row["scheduled"] = schedule.get(
-            (machine_id, shift), default_scheduled(shift, day)
+            (machine_id, shift), default_scheduled(shift, plan)
         )
-        row["unticked_hint"] = _unticked_hint(shift, day)
 
         scrap_value = scrap.get((machine_id, shift))
         if scrap_value is not None:
@@ -316,7 +386,6 @@ def _context(
         # Page-level flags, used for the hint text.
         "is_last_shift": shift == SHIFT_ORDER[-1],
         "is_first_shift": shift == SHIFT_ORDER[0],
-        "shift_index": SHIFT_ORDER.index(shift),
         "day_start_hour": DAY_START_HOUR,
         # "follows 1st" / "follows 2nd" on a row whose length is inherited.
         "previous_shift": SHIFT_ORDER[SHIFT_ORDER.index(shift) - 1].split(" ")[0]
@@ -458,12 +527,43 @@ def _parse_length(raw_choice: str | None, raw_short: str, shift: str) -> tuple[i
     return hours, None
 
 
+def _parse_start(raw: str | None, row: dict) -> tuple[int | None, str | None]:
+    """Reads one machine's start control: (clock hour, None), (None, error),
+    or (None, None) when it wasn't on the page or was left on "no 3rd crew".
+
+    Any of the row's start options is accepted here, since the length may
+    change on the same save; the caller checks the result with
+    new_conflict().
+    """
+    if not raw:
+        return None, None
+    allowed = {str(option["hour"]): option["hour"] for option in row["start_options"]}
+    if raw not in allowed:
+        if not allowed:
+            return None, "This shift's start can't be set: the shift before it runs until 6AM."
+        labels = _or_list(option["label"] for option in row["start_options"])
+        return None, f"Start must be {labels}."
+    return allowed[raw], None
+
+
+def _set_status(row: dict, errors: list[str]) -> None:
+    """Marks a row failed, saved or unchanged after its writes."""
+    if errors:
+        row["status"] = "failed"
+        # Show every failure for this machine, not just the first.
+        row["error"] = " ".join(errors)
+    elif row["saved_parts"]:
+        row["status"] = "saved"
+    else:
+        row["status"] = "unchanged"
+
+
 @router.post("/console/oee", response_class=HTMLResponse)
 async def console_oee_submit(request: Request):
-    """Saves shift length, scheduling, scrap and downtime for every machine
-    that changed.
+    """Saves shift length and start, scheduling, scrap and downtime for
+    every machine that changed.
 
-    Each of the four is written separately and skipped when unchanged.
+    Each is written separately and skipped when unchanged.
     Machines are also saved independently, so one bad value doesn't block the
     rest.
     """
@@ -505,16 +605,103 @@ async def console_oee_submit(request: Request):
 
     for machine_id in _all_machines():
         previous = stored[machine_id]
+        lengths_before = previous["explicit"]
+        starts_before = previous["explicit_starts"]
+        errors: list[str] = []
 
-        # A shift that doesn't exist for this machine today. No inputs were
-        # rendered, so there's nothing to save.
+        # The length is a radio group with one option always checked and the
+        # start a <select>, so each posts a value whenever it was on the page.
+        # Absence means the row had no such control; leave it alone.
+        parsed_hours, hours_error = None, None
+        if previous["shift_exists"]:
+            parsed_hours, hours_error = _parse_length(
+                form.get(f"hours_{machine_id}"),
+                (form.get(f"short_hours_{machine_id}") or "").strip(),
+                selected_shift,
+            )
+        parsed_start, start_error = _parse_start(form.get(f"start_{machine_id}"), previous)
+
+        # This machine's day as it would be after the save. Picking the
+        # default start stores "follows the shift before" rather than the
+        # hour. The length is stored once it differs from what the shift
+        # would inherit from that start, so an inherited length stays
+        # inherited and one shown on the page is never silently shortened.
+        starts_after = dict(starts_before)
+        if parsed_start is not None and parsed_start != previous["start"]:
+            if parsed_start == previous["default_start"]:
+                starts_after.pop(selected_shift, None)
+            else:
+                starts_after[selected_shift] = parsed_start
+        lengths_after = dict(lengths_before)
+        if parsed_hours is not None:
+            unset = {s: h for s, h in lengths_before.items() if s != selected_shift}
+            inherited = day_plan(unset, starts_after)[selected_shift]["hours"]
+            if selected_shift in lengths_before or parsed_hours != inherited:
+                lengths_after[selected_shift] = parsed_hours
+        geometry_error = hours_error or start_error
+        if geometry_error is None and (lengths_after, starts_after) != (lengths_before, starts_before):
+            geometry_error = new_conflict(
+                day_plan(lengths_before, starts_before), day_plan(lengths_after, starts_after)
+            )
+        if geometry_error:
+            errors.append(geometry_error)
+            # Keep the stored day for the downtime cap and the re-render.
+            lengths_after, starts_after = lengths_before, starts_before
+        plan_after = day_plan(lengths_after, starts_after)
+
+        row = _blank_row()
+        _fill_geometry(row, selected_shift, lengths_after, starts_after)
+        rows[machine_id] = row
+
+        # --- shift length and start -----------------------------------------
+        # Saved even if the downtime fields have errors.
+        hours_after = lengths_after.get(selected_shift)
+        if hours_after != lengths_before.get(selected_shift):
+            any_change = True
+            try:
+                create_shift_length(
+                    ShiftLengthCreate(
+                        machine_id=machine_id,
+                        entry_date=selected_date,
+                        shift=selected_shift,
+                        shift_hours=hours_after,
+                        entered_by=entered_by,
+                    )
+                )
+                row["saved_parts"].append(
+                    f"{hours_after}h short shift" if hours_after < DEFAULT_SHIFT_HOURS
+                    else f"{hours_after}h shifts"
+                )
+            except ValidationError:
+                errors.append(f"Shift length must be {_length_menu(selected_shift)}.")
+
+        start_after = starts_after.get(selected_shift)
+        if start_after != starts_before.get(selected_shift):
+            any_change = True
+            try:
+                create_shift_start(
+                    ShiftStartCreate(
+                        machine_id=machine_id,
+                        entry_date=selected_date,
+                        shift=selected_shift,
+                        start_hour=start_after,
+                        entered_by=entered_by,
+                    )
+                )
+                previous_shift = SHIFT_ORDER[SHIFT_ORDER.index(selected_shift) - 1]
+                row["saved_parts"].append(
+                    f"starts {_hour_text(start_after)}" if start_after is not None
+                    else f"starts when the {previous_shift} ends"
+                )
+            except ValidationError:
+                errors.append("Couldn't save the start time.")
+
+        # A shift the day had no room for has nothing else on the page. One
+        # that was just given a start comes back with its inputs, to fill in
+        # on the next save.
         if not previous["shift_exists"]:
-            row = _blank_row()
-            row.update({k: previous[k] for k in
-                        ("shift_hours", "shift_exists", "span", "window_span",
-                         "shift_minutes", "scheduled", "covered_by")})
-            row["status"] = "unchanged"
-            rows[machine_id] = row
+            row["scheduled"] = default_scheduled(selected_shift, plan_after)
+            _set_status(row, errors)
             continue
 
         submitted_scheduled = form.get(f"scheduled_{machine_id}") is not None
@@ -527,51 +714,11 @@ async def console_oee_submit(request: Request):
         raw_scrap = (form.get(f"scrap_{machine_id}") or "").strip()
         note = (form.get(f"note_{machine_id}") or "").strip()
 
-        collected, errors = _collect_reasons(form, machine_id, reasons)
+        collected, reason_errors = _collect_reasons(form, machine_id, reasons)
+        errors.extend(reason_errors)
 
-        # Shift length is a radio group with one option always checked, so it
-        # posts a value whenever it was on the page. Absence means the row
-        # had no length control; leave it alone.
-        raw_hours = form.get(f"hours_{machine_id}")
-        parsed_hours, hours_error = _parse_length(
-            raw_hours, (form.get(f"short_hours_{machine_id}") or "").strip(), selected_shift
-        )
-        if parsed_hours is not None:
-            # Check the whole day as it would be after this save.
-            hours_error = shift_length_conflict(resolve_day_lengths(
-                {**previous["explicit"], selected_shift: parsed_hours}
-            ))
-        # On error, keep the stored length for the downtime cap and re-render.
-        submitted_hours = (
-            parsed_hours if parsed_hours is not None and hours_error is None
-            else previous["shift_hours"]
-        )
-        if hours_error:
-            errors.append(hours_error)
-        # This machine's day as it will be after the save. Only this shift and
-        # the ones before it matter for its Scheduled default.
-        day_after = resolve_day_lengths(
-            {**previous["explicit"], selected_shift: submitted_hours}
-        )
-        window_after = shift_windows(day_after)[selected_shift]
-
-        row = _blank_row()
         row.update(
             {
-                "shift_hours": submitted_hours,
-                "shift_exists": True,
-                "span": shift_span(selected_shift, submitted_hours, window_after),
-                "window_span": window_span(selected_shift, submitted_hours, window_after),
-                "shift_minutes": submitted_hours * 60,
-                "short_value": (
-                    str(submitted_hours) if submitted_hours < DEFAULT_SHIFT_HOURS else ""
-                ),
-                "blocked": previous["blocked"],
-                "short_window": previous["short_window"],
-                "short_window_span": previous["short_window_span"],
-                "unticked_hint": _unticked_hint(selected_shift, day_after),
-                "hours_explicit": previous["hours_explicit"] or raw_hours is not None,
-                "explicit": previous["explicit"],
                 "scheduled": submitted_scheduled if sched_present else previous["scheduled"],
                 "ran_clean": ran_clean,
                 "scrap": raw_scrap,
@@ -590,37 +737,15 @@ async def console_oee_submit(request: Request):
             active,
             reasons,
         )
-        rows[machine_id] = row
-
-        # --- shift length ---------------------------------------------------
-        # Saved even if the downtime fields have errors.
-        if hours_error is None and submitted_hours != previous["shift_hours"]:
-            any_change = True
-            try:
-                create_shift_length(
-                    ShiftLengthCreate(
-                        machine_id=machine_id,
-                        entry_date=selected_date,
-                        shift=selected_shift,
-                        shift_hours=submitted_hours,
-                        entered_by=entered_by,
-                    )
-                )
-                row["saved_parts"].append(
-                    f"{submitted_hours}h short shift" if submitted_hours < DEFAULT_SHIFT_HOURS
-                    else f"{submitted_hours}h shifts"
-                )
-            except ValidationError:
-                errors.append(f"Shift length must be {_length_menu(selected_shift)}.")
 
         # --- scheduling ---------------------------------------------------
-        # Compare against the default for the length being saved, not the one
+        # Compare against the default for the day being saved, not the one
         # the page loaded with. Picking 12h or a short shift on the 2nd Shift
         # page flips the default to not scheduled, so a tick on the same save
         # must be written or the shift would show as not scheduled.
         baseline_scheduled = (
             previous["scheduled"] if previous["scheduled_explicit"]
-            else default_scheduled(selected_shift, day_after)
+            else default_scheduled(selected_shift, plan_after)
         )
         if sched_present and submitted_scheduled != baseline_scheduled:
             any_change = True
@@ -700,18 +825,12 @@ async def console_oee_submit(request: Request):
                 except ValidationError:
                     errors.append("Couldn't save downtime - check the values.")
 
-        if errors:
-            row["status"] = "failed"
-            # Show every failure for this machine, not just the first.
-            row["error"] = " ".join(errors)
-        elif row["saved_parts"]:
-            row["status"] = "saved"
-        else:
-            row["status"] = "unchanged"
+        _set_status(row, errors)
 
     top_error = (
         None if any_change
-        else "Nothing changed - enter downtime, scrap, a shift length or a scheduling change first."
+        else ("Nothing changed - enter downtime, scrap, a shift length or start, "
+              "or a scheduling change first.")
     )
     return templates.TemplateResponse(
         request=request,
