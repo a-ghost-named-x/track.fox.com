@@ -5,6 +5,7 @@ docs/applying-poly-leno-standards.md
 docs/deploying-*.md
 docs/postgres-server-setup.md
 CLAUDE.md
+AGENTS.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
