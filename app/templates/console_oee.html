@@ -72,6 +72,9 @@
         </div>
 
         <input type="hidden" name="shift" value="{{ shift }}">
+        {# The day the boxes were pre-filled from. The POST refuses a save
+           whose date box no longer matches it. #}
+        <input type="hidden" name="loaded_date" value="{{ entry_date }}">
 
         <p class="oee-entry-hint">
             Every box is pre-filled with what's already recorded for this shift.

@@ -575,9 +575,21 @@ async def console_oee_submit(request: Request):
     # Full table, so retired codes on the form are read back too.
     reasons = get_downtime_reasons(active_only=False)
 
+    # The day the boxes were pre-filled from. Missing on a page loaded before
+    # the field existed.
+    loaded_date = _parse_entry_date(form.get("loaded_date"))
+
     # Check the shared fields once rather than failing every row.
     if selected_date is None:
         top_error = "Enter a valid date before saving."
+    elif loaded_date is not None and loaded_date != selected_date:
+        # Saving would file the loaded day's pre-filled values under the new
+        # date, so show the new date's record instead.
+        top_error = (
+            "Nothing was saved: the date was changed after the page loaded. This is "
+            f"{selected_date:%a} {selected_date.month}/{selected_date.day}'s record now; "
+            "enter its numbers and save again."
+        )
     elif not entered_by:
         top_error = "Fill in your employee number before saving."
     else:

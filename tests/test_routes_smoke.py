@@ -470,6 +470,21 @@ check("missing employee number blocked", "employee number" in res.text)
 res = client.post("/console/oee", data={"entered_by": "9001", "shift": SHIFT,
                                         "entry_date": "not-a-date"})
 check("bad date blocked", "valid date" in res.text)
+check("the page says which day its boxes were filled from",
+      f'name="loaded_date" value="{DAY.isoformat()}"'
+      in client.get(f"/console/oee?shift=1st%20Shift&entry_date={DAY.isoformat()}").text)
+reset()
+res = client.post("/console/oee", data={"entered_by": "9001", "shift": SHIFT,
+                                        "entry_date": DAY.isoformat(),
+                                        "loaded_date": (DAY - timedelta(days=1)).isoformat(),
+                                        "dt_none_C1": "1", "scrap_C1": "5"})
+check("a date changed after loading saves nothing",
+      res.status_code == 400 and not written["downtime"] and not written["scrap"]
+      and "the date was changed after the page loaded" in res.text, str(written))
+check("...and shows the new date's record",
+      f'name="loaded_date" value="{DAY.isoformat()}"' in res.text)
+res = post({"dt_none_C1": "1", "loaded_date": DAY.isoformat()}, machines=["C1"])
+check("the same date saves as usual", len(written["downtime"]) == 1, str(written))
 
 print("\n== SHIFT LENGTH: each shift sets its own, on its own page ==")
 reset()

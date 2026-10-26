@@ -12,6 +12,7 @@
  *     machine to N hours" button
  *   - on the 2nd and 3rd Shift pages, the start picker and the length
  *     greying out each other's options that won't fit the machine's day
+ *   - picking a date loads that day
  */
 
 const MAX_SHIFT_MINUTES = window.MAX_SHIFT_MINUTES || 720;
@@ -395,14 +396,35 @@ if (markAll) {
     });
 }
 
-/** Keeps the shift toggle's links pointing at the date in the Date box. */
+/**
+ * Picking a date loads that day's records, the way /oee and /supervisor do.
+ * Every box is pre-filled from the day the page was loaded for, so saving
+ * after only changing the date would file that day's values under the new
+ * one. Edits not saved yet are only thrown away after a confirm.
+ */
 const dateInput = document.getElementById("entry-date");
-if (dateInput) {
+const entryForm = dateInput ? dateInput.form : null;
+if (dateInput && entryForm) {
+    const loadedDate = dateInput.defaultValue;
+    // What Save would post, apart from the date and the employee number.
+    const formState = () => JSON.stringify(
+        Array.from(new FormData(entryForm).entries())
+            .filter(([name]) => name !== "entry_date" && name !== "entered_by")
+    );
+    const asLoaded = formState();
+
     dateInput.addEventListener("change", () => {
-        document.querySelectorAll(".shift-option").forEach((link) => {
-            const url = new URL(link.href);
-            url.searchParams.set("entry_date", dateInput.value);
-            link.href = url.toString();
-        });
+        if (!dateInput.value || dateInput.value === loadedDate) return;
+        const label = new Date(`${dateInput.value}T00:00`)
+            .toLocaleDateString(undefined, { weekday: "short", month: "numeric", day: "numeric" });
+        if (formState() !== asLoaded
+            && !window.confirm(`Load ${label}? Changes not saved on this page will be lost.`)) {
+            dateInput.value = loadedDate;
+            return;
+        }
+        const url = new URL(window.location.pathname, window.location.origin);
+        url.searchParams.set("shift", entryForm.elements.namedItem("shift").value);
+        url.searchParams.set("entry_date", dateInput.value);
+        window.location.assign(url.toString());
     });
 }
