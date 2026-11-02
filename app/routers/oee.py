@@ -14,8 +14,9 @@ A shift is 480 minutes however the readings fell (600 or 720 for a 10 or
 still in the payload for the Good column's tooltip.
 
 The whole page, grid and Pareto, can also show the last 7 or 30 production
-days ending on the selected date, compared with the 7 or 30 before them, for
-all shifts together or one at a time (/api/oee-range).
+days ending on the selected date, or a custom run of days ending on it, each
+compared with the same number of days before it, for all shifts together or
+one at a time (/api/oee-range).
 
 Read-only. All OEE inputs are written on /console/oee.
 """
@@ -32,6 +33,7 @@ from app.models import (
     ALL_SHIFTS_LABEL,
     DASHBOARD_ZONE_LABELS,
     DASHBOARD_ZONES,
+    OEE_CUSTOM_MAX_DAYS,
     OEE_PERIOD_DAYS,
     OEE_ZONE_ORDER,
     SHIFT_ORDER,
@@ -41,6 +43,9 @@ from app.models import (
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+
+# ?period= for a period with a picked first day.
+CUSTOM_PERIOD = "custom"
 
 
 def _oee_zones() -> list[dict]:
@@ -70,14 +75,28 @@ def _parse_date(raw: str | None) -> date_type | None:
         return None
 
 
-def _parse_period(raw: str | None) -> int | None:
-    """The page's period: one of OEE_PERIOD_DAYS, or None for one shift (also
-    used for anything unrecognised)."""
+def _parse_period(raw: str | None) -> int | str | None:
+    """The page's period: one of OEE_PERIOD_DAYS, CUSTOM_PERIOD, or None for
+    one shift (also used for anything unrecognised)."""
+    if raw == CUSTOM_PERIOD:
+        return CUSTOM_PERIOD
     try:
         days = int(raw) if raw else None
     except ValueError:
         return None
     return days if days in OEE_PERIOD_DAYS else None
+
+
+def _parse_range_days(raw: str | None) -> int:
+    """/api/oee-range's length: any number of days up to OEE_CUSTOM_MAX_DAYS,
+    longer is cut to it, and anything unusable means the shortest preset."""
+    try:
+        days = int(raw) if raw else 0
+    except ValueError:
+        days = 0
+    if days < 1:
+        return OEE_PERIOD_DAYS[0]
+    return min(days, OEE_CUSTOM_MAX_DAYS)
 
 
 @router.get("/oee", response_class=HTMLResponse)
@@ -87,17 +106,21 @@ def oee_page(
     shift: str | None = None,
     pareto: str | None = None,
     period: str | None = None,
+    start: str | None = None,
 ):
     """Page shell for the OEE grid.
 
     Query params (all optional, kept in sync by oee.js so a view can be
     bookmarked):
-      date   - production day; its 3rd Shift starts at 10PM that day. Over 7
-               or 30 days, the last day of the period.
-      shift  - which shift to show, or "All" over 7 or 30 days (the default
+      date   - production day; its 3rd Shift starts at 10PM that day. Over a
+               period, the period's last day.
+      shift  - which shift to show, or "All" over a period (the default
                there)
       pareto - comma-separated machine ids for the Pareto; absent = whole floor
-      period - 7 or 30 for a rolling window; absent = one shift
+      period - 7 or 30 for a rolling window, "custom" for one from `start`;
+               absent = one shift
+      start  - a custom period's first day. Swapped with `date` when it's
+               later. Absent, oee.js picks two weeks before `date`.
 
     One shift has no "All" option: each shift has its own planned time,
     downtime and crew, and one number across a single day's three would hide
@@ -110,6 +133,12 @@ def oee_page(
         requested_shift = ALL_SHIFTS_LABEL
     else:
         requested_shift = resolve_shift(shift, datetime.now())
+
+    first_day = _parse_date(start) if days == CUSTOM_PERIOD else None
+    last_day = _parse_date(date)
+    if first_day and last_day and first_day > last_day:
+        first_day, last_day = last_day, first_day
+        date = last_day.isoformat()
 
     return templates.TemplateResponse(
         request=request,
@@ -126,7 +155,10 @@ def oee_page(
             "default_shift": default_shift,
             "requested_pareto": pareto or "",
             "requested_period": days,
+            "requested_start": first_day.isoformat() if first_day else "",
             "period_days": OEE_PERIOD_DAYS,
+            "custom_period": CUSTOM_PERIOD,
+            "custom_max_days": OEE_CUSTOM_MAX_DAYS,
             "all_shifts_label": ALL_SHIFTS_LABEL,
         },
     )
@@ -156,14 +188,15 @@ def oee_data(date: str | None = None):
 @router.get("/api/oee-range")
 def oee_range(end: str | None = None, days: str | None = None):
     """OEE over the `days` production days ending on `end`, and the `days`
-    before them, for the page's 7 and 30-day views. Per machine, per zone and
-    for the floor, all shifts together and each shift, plus each machine's
-    Pareto reasons.
+    before them, for the page's periods. Per machine, per zone and for the
+    floor, all shifts together and each shift, plus each machine's Pareto
+    reasons.
 
-    A missing or invalid `end` means the latest production day with data; an
-    unrecognised `days` means the shortest period.
+    A missing or invalid `end` means the latest production day with data.
+    `days` is at most OEE_CUSTOM_MAX_DAYS, and anything unusable means the
+    shortest preset.
     """
-    period = _parse_period(days) or OEE_PERIOD_DAYS[0]
+    period = _parse_range_days(days)
     end_day = _parse_date(end)
     if end_day is None:
         available = get_available_production_days()

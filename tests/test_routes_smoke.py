@@ -23,8 +23,8 @@ What it checks:
   5. Short shifts: the 2/4/6 hours box, which only counts with the short
      option picked, inside the normal 8-hour shift on every page, and later
      shifts starting unticked after one.
-  6. /oee's 7/30-day period: its controls, ?period and ?shift=All, and
-     /api/oee-range.
+  6. /oee's periods (7 and 30 days, and custom): their controls, ?period,
+     ?start and ?shift=All, and /api/oee-range.
 """
 import os
 import sys
@@ -1009,9 +1009,23 @@ check("...all unticked, since nothing ticked means every machine",
 check("?pareto= is passed through to the page",
       'window.INITIAL_PARETO = "C1,C2"' in client.get("/oee?pareto=C1,C2").text)
 
-print("\n== the 7 and 30-day period ==")
+print("\n== the 7 and 30-day and custom periods ==")
 check("/oee has the period toggle",
-      all(f'data-period="{p}"' in oee_page for p in ("shift", "7", "30")))
+      all(f'data-period="{p}"' in oee_page for p in ("shift", "7", "30", "custom")))
+check("the From box is there, hidden until Custom is picked",
+      'id="custom-start-group" hidden' in oee_page and 'id="custom-start"' in oee_page)
+custom_page = client.get("/oee?period=custom&start=2026-10-12&date=2026-10-26").text
+check("?period=custom and ?start are passed through",
+      'window.INITIAL_PERIOD = "custom"' in custom_page
+      and 'window.INITIAL_START = "2026-10-12"' in custom_page
+      and 'window.INITIAL_DATE = "2026-10-26"' in custom_page)
+backwards = client.get("/oee?period=custom&start=2026-10-26&date=2026-10-12").text
+check("...in either order",
+      'window.INITIAL_START = "2026-10-12"' in backwards
+      and 'window.INITIAL_DATE = "2026-10-26"' in backwards)
+check("?start is ignored without a custom period",
+      'window.INITIAL_START = ""' in client.get("/oee?period=7&start=2026-10-12").text)
+check("a custom period opens on All", 'window.INITIAL_SHIFT = "All"' in custom_page)
 check("...at the top, not inside the Pareto", 'id="pareto-period"' not in oee_page)
 check("the All button is there, hidden until a period is picked",
       'data-shift="All" hidden' in oee_page)
@@ -1056,6 +1070,15 @@ check("the week holding DAY has C1's shift",
       body["machines"].get("C1", {}).get("All", {}).get("columns", [{}])[0].get("counted") == 1)
 check("7 days is a column per day",
       len(client.get(f"/api/oee-range?end={DAY.isoformat()}&days=7").json()["columns"]) == 7)
+fifteen = client.get(f"/api/oee-range?end={DAY.isoformat()}&days=15").json()
+check("any length works: 15 days, still a column per day, compared with the 15 before",
+      (fifteen["days"], fifteen["column_days"], len(fifteen["columns"]), fifteen["previous_end"])
+      == (15, 1, 15, (DAY - timedelta(days=15)).isoformat()))
+check("16 days is a column per week: two, then the leftover two days",
+      len(client.get(f"/api/oee-range?end={DAY.isoformat()}&days=16").json()["columns"]) == 3)
+check("longer than 60 days is cut to 60",
+      client.get(f"/api/oee-range?end={DAY.isoformat()}&days=365").json()["days"] == 60)
+check("zero days falls back to 7", client.get("/api/oee-range?days=0").json()["days"] == 7)
 c1_all = body["machines"].get("C1", {}).get("All", {})
 check("C1 counted once, at standard",
       c1_all.get("counted") == 1 and (c1_all.get("current") or {}).get("oee") == 0.75)

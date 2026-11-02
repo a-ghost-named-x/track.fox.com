@@ -2,8 +2,8 @@
  * /oee: Overall Equipment Effectiveness by machine and shift.
  *
  * Fetches a whole production day (all three shifts) from /api/oee-data and
- * switches shifts in the browser. The 7 and 30-day periods come from
- * /api/oee-range, fetched once per date and period. Doesn't poll.
+ * switches shifts in the browser. The 7 and 30-day and custom periods come
+ * from /api/oee-range, fetched once per last day and length. Doesn't poll.
  *
  * A missing value renders as "—", never as zero or 100%. The server returns
  * null for anything it can't compute.
@@ -78,7 +78,7 @@ function warningText(machine, code) {
 }
 
 /**
- * Why a machine-shift was left out of a 7/30-day number: what's missing, or
+ * Why a machine-shift was left out of a period's number: what's missing, or
  * one of the hard flags above.
  */
 const LEFT_OUT_LABELS = {
@@ -104,6 +104,9 @@ function describeCode(code, table) {
 
 const oeeRoot = document.getElementById("oee");
 const dateInput = document.getElementById("review-date");
+const dateLabel = document.getElementById("review-date-label");
+const customStartGroup = document.getElementById("custom-start-group");
+const customStartInput = document.getElementById("custom-start");
 const quickPicksEl = document.getElementById("quick-picks");
 const periodToggle = document.getElementById("period-toggle");
 const shiftToggle = document.getElementById("shift-toggle");
@@ -154,21 +157,32 @@ setParetoPick((() => {
 })());
 
 /**
- * The page's period: "shift" (one shift of the selected day) or a number of
- * days ending on it, from /api/oee-range. Drives the grid and the Pareto.
+ * The page's period: "shift" (one shift of the selected day), a number of
+ * days ending on it, or CUSTOM, which runs from `customStart` to it. Every
+ * period but "shift" comes from /api/oee-range. Drives the grid and the
+ * Pareto.
  */
 const PERIOD_DAYS = window.PERIOD_DAYS || [7, 30];
-let period = PERIOD_DAYS.includes(window.INITIAL_PERIOD) ? window.INITIAL_PERIOD : "shift";
+const CUSTOM = window.CUSTOM_PERIOD || "custom";
+const CUSTOM_MAX_DAYS = window.CUSTOM_MAX_DAYS || 60;
+// A custom period first opens on the two weeks before the selected date.
+const CUSTOM_DEFAULT_DAYS_BACK = 14;
+let period = PERIOD_DAYS.includes(window.INITIAL_PERIOD) || window.INITIAL_PERIOD === CUSTOM
+    ? window.INITIAL_PERIOD
+    : "shift";
+
+// A custom period's first day, "YYYY-MM-DD". Its last is the date box's.
+let customStart = window.INITIAL_START || null;
 
 /**
- * 7/30-day payloads keyed by "date|days", kept for the visit. A pending
+ * Period payloads keyed by "date|days", kept for the visit. A pending
  * fetch is stored as "loading" and a failed one as "error".
  */
 const rangeCache = new Map();
 
 let payload = null;
 
-// The shift "This shift" shows. Over 7/30 days `rangeShift` is shown instead,
+// The shift "This shift" shows. Over a period `rangeShift` is shown instead,
 // which can also be All; picking a single shift there sets both.
 let currentShift = [window.INITIAL_SHIFT, window.DEFAULT_SHIFT]
     .find((label) => SHIFT_ORDER.includes(label)) || SHIFT_ORDER[0];
@@ -191,6 +205,70 @@ function shownShift() {
 function parseISODate(iso) {
     const [year, month, day] = iso.split("-").map(Number);
     return new Date(year, month - 1, day);
+}
+
+/** The other way round: a local Date as "2026-09-01". */
+function toISODate(d) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function addDays(iso, days) {
+    const d = parseISODate(iso);
+    d.setDate(d.getDate() + days);
+    return toISODate(d);
+}
+
+/** Whole days from `a` to `b`. Rounded, because a day across a clock change isn't 24 hours. */
+function daysBetween(a, b) {
+    return Math.round((parseISODate(b) - parseISODate(a)) / 86400000);
+}
+
+/** How many days the period covers, ending on the loaded date. */
+function periodDays() {
+    return period === CUSTOM ? daysBetween(customStart, payload.date) + 1 : period;
+}
+
+/**
+ * Keeps a custom period's first day on or before the loaded date and within
+ * CUSTOM_MAX_DAYS of it. One never picked starts two weeks back.
+ */
+function fitCustomStart() {
+    if (!payload) return;
+    const end = payload.date;
+    if (!customStart) customStart = addDays(end, -CUSTOM_DEFAULT_DAYS_BACK);
+    const earliest = addDays(end, -(CUSTOM_MAX_DAYS - 1));
+    if (customStart > end) customStart = end;
+    if (customStart < earliest) customStart = earliest;
+}
+
+/**
+ * Sets a custom period from two dates in either order. If that's more than
+ * CUSTOM_MAX_DAYS, the date just picked (`kept`) stays and the other one
+ * moves.
+ */
+function setCustomPeriod(first, last, kept) {
+    if (first > last) [first, last] = [last, first];
+    if (daysBetween(first, last) >= CUSTOM_MAX_DAYS) {
+        if (kept === first) {
+            last = addDays(first, CUSTOM_MAX_DAYS - 1);
+        } else {
+            first = addDays(last, -(CUSTOM_MAX_DAYS - 1));
+        }
+    }
+    if (payload && last === payload.date) {
+        customStart = first;
+        render();
+    } else {
+        load(last, first);
+    }
+}
+
+/** "the last 7 days", or a custom period's dates, for while it loads. */
+function loadingPhrase() {
+    return period === CUSTOM
+        ? `${formatQuickPick(customStart)} – ${formatQuickPick(payload.date)}`
+        : `the last ${period} days`;
 }
 
 function formatDate(iso) {
@@ -221,7 +299,7 @@ function count(value) {
     return value.toLocaleString("en-US");
 }
 
-/** Minutes as hours, for downtime over 7/30 days: "46 h", "2.5 h". */
+/** Minutes as hours, for downtime over a period: "46 h", "2.5 h". */
 function hoursText(minutes, unit = " h") {
     if (!minutes) return "0";
     const hours = minutes / 60;
@@ -238,7 +316,7 @@ function periodPhrase(range) {
 }
 
 /**
- * The "▲3.1" beside a 7/30-day OEE: the change in percentage points from the
+ * The "▲3.1" beside a period's OEE: the change in percentage points from the
  * period before, or null when the server says the two can't be compared.
  */
 function changeBadge(group) {
@@ -335,6 +413,7 @@ function syncUrl() {
         url += `&pareto=${encodeURIComponent(ALL_MACHINE_IDS.filter((id) => paretoSelection.has(id)).join(","))}`;
     }
     if (isRange()) url += `&period=${period}`;
+    if (period === CUSTOM && customStart) url += `&start=${customStart}`;
     window.history.replaceState(null, "", url);
 }
 
@@ -601,11 +680,11 @@ function fillZoneRollup(section, shiftData) {
 }
 
 // ---------------------------------------------------------------------------
-// 7 and 30 days. Every number comes from compute_oee_range() on the server;
+// Periods. Every number comes from compute_oee_range() on the server;
 // nothing is re-added here, for the same reason as fillZoneRollup().
 // ---------------------------------------------------------------------------
 
-/** How many shifts a 7/30-day figure is built from, and which were left out. */
+/** How many shifts a period's figure is built from, and which were left out. */
 function countedTitle(group, range) {
     const total = group.counted + group.left_out;
     const lines = [`${group.counted} of ${total} shift${total === 1 ? "" : "s"} counted for OEE, ` +
@@ -645,7 +724,7 @@ function columnPhrase(column) {
 }
 
 /**
- * Over 7/30 days, swaps Top reasons (hidden by CSS under .is-range) for a
+ * Over a period, swaps Top reasons (hidden by CSS under .is-range) for a
  * column per day or week, newest first. Removes them for one shift.
  */
 function syncDayColumns(range) {
@@ -765,7 +844,7 @@ function splitTitle(current) {
     return `From the ${current.split_shifts} of ${current.shifts} counted shifts with scrap entered`;
 }
 
-/** A machine's row over 7/30 days, or a zone's total row (byKey without the detail fields). */
+/** A machine's row over a period, or a zone's total row (byKey without the detail fields). */
 function fillRangeRow(row, byKey, range) {
     fillDayCells(row, byKey, range);
     const group = byKey[rangeShift];
@@ -833,7 +912,7 @@ function fillRangeRow(row, byKey, range) {
             `shift${r.shifts === 1 ? "" : "s"}`).join("\n"));
 }
 
-/** A zone's badge over 7/30 days, with its change and (under All) each shift. */
+/** A zone's badge over a period, with its change and (under All) each shift. */
 function fillRangeZone(section, range) {
     const target = section.querySelector("[data-rollup]");
     if (!target) return;
@@ -872,7 +951,7 @@ function fillRangeZone(section, range) {
     target.title = title.join("\n");
 }
 
-/** The floor's headline over 7/30 days, in place of the one-shift completeness bar. */
+/** The floor's headline over a period, in place of the one-shift completeness bar. */
 function renderFloorTotal(range) {
     floorTotal.hidden = false;
     floorTotalOee.textContent = "";
@@ -883,7 +962,7 @@ function renderFloorTotal(range) {
 
     if (range === null || range === "error") {
         floorTotalDetail.textContent = range === null
-            ? `Loading the last ${period} days…`
+            ? `Loading ${loadingPhrase()}…`
             : "Couldn't load that period. Check the connection and pick it again.";
         floorTotal.title = "";
         return;
@@ -936,7 +1015,7 @@ function renderFloorTotal(range) {
 const MISSING_CODES = new Set(["no_downtime", "no_production"]);
 
 /**
- * Over 7/30 days: one line counting the left-out machine-shifts, opening to
+ * Over a period: one line counting the left-out machine-shifts, opening to
  * two groups, numbers that look wrong and entries that are missing, each
  * listed by reason with the worst machines first and each machine's dates
  * after it, newest first like the day columns.
@@ -1163,7 +1242,7 @@ function isWholeFloor() {
 
 /**
  * Downtime minutes by reason, summed across machines and ranked. Each list
- * is one machine's reasons for a shift, or its totals over 7/30 days (where
+ * is one machine's reasons for a shift, or its totals over a period (where
  * each reason also carries `shifts`, its machine-shift count).
  *
  * Done in the browser so the picker can select any machines. That's safe
@@ -1226,9 +1305,10 @@ function syncParetoPicker() {
 }
 
 /**
- * The 7/30-day payload ending on `date`: the data, null while loading (the
- * fetch starts here and redraws when done), or "error". An error is returned
- * once and then forgotten, so the next redraw retries.
+ * The payload for the `days` ending on `date`: the data, null while loading
+ * (the fetch starts here and redraws when done), or "error". An error is
+ * returned once and then forgotten, so the next redraw retries. A custom
+ * period the same length as a preset shares its payload.
  */
 function rangeFor(date, days) {
     const key = `${date}|${days}`;
@@ -1253,13 +1333,13 @@ function rangeFor(date, days) {
         })
         .finally(() => {
             // Only if the page still wants this range.
-            if (payload && payload.date === date && period === days) render();
+            if (payload && payload.date === date && isRange() && periodDays() === days) render();
         });
     return null;
 }
 
 /**
- * Coverage line under the 7/30-day bars: how many machine-shifts they're
+ * Coverage line under a period's bars: how many machine-shifts they're
  * built from, and how many reported production but have no downtime entered.
  */
 function renderCoverage(range) {
@@ -1313,12 +1393,12 @@ function renderPareto() {
         when = `${shortShift(currentShift)} Shift, ${formatQuickPick(payload.date)}`;
         unit = "machine";
     } else {
-        const range = rangeFor(payload.date, period);
-        paretoScope.textContent = `${paretoScopeLabel()} · last ${period} days`;
+        const range = rangeFor(payload.date, periodDays());
+        paretoScope.textContent = `${paretoScopeLabel()} · ${loadingPhrase()}`;
         if (range === null || range === "error") {
             paretoTotal.textContent = "";
             paretoEmpty.textContent = range === null
-                ? `Loading the last ${period} days…`
+                ? `Loading ${loadingPhrase()}…`
                 : "Couldn't load that period. Check the connection and pick it again.";
             paretoEmpty.hidden = false;
             return;
@@ -1337,7 +1417,7 @@ function renderPareto() {
     if (!items.length) {
         paretoTotal.textContent = "";
         paretoEmpty.textContent = isRange()
-            ? `No downtime recorded for ${paretoScopeLabel()} in these ${period} days.`
+            ? `No downtime recorded for ${paretoScopeLabel()} in these ${periodDays()} days.`
             : `No downtime recorded for ${paretoScopeLabel()} this shift.`;
         paretoEmpty.hidden = false;
         return;
@@ -1385,11 +1465,25 @@ function renderPareto() {
     }
 }
 
-/** The Period and Shift toggles. "All" only exists over 7/30 days. */
+/**
+ * The Period and Shift toggles, and a custom period's From box. "All" only
+ * exists over a period.
+ */
 function syncToggles() {
     periodToggle.querySelectorAll(".shift-option").forEach((button) => {
         button.classList.toggle("is-active", button.dataset.period === String(period));
     });
+    const custom = period === CUSTOM && payload !== null;
+    customStartGroup.hidden = !custom;
+    if (custom) {
+        customStartInput.value = customStart;
+        const days = periodDays();
+        dateLabel.textContent = days === CUSTOM_MAX_DAYS
+            ? `To · ${days} days, the most`
+            : `To · ${days} day${days === 1 ? "" : "s"}`;
+    } else {
+        dateLabel.textContent = "Date";
+    }
     shiftToggle.querySelectorAll(".shift-option").forEach((button) => {
         if (button.dataset.shift === ALL_SHIFTS) button.hidden = !isRange();
         button.classList.toggle("is-active", button.dataset.shift === shownShift());
@@ -1454,7 +1548,7 @@ function renderRange() {
     // The one-shift box; a period's left-out shifts go in the quiet line.
     flagsBanner.hidden = true;
     leftOutEl.hidden = true;
-    const range = rangeFor(payload.date, period);
+    const range = rangeFor(payload.date, periodDays());
     const loaded = range !== null && range !== "error";
     syncDayColumns(loaded ? range : null);
     document.querySelectorAll(".oee-grid tfoot").forEach((foot) => { foot.hidden = !loaded; });
@@ -1513,17 +1607,25 @@ function hideEmpty() {
     zoneSections.hidden = false;
 }
 
-async function load(isoDate) {
+/**
+ * Loads a production day. `start` is a custom period's new first day, set
+ * only once the day has arrived so the page never pairs it with the old one.
+ */
+async function load(isoDate, start) {
     try {
         const query = isoDate ? `?date=${encodeURIComponent(isoDate)}` : "";
         const res = await fetch(`/api/oee-data${query}`);
         if (!res.ok) throw new Error(`Request failed: ${res.status}`);
         payload = await res.json();
+        if (start) customStart = start;
+        if (period === CUSTOM) fitCustomStart();
 
         dateInput.value = payload.date;
         if (payload.available_dates.length) {
-            dateInput.max = payload.available_dates[0];
-            dateInput.min = payload.available_dates[payload.available_dates.length - 1];
+            for (const input of [dateInput, customStartInput]) {
+                input.max = payload.available_dates[0];
+                input.min = payload.available_dates[payload.available_dates.length - 1];
+            }
         }
         renderQuickPicks(payload.available_dates);
         render();
@@ -1534,25 +1636,41 @@ async function load(isoDate) {
     }
 }
 
+/** The date box or a Recent button. In a custom period that's its last day; the first stays. */
+function pickDate(iso) {
+    if (period === CUSTOM && customStart) {
+        setCustomPeriod(customStart, iso, iso);
+    } else {
+        load(iso);
+    }
+}
+
 dateInput.addEventListener("change", () => {
-    if (dateInput.value) load(dateInput.value);
+    if (dateInput.value) pickDate(dateInput.value);
 });
 
 quickPicksEl.addEventListener("click", (event) => {
     const button = event.target.closest(".quick-pick");
-    if (button) load(button.dataset.date);
+    if (button) pickDate(button.dataset.date);
+});
+
+customStartInput.addEventListener("change", () => {
+    const value = customStartInput.value;
+    if (value && payload) setCustomPeriod(value, payload.date, value);
 });
 
 // A period starts on All; going back to "This shift" shows the last single
-// shift picked.
+// shift picked. A custom period keeps its first day for the visit.
 periodToggle.addEventListener("click", (event) => {
     const button = event.target.closest(".shift-option");
     if (!button) return;
-    const days = parseInt(button.dataset.period, 10);
-    const next = PERIOD_DAYS.includes(days) ? days : "shift";
+    const value = button.dataset.period;
+    const days = parseInt(value, 10);
+    const next = value === CUSTOM ? CUSTOM : PERIOD_DAYS.includes(days) ? days : "shift";
     if (next === period) return;
     if (!isRange()) rangeShift = ALL_SHIFTS;
     period = next;
+    if (period === CUSTOM) fitCustomStart();
     render();
 });
 

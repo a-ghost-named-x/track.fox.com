@@ -69,7 +69,7 @@ except ModuleNotFoundError:
 
 import app.db.entries as entries_mod  # noqa: E402
 import app.db.oee as oee  # noqa: E402
-from app.models import MACHINE_IDS, SHIFT_SLOTS, TIME_SLOTS  # noqa: E402
+from app.models import MACHINE_IDS, SHIFT_SLOTS, TIME_SLOTS, oee_column_days  # noqa: E402
 
 DAY = date(2026, 9, 8)
 DAY_BEFORE = date(2026, 9, 7)
@@ -972,6 +972,20 @@ check("nothing in the 30 days before, so no change",
 check("the Pareto holds the same reasons (PREV ran clean)", pareto_totals(month), pareto_totals(week))
 check("a window that misses every day is empty",
       oee.compute_oee_range(date(2026, 9, 7), 1, now=NOW_SAT)["floor"][ALL]["current"], None)
+
+print("\n== any other length (a custom period) ==")
+fortnight = oee.compute_oee_range(SAT, 15, now=NOW_SAT)
+check("15 days back from SAT, compared with the 15 before",
+      (fortnight["start"], fortnight["previous_start"], fortnight["previous_end"]),
+      ("2026-08-29", "2026-08-14", "2026-08-28"))
+check("still a column per day", (fortnight["column_days"], len(fortnight["columns"])), (1, 15))
+check("holds SAT's week and PREV", fortnight["floor"][ALL]["counted"], 18)
+sixteen = oee.compute_oee_range(SAT, 16, now=NOW_SAT)
+check("16 days: a column per week, the leftover two days last",
+      [(c["start"], c["end"]) for c in sixteen["columns"]],
+      [("2026-09-06", "2026-09-12"), ("2026-08-30", "2026-09-05"), ("2026-08-28", "2026-08-29")])
+check("days per column, by period length",
+      [oee_column_days(d) for d in (1, 7, 15, 16, 30, 60)], [1, 1, 1, 7, 7, 7])
 
 print("\n== comparing with a period that was only partly tracked ==")
 # Ending THU: the week before is 8/28-9/3, of which 9/1-9/3 were tracked.

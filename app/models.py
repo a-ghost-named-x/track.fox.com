@@ -172,12 +172,23 @@ OEE_ZONE_ORDER: list[str] = SUPERVISOR_ZONE_ORDER
 # (and including) the selected date, each compared with the window before it.
 OEE_PERIOD_DAYS: list[int] = [7, 30]
 
-# How many days each of a period's columns covers: a column per day over 7
-# days, per week over 30 (four weeks ending on the selected date, then the
-# leftover days).
-OEE_PERIOD_COLUMN_DAYS: dict[int, int] = {7: 1, 30: 7}
+# /oee's custom period runs from a picked first day to the selected date, and
+# is compared with the same number of days before it, like the presets.
+# Capped because the comparison reads twice as many days.
+OEE_CUSTOM_MAX_DAYS: int = 60
 
-# /oee's option for all three shifts added together over a 7/30-day period.
+# Periods up to this long get a column per day; longer ones a column per week.
+OEE_DAILY_COLUMNS_MAX_DAYS: int = 15
+
+
+def oee_column_days(days: int) -> int:
+    """How many days each of a period's columns covers. Weeks end on the
+    period's last day, so when they don't divide it the oldest column holds
+    the leftover days (30 days is four weeks, then two days)."""
+    return 1 if days <= OEE_DAILY_COLUMNS_MAX_DAYS else 7
+
+
+# /oee's option for all three shifts added together over a period.
 # Like ALL_DAY_LABEL, it isn't a shift and is never stored.
 ALL_SHIFTS_LABEL: str = "All"
 

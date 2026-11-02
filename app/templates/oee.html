@@ -13,11 +13,17 @@
     </p>
 
     {# Same controls as /supervisor, minus "All Day": each shift has its own
-       planned time, downtime and crew. Over 7 or 30 days the date is the
-       period's last day, and "All" adds the three shifts together. #}
+       planned time, downtime and crew. Over a period the date is the
+       period's last day, and "All" adds the three shifts together. A custom
+       period adds its first day in front of it. #}
     <div class="supervisor-controls">
+        <div class="control-group" id="custom-start-group" hidden>
+            <label class="control-label" for="custom-start">From</label>
+            <input type="date" id="custom-start" class="review-date">
+        </div>
+
         <div class="control-group">
-            <label class="control-label" for="review-date">Date</label>
+            <label class="control-label" for="review-date" id="review-date-label">Date</label>
             <input type="date" id="review-date" class="review-date">
         </div>
 
@@ -33,6 +39,7 @@
                 {% for days in period_days %}
                 <button type="button" class="shift-option" data-period="{{ days }}">{{ days }} days</button>
                 {% endfor %}
+                <button type="button" class="shift-option" data-period="{{ custom_period }}">Custom</button>
             </div>
         </div>
 
@@ -47,7 +54,7 @@
         </div>
     </div>
 
-    {# The floor's OEE over 7 or 30 days, compared with the period before,
+    {# The floor's OEE over a period, compared with the period before,
        then each day's (or week's). #}
     <div class="floor-total" id="floor-total" hidden>
         <span class="control-label">Floor</span>
@@ -56,7 +63,7 @@
         <span class="floor-total-days" id="floor-total-days"></span>
     </div>
 
-    {# Over 7 or 30 days: the left-out machine-shifts as one quiet line, with
+    {# Over a period: the left-out machine-shifts as one quiet line, with
        the list behind it. Closed by default; a known backlog shouldn't read
        as an alarm. #}
     <details class="left-out" id="left-out" hidden>
@@ -94,7 +101,7 @@
             </h2>
 
             {# One row per machine per shift. The checkpoint readings are on
-               the Good cell's tooltip. Over 7 or 30 days, oee.js swaps Top
+               the Good cell's tooltip. Over a period, oee.js swaps Top
                reasons for a column per day (or week). #}
             <table class="oee-grid">
                 <thead>
@@ -133,7 +140,7 @@
                     </tr>
                     {% endfor %}
                 </tbody>
-                {# The zone's own row over 7 or 30 days, filled like a machine's. #}
+                {# The zone's own row over a period, filled like a machine's. #}
                 <tfoot hidden>
                     <tr class="zone-total-row" data-zone-total>
                         <td class="machine-col">
@@ -197,7 +204,7 @@
 
         <div class="pareto" id="pareto"></div>
         <p class="pareto-empty" id="pareto-empty" hidden></p>
-        {# Coverage for 7/30 days: how many machine-shifts the bars cover, and
+        {# Coverage over a period: how many machine-shifts the bars cover, and
            how many ran without downtime entered. #}
         <p class="pareto-coverage" id="pareto-coverage" hidden></p>
     </section>
@@ -215,7 +222,10 @@
     window.DEFAULT_SHIFT = {{ default_shift|tojson }};
     window.INITIAL_PARETO = {{ requested_pareto|tojson }};
     window.INITIAL_PERIOD = {{ requested_period|tojson }};
+    window.INITIAL_START = {{ requested_start|tojson }};
     window.PERIOD_DAYS = {{ period_days|tojson }};
+    window.CUSTOM_PERIOD = {{ custom_period|tojson }};
+    window.CUSTOM_MAX_DAYS = {{ custom_max_days|tojson }};
     window.ALL_SHIFTS_LABEL = {{ all_shifts_label|tojson }};
     window.ZONES = {{ zones|tojson }};
 </script>

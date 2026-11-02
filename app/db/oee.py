@@ -53,8 +53,8 @@ tests/test_oee_math.py asserts they agree for single machines and rollups.
 Across machines, Availability is weighted by capacity rather than clock
 minutes, because machines run at different rates. See _aggregate().
 
-Over 7 or 30 days (compute_oee_range) each machine-shift is worked out the
-same way and then summed like a zone rollup, so a week's OEE is its total
+Over a period of days (compute_oee_range) each machine-shift is worked out
+the same way and then summed like a zone rollup, so a week's OEE is its total
 good units over the units its scheduled time could have made.
 
 What each number needs
@@ -83,7 +83,6 @@ from app.models import (
     DASHBOARD_ZONES,
     DEFAULT_SHIFT_HOURS,
     MACHINE_IDS,
-    OEE_PERIOD_COLUMN_DAYS,
     DAY_HOURS,
     SHIFT_MINUTES,
     SHIFT_ORDER,
@@ -99,6 +98,7 @@ from app.models import (
     day_plan,
     default_scheduled,
     elapsed_dated_slots,
+    oee_column_days,
     offset_label,
     shift_slot_dates,
     shift_span,
@@ -366,7 +366,7 @@ def create_shift_start(payload: ShiftStartCreate) -> int:
 
 # Each OEE table has one query, over a range of production days. The
 # single-day readers call it with start == end and drop the date from the key.
-# The 7/30-day views read ranges so they don't open a connection per day.
+# The period views read ranges so they don't open a connection per day.
 
 def get_shift_lengths_for_range(
     start: date_type, end: date_type
@@ -770,7 +770,7 @@ def _rollup_from(roll: dict, split: dict) -> dict | None:
     nothing was counted.
 
     `machines` and `split_machines` are how many results each accumulator
-    holds (machine-shifts, over a 7/30-day period).
+    holds (machine-shifts, over a period).
     """
     if not roll["machines"]:
         return None
@@ -1034,7 +1034,7 @@ def _machine_shift(
     operators: dict[tuple[str, date_type, str], str] | None = None,
 ) -> dict:
     """One machine's OEE row for one shift of one production day. Used by the
-    one-day report and the 7/30-day range.
+    one-day report and a period's range.
 
     `plan` is the machine's day_plan(). `units` (and `operators`) are keyed
     (machine_id, calendar date, slot), as the rounds file them. `schedule` is
@@ -1277,7 +1277,7 @@ def _completeness(machines: dict[str, dict], elapsed: list[str]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# OEE over 7 or 30 days
+# OEE over a period of days
 # ---------------------------------------------------------------------------
 
 def compute_oee_range(
@@ -1285,7 +1285,7 @@ def compute_oee_range(
 ) -> dict:
     """OEE over the `days` production days ending on (and including)
     `end_day`, and over the `days` before those for comparison. Used by
-    /oee's 7 and 30-day views.
+    /oee's 7 and 30-day and custom periods.
 
     Each machine-shift is worked out by _machine_shift(), as in the one-day
     report, then summed the way the zone rollups sum machines: counts and
@@ -1295,7 +1295,7 @@ def compute_oee_range(
     Returned per machine, per zone and for the floor, for all shifts together
     (ALL_SHIFTS_LABEL) and for each shift. See _range_summary() for the
     fields. Each also carries `columns`, the period split into days (or
-    weeks, per OEE_PERIOD_COLUMN_DAYS), newest first, with their dates in the
+    weeks, per oee_column_days()), newest first, with their dates in the
     top-level `columns`.
 
     A finished machine-shift with some data but no OEE (production without
@@ -1316,7 +1316,7 @@ def compute_oee_range(
     now = now or datetime.now()
     start = end_day - timedelta(days=days - 1)
     previous_start = start - timedelta(days=days)
-    column_days = OEE_PERIOD_COLUMN_DAYS.get(days, 1)
+    column_days = oee_column_days(days)
     column_count = -(-days // column_days)
 
     tracking_start = get_oee_tracking_start()
