@@ -1003,6 +1003,43 @@ check("with no downtime anywhere, nothing is tracked, so nothing is left out",
 oee.get_oee_tracking_start = saved_tracking_start
 json.dumps(week)
 
+print("\n== one day, All (/oee's All on a single day is a 1-day range) ==")
+one_day = oee.compute_oee_range(DAY, 1, now=NOW)
+day_report = oee.compute_oee_report(DAY, now=NOW)
+
+
+def oee_of(rollup):
+    return rollup["oee"] if rollup else None
+
+
+# Under All each figure shows its shifts beside it; those must be the numbers
+# picking that shift shows.
+differ = []
+for shift in SHIFT_SLOTS:
+    shift_data = day_report["shifts"][shift]
+    for machine_id, row in shift_data["machines"].items():
+        want = row["shift"]["oee"] if row["scheduled"] and row["shift"] else None
+        got = oee_of(one_day["machines"][machine_id][shift]["current"])
+        if (want is None) != (got is None) or (want is not None and abs(want - got) > 1e-9):
+            differ.append((machine_id, shift, want, got))
+    for slug, zone in shift_data["zones"].items():
+        want, got = oee_of(zone), oee_of(one_day["zones"][slug][shift]["current"])
+        if (want is None) != (got is None) or (want is not None and abs(want - got) > 1e-9):
+            differ.append((slug, shift, want, got))
+check("each shift under All matches that shift's own view, per machine and zone", differ, [])
+check("the floor's 1st Shift matches its rollup",
+      one_day["floor"]["1st Shift"]["current"]["oee"], day_report["shifts"]["1st Shift"]["rollup"]["oee"])
+check("All is the day's column in the 7-day view",
+      (one_day["floor"][ALL]["counted"], one_day["floor"][ALL]["left_out"]),
+      (cols[4]["counted"], cols[4]["left_out"]))
+check("...with the same OEE", one_day["floor"][ALL]["current"]["oee"], cols[4]["oee"])
+check("C1's day: its 1st and 3rd Shift added up",
+      (one_day["machines"]["C1"][ALL]["counted"], one_day["machines"]["C1"][ALL]["current"]["good"]),
+      (2, 93600))
+check("left-out shifts carry their shift, for the day's list",
+      one_day["machines"]["C4"][ALL]["left_out_shifts"],
+      [{"date": "2026-09-08", "shift": "1st Shift", "reasons": ["final_reading_low"]}])
+
 print("\n== the one-day readers are the range readers, keyed without the date ==")
 oee.get_downtime_for_range = lambda s, e: {
     ("C1", s, SHIFT): {"note": None, "reasons": [], "planned_minutes": 0, "unplanned_minutes": 0},

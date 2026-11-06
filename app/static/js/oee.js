@@ -3,7 +3,8 @@
  *
  * Fetches a whole production day (all three shifts) from /api/oee-data and
  * switches shifts in the browser. The 7 and 30-day and custom periods come
- * from /api/oee-range, fetched once per last day and length. Doesn't poll.
+ * from /api/oee-range, fetched once per last day and length, and so does a
+ * single day's All (a period of one day). Doesn't poll.
  *
  * A missing value renders as "—", never as zero or 100%. The server returns
  * null for anything it can't compute.
@@ -157,11 +158,12 @@ setParetoPick((() => {
 })());
 
 /**
- * The page's period: "shift" (one shift of the selected day), a number of
- * days ending on it, or CUSTOM, which runs from `customStart` to it. Every
- * period but "shift" comes from /api/oee-range. Drives the grid and the
- * Pareto.
+ * The page's period: ONE_DAY (the selected day), a number of days ending on
+ * it, or CUSTOM, which runs from `customStart` to it. Every period but
+ * ONE_DAY comes from /api/oee-range, and so does one day's All. Drives the
+ * grid and the Pareto.
  */
+const ONE_DAY = "day";
 const PERIOD_DAYS = window.PERIOD_DAYS || [7, 30];
 const CUSTOM = window.CUSTOM_PERIOD || "custom";
 const CUSTOM_MAX_DAYS = window.CUSTOM_MAX_DAYS || 60;
@@ -169,7 +171,7 @@ const CUSTOM_MAX_DAYS = window.CUSTOM_MAX_DAYS || 60;
 const CUSTOM_DEFAULT_DAYS_BACK = 14;
 let period = PERIOD_DAYS.includes(window.INITIAL_PERIOD) || window.INITIAL_PERIOD === CUSTOM
     ? window.INITIAL_PERIOD
-    : "shift";
+    : ONE_DAY;
 
 // A custom period's first day, "YYYY-MM-DD". Its last is the date box's.
 let customStart = window.INITIAL_START || null;
@@ -182,20 +184,31 @@ const rangeCache = new Map();
 
 let payload = null;
 
-// The shift "This shift" shows. Over a period `rangeShift` is shown instead,
-// which can also be All; picking a single shift there sets both.
+// The shift one day shows, or All. Over a period `rangeShift` is shown
+// instead; a period opens on All, and picking a shift there sets both.
 let currentShift = [window.INITIAL_SHIFT, window.DEFAULT_SHIFT]
-    .find((label) => SHIFT_ORDER.includes(label)) || SHIFT_ORDER[0];
-let rangeShift = period !== "shift" && SHIFT_ORDER.includes(window.INITIAL_SHIFT)
+    .find((label) => SHIFT_ORDER.includes(label) || (label === ALL_SHIFTS && period === ONE_DAY))
+    || SHIFT_ORDER[0];
+let rangeShift = period !== ONE_DAY && SHIFT_ORDER.includes(window.INITIAL_SHIFT)
     ? window.INITIAL_SHIFT
     : ALL_SHIFTS;
 
 function isRange() {
-    return period !== "shift";
+    return period !== ONE_DAY;
 }
 
 function shownShift() {
     return isRange() ? rangeShift : currentShift;
+}
+
+/** One shift of one day: the only view drawn from /api/oee-data alone. */
+function isOneShift() {
+    return !isRange() && currentShift !== ALL_SHIFTS;
+}
+
+/** What a figure covers, for the wording: "period" or "day". */
+function spanWord() {
+    return isRange() ? "period" : "day";
 }
 
 /**
@@ -226,7 +239,8 @@ function daysBetween(a, b) {
 
 /** How many days the period covers, ending on the loaded date. */
 function periodDays() {
-    return period === CUSTOM ? daysBetween(customStart, payload.date) + 1 : period;
+    if (period === CUSTOM) return daysBetween(customStart, payload.date) + 1;
+    return isRange() ? period : 1;
 }
 
 /**
@@ -264,8 +278,9 @@ function setCustomPeriod(first, last, kept) {
     }
 }
 
-/** "the last 7 days", or a custom period's dates, for while it loads. */
+/** "the last 7 days", a custom period's dates, or the day, for while it loads. */
 function loadingPhrase() {
+    if (!isRange()) return `${formatQuickPick(payload.date)}, all shifts`;
     return period === CUSTOM
         ? `${formatQuickPick(customStart)} – ${formatQuickPick(payload.date)}`
         : `the last ${period} days`;
@@ -307,19 +322,25 @@ function hoursText(minutes, unit = " h") {
 }
 
 /**
- * "Tue 9/22 – Mon 9/28, all shifts", or "..., 2nd Shift". Starts on the day
- * OEE tracking began when that's inside the period.
+ * "Tue 9/22 – Mon 9/28, all shifts", or "..., 2nd Shift", or "Thu 11/5, all
+ * shifts" for one day. Starts on the day OEE tracking began when that's
+ * inside the period.
  */
 function periodPhrase(range) {
-    const when = `${formatQuickPick(range.tracked_start || range.start)} – ${formatQuickPick(range.end)}`;
-    return rangeShift === ALL_SHIFTS ? `${when}, all shifts` : `${when}, ${shortShift(rangeShift)} Shift`;
+    const shift = shownShift();
+    const when = isRange()
+        ? `${formatQuickPick(range.tracked_start || range.start)} – ${formatQuickPick(range.end)}`
+        : formatQuickPick(range.end);
+    return shift === ALL_SHIFTS ? `${when}, all shifts` : `${when}, ${shortShift(shift)} Shift`;
 }
 
 /**
  * The "▲3.1" beside a period's OEE: the change in percentage points from the
  * period before, or null when the server says the two can't be compared.
+ * One day isn't compared with the day before; day to day is mostly noise.
  */
 function changeBadge(group) {
+    if (!isRange()) return null;
     if (group.change === null || group.change === undefined) return null;
     const points = Math.round(group.change * 1000) / 10;
     const badge = document.createElement("span");
@@ -337,8 +358,9 @@ function changeBadge(group) {
     return badge;
 }
 
-/** Tooltip line explaining the change, or why there isn't one. */
+/** Tooltip line explaining the change, or why there isn't one. Null on one day. */
 function changeTitle(group, range) {
+    if (!isRange()) return null;
     const days = range.days;
     const before = `the previous ${days} days (${formatQuickPick(range.previous_start)} – ` +
         `${formatQuickPick(range.previous_end)})`;
@@ -680,8 +702,9 @@ function fillZoneRollup(section, shiftData) {
 }
 
 // ---------------------------------------------------------------------------
-// Periods. Every number comes from compute_oee_range() on the server;
-// nothing is re-added here, for the same reason as fillZoneRollup().
+// Periods, and one day's All. Every number comes from compute_oee_range() on
+// the server; nothing is re-added here, for the same reason as
+// fillZoneRollup().
 // ---------------------------------------------------------------------------
 
 /** How many shifts a period's figure is built from, and which were left out. */
@@ -695,7 +718,10 @@ function countedTitle(group, range) {
         const shown = 15;
         for (const item of leftOut.slice(0, shown)) {
             const why = item.reasons.map((code) => (LEFT_OUT_LABELS[code] || { title: code }).title);
-            lines.push(`   ${formatQuickPick(item.date)} ${shortShift(item.shift)}: ${why.join("; ")}`);
+            const when = isRange()
+                ? `${formatQuickPick(item.date)} ${shortShift(item.shift)}`
+                : shortShift(item.shift);
+            lines.push(`   ${when}: ${why.join("; ")}`);
         }
         if (leftOut.length > shown) lines.push(`   …and ${leftOut.length - shown} more`);
     }
@@ -725,7 +751,8 @@ function columnPhrase(column) {
 
 /**
  * Over a period, swaps Top reasons (hidden by CSS under .is-range) for a
- * column per day or week, newest first. Removes them for one shift.
+ * column per day or week, newest first. Removes them on one day, where Top
+ * reasons stays.
  */
 function syncDayColumns(range) {
     oeeRoot.classList.toggle("is-range", isRange());
@@ -763,7 +790,7 @@ function syncDayColumns(range) {
 
 /** Each day's (or week's) OEE in a machine or zone row. */
 function fillDayCells(row, byKey, range) {
-    const group = byKey[rangeShift];
+    const group = byKey[shownShift()];
     const unit = range.column_days === 1 ? "day's" : "week's";
     row.querySelectorAll("td.day-col").forEach((cell) => {
         const index = Number(cell.dataset.column);
@@ -798,7 +825,7 @@ function fillDayCells(row, byKey, range) {
             cell.setAttribute("data-warned", "");
             lines.push(`Fewer than half that ${unit} shifts counted.`);
         }
-        if (rangeShift === ALL_SHIFTS) {
+        if (shownShift() === ALL_SHIFTS) {
             for (const label of SHIFT_ORDER) {
                 const one = byKey[label].columns[index];
                 const text = one.oee !== null ? pct(one.oee)
@@ -813,7 +840,7 @@ function fillDayCells(row, byKey, range) {
 /** The floor's line of daily (or weekly) figures: "Mon 63 · Sun — · Sat 66". */
 function renderFloorDays(range) {
     floorTotalDays.textContent = "";
-    const group = range.floor[rangeShift];
+    const group = range.floor[shownShift()];
     range.columns.forEach((column, index) => {
         const value = group.columns[index];
         const item = document.createElement("span");
@@ -844,10 +871,14 @@ function splitTitle(current) {
     return `From the ${current.split_shifts} of ${current.shifts} counted shifts with scrap entered`;
 }
 
-/** A machine's row over a period, or a zone's total row (byKey without the detail fields). */
+/**
+ * A machine's row over a period or under one day's All, or a zone's total
+ * row (byKey without the detail fields).
+ */
 function fillRangeRow(row, byKey, range) {
     fillDayCells(row, byKey, range);
-    const group = byKey[rangeShift];
+    const shift = shownShift();
+    const group = byKey[shift];
     const set = (field, text, title) => {
         const cell = row.querySelector(`[data-field="${field}"]`);
         if (!cell) return cell;
@@ -879,7 +910,7 @@ function fillRangeRow(row, byKey, range) {
     setBand(cell, current.oee);
     const change = changeBadge(group);
     if (change) cell.appendChild(change);
-    if (rangeShift === ALL_SHIFTS) cell.appendChild(byShiftLine(byKey));
+    if (shift === ALL_SHIFTS) cell.appendChild(byShiftLine(byKey));
     const title = [
         `${pct(current.oee)} OEE over ${group.counted} counted shift${group.counted === 1 ? "" : "s"}, ` +
         `${periodPhrase(range)}.`,
@@ -888,10 +919,10 @@ function fillRangeRow(row, byKey, range) {
     if (group.thin) {
         cell.setAttribute("data-warned", "");
         title.push("Fewer than half this machine's shifts counted, so this number may not " +
-            "represent the period. Hover the machine name for the ones left out.");
+            `represent the ${spanWord()}. Hover the machine name for the ones left out.`);
     }
-    if (rangeShift === ALL_SHIFTS) title.push("By shift:", byShiftTitle(byKey));
-    cell.title = title.join("\n");
+    if (shift === ALL_SHIFTS) title.push("By shift:", byShiftTitle(byKey));
+    cell.title = title.filter(Boolean).join("\n");
 
     set("availability", pct(current.availability),
         `Ran ${count(Math.round(current.run_minutes))} of ${count(Math.round(current.ppt_minutes))} ` +
@@ -901,27 +932,35 @@ function fillRangeRow(row, byKey, range) {
     set("good", count(current.good), `Good units over ${current.shifts} counted shifts`);
     set("scrap", count(current.scrap), splitTitle(current));
 
+    // Hours over a period; minutes on one day, as on one shift.
+    const amount = isRange() ? hoursText : count;
     const planned = current.planned_minutes;
     const unplanned = current.unplanned_minutes;
-    set("downtime", planned ? `${hoursText(unplanned)} + ${hoursText(planned)} planned` : hoursText(unplanned),
+    set("downtime", planned ? `${amount(unplanned)} + ${amount(planned)} planned` : amount(unplanned),
         `${count(unplanned)} min unplanned` + (planned ? `, ${count(planned)} min planned` : "") +
         ` over ${current.shifts} counted shifts`);
-    const reasons = group.reasons || [];
-    set("reasons", reasonSummary(reasons, 2, (minutes) => hoursText(minutes, "h")),
+    // A zone's total has no reasons of its own; the Pareto's zone chip has them.
+    if (!group.reasons) {
+        set("reasons", "");
+        return;
+    }
+    const reasons = group.reasons;
+    set("reasons", reasonSummary(reasons, 2, isRange() ? (minutes) => hoursText(minutes, "h") : count),
         reasons.map((r) => `${r.label}: ${count(r.minutes)} min on ${r.shifts} ` +
             `shift${r.shifts === 1 ? "" : "s"}`).join("\n"));
 }
 
-/** A zone's badge over a period, with its change and (under All) each shift. */
+/** A zone's badge over a period or one day, with its change and (under All) each shift. */
 function fillRangeZone(section, range) {
     const target = section.querySelector("[data-rollup]");
     if (!target) return;
+    const shift = shownShift();
     const byKey = (range.zones || {})[section.dataset.zone];
-    const group = byKey && byKey[rangeShift];
+    const group = byKey && byKey[shift];
     if (!group || !group.current) {
         target.textContent = group && group.left_out
             ? "no OEE: every shift left out"
-            : "no OEE: nothing counted in this period";
+            : `no OEE: nothing counted this ${spanWord()}`;
         return;
     }
 
@@ -934,7 +973,7 @@ function fillRangeZone(section, range) {
     ].join(" · ");
     const change = changeBadge(group);
     if (change) target.appendChild(change);
-    if (rangeShift === ALL_SHIFTS) target.appendChild(byShiftLine(byKey));
+    if (shift === ALL_SHIFTS) target.appendChild(byShiftLine(byKey));
     target.setAttribute("data-band", bandFor(current.oee) || "unknown");
 
     const total = group.counted + group.left_out;
@@ -942,16 +981,17 @@ function fillRangeZone(section, range) {
         changeTitle(group, range)];
     if (group.thin) {
         target.setAttribute("data-warned", "");
-        title.push("Fewer than half this zone's shifts counted, so this number may not represent the period.");
+        title.push("Fewer than half this zone's shifts counted, so this number may not " +
+            `represent the ${spanWord()}.`);
     }
     if (current.split_shifts !== current.shifts) {
         title.push(`Performance and Quality cover the ${current.split_shifts} shifts with scrap entered.`);
     }
-    if (rangeShift === ALL_SHIFTS) title.push("By shift:", byShiftTitle(byKey));
-    target.title = title.join("\n");
+    if (shift === ALL_SHIFTS) title.push("By shift:", byShiftTitle(byKey));
+    target.title = title.filter(Boolean).join("\n");
 }
 
-/** The floor's headline over a period, in place of the one-shift completeness bar. */
+/** The floor's headline under All or over a period, in place of the one-shift completeness bar. */
 function renderFloorTotal(range) {
     floorTotal.hidden = false;
     floorTotalOee.textContent = "";
@@ -963,13 +1003,14 @@ function renderFloorTotal(range) {
     if (range === null || range === "error") {
         floorTotalDetail.textContent = range === null
             ? `Loading ${loadingPhrase()}…`
-            : "Couldn't load that period. Check the connection and pick it again.";
+            : `Couldn't load that ${spanWord()}. Check the connection and pick it again.`;
         floorTotal.title = "";
         return;
     }
 
+    const shift = shownShift();
     const byKey = range.floor;
-    const group = byKey[rangeShift];
+    const group = byKey[shift];
     const total = group.counted + group.left_out;
     if (!group.current) {
         floorTotalDetail.textContent = `No OEE, ${periodPhrase(range)}.`;
@@ -990,8 +1031,8 @@ function renderFloorTotal(range) {
         `${count(group.counted)} of ${count(total)} machine-shifts counted`,
         periodPhrase(range),
     ].join(" · ");
-    if (rangeShift === ALL_SHIFTS) floorTotalDetail.appendChild(byShiftLine(byKey));
-    renderFloorDays(range);
+    if (shift === ALL_SHIFTS) floorTotalDetail.appendChild(byShiftLine(byKey));
+    if (isRange()) renderFloorDays(range);
 
     const title = [
         "Every counted machine-shift added together: total good units over the units " +
@@ -1004,10 +1045,11 @@ function renderFloorTotal(range) {
     }
     if (group.thin) {
         floorTotal.setAttribute("data-warned", "");
-        title.push("Fewer than half the floor's shifts counted, so this number may not represent the period.");
+        title.push("Fewer than half the floor's shifts counted, so this number may not " +
+            `represent the ${spanWord()}.`);
     }
-    if (rangeShift === ALL_SHIFTS) title.push("By shift:", byShiftTitle(byKey));
-    floorTotal.title = title.join("\n");
+    if (shift === ALL_SHIFTS) title.push("By shift:", byShiftTitle(byKey));
+    floorTotal.title = title.filter(Boolean).join("\n");
 }
 
 // Left-out reasons that mean something wasn't entered. Every other reason
@@ -1015,10 +1057,11 @@ function renderFloorTotal(range) {
 const MISSING_CODES = new Set(["no_downtime", "no_production"]);
 
 /**
- * Over a period: one line counting the left-out machine-shifts, opening to
- * two groups, numbers that look wrong and entries that are missing, each
- * listed by reason with the worst machines first and each machine's dates
- * after it, newest first like the day columns.
+ * Over a period or one day's All: one line counting the left-out
+ * machine-shifts, opening to two groups, numbers that look wrong and entries
+ * that are missing, each listed by reason with the worst machines first and
+ * each machine's dates (or shifts) after it, newest first like the day
+ * columns.
  */
 function renderLeftOut(range) {
     leftOutDetails.textContent = "";
@@ -1026,7 +1069,7 @@ function renderLeftOut(range) {
     const missing = { groups: new Map(), shifts: 0 };
     let total = 0;
     for (const machineId of ALL_MACHINE_IDS) {
-        const group = range.machines[machineId] && range.machines[machineId][rangeShift];
+        const group = range.machines[machineId] && range.machines[machineId][shownShift()];
         // The server lists them oldest first.
         const leftOut = ((group && group.left_out_shifts) || []).slice().reverse();
         for (const item of leftOut) {
@@ -1063,12 +1106,12 @@ function renderLeftOut(range) {
 }
 
 /**
- * "Fri 9/25 2nd", or just "Fri 9/25" with one shift picked. Non-breaking
- * spaces keep a date on one line when the list wraps.
+ * "Fri 9/25 2nd", just "Fri 9/25" with one shift picked, or just "2nd" on
+ * one day. Non-breaking spaces keep a date on one line when the list wraps.
  */
 function leftOutWhen(item) {
-    const parts = [weekday(item.date), monthDay(item.date)];
-    if (rangeShift === ALL_SHIFTS) parts.push(shortShift(item.shift));
+    const parts = isRange() ? [weekday(item.date), monthDay(item.date)] : [];
+    if (shownShift() === ALL_SHIFTS) parts.push(shortShift(item.shift));
     return parts.join(" ");
 }
 
@@ -1333,22 +1376,23 @@ function rangeFor(date, days) {
         })
         .finally(() => {
             // Only if the page still wants this range.
-            if (payload && payload.date === date && isRange() && periodDays() === days) render();
+            if (payload && payload.date === date && !isOneShift() && periodDays() === days) render();
         });
     return null;
 }
 
 /**
- * Coverage line under a period's bars: how many machine-shifts they're
- * built from, and how many reported production but have no downtime entered.
+ * Coverage line under the bars over a period or a day's All: how many
+ * machine-shifts they're built from, and how many reported production but
+ * have no downtime entered.
  */
 function renderCoverage(range) {
     let records = 0;
     let missing = 0;
     for (const [machineId, machine] of Object.entries(range.machines)) {
         if (!paretoSelection.has(machineId)) continue;
-        records += machine[rangeShift].downtime_records;
-        missing += machine[rangeShift].downtime_missing;
+        records += machine[shownShift()].downtime_records;
+        missing += machine[shownShift()].downtime_missing;
     }
     paretoCoverage.textContent =
         `Built from ${count(records)} machine-shift${records === 1 ? "" : "s"} with downtime entered` +
@@ -1382,7 +1426,7 @@ function renderPareto() {
     let items;
     let when;
     let unit;
-    if (!isRange()) {
+    if (isOneShift()) {
         const shiftData = payload.shifts[currentShift] || { machines: {} };
         // Same rules as _build_pareto(): skip unscheduled machines.
         items = rankReasons(
@@ -1399,14 +1443,14 @@ function renderPareto() {
             paretoTotal.textContent = "";
             paretoEmpty.textContent = range === null
                 ? `Loading ${loadingPhrase()}…`
-                : "Couldn't load that period. Check the connection and pick it again.";
+                : `Couldn't load that ${spanWord()}. Check the connection and pick it again.`;
             paretoEmpty.hidden = false;
             return;
         }
         items = rankReasons(
             Object.entries(range.machines)
                 .filter(([machineId]) => paretoSelection.has(machineId))
-                .map(([, machine]) => machine[rangeShift].pareto)
+                .map(([, machine]) => machine[shownShift()].pareto)
         );
         when = periodPhrase(range);
         unit = "machine-shift";
@@ -1416,9 +1460,11 @@ function renderPareto() {
 
     if (!items.length) {
         paretoTotal.textContent = "";
-        paretoEmpty.textContent = isRange()
-            ? `No downtime recorded for ${paretoScopeLabel()} in these ${periodDays()} days.`
-            : `No downtime recorded for ${paretoScopeLabel()} this shift.`;
+        paretoEmpty.textContent = isOneShift()
+            ? `No downtime recorded for ${paretoScopeLabel()} this shift.`
+            : isRange()
+                ? `No downtime recorded for ${paretoScopeLabel()} in these ${periodDays()} days.`
+                : `No downtime recorded for ${paretoScopeLabel()} on ${formatQuickPick(payload.date)}.`;
         paretoEmpty.hidden = false;
         return;
     }
@@ -1465,10 +1511,7 @@ function renderPareto() {
     }
 }
 
-/**
- * The Period and Shift toggles, and a custom period's From box. "All" only
- * exists over a period.
- */
+/** The Period and Shift toggles, and a custom period's From box. */
 function syncToggles() {
     periodToggle.querySelectorAll(".shift-option").forEach((button) => {
         button.classList.toggle("is-active", button.dataset.period === String(period));
@@ -1485,7 +1528,6 @@ function syncToggles() {
         dateLabel.textContent = "Date";
     }
     shiftToggle.querySelectorAll(".shift-option").forEach((button) => {
-        if (button.dataset.shift === ALL_SHIFTS) button.hidden = !isRange();
         button.classList.toggle("is-active", button.dataset.shift === shownShift());
     });
 }
@@ -1501,10 +1543,10 @@ function render() {
 
     if (!payload.has_any_data) {
         showEmpty("No production entries have been recorded yet.");
-    } else if (isRange()) {
-        renderRange();
-    } else {
+    } else if (isOneShift()) {
         renderShift();
+    } else {
+        renderRange();
     }
     renderPareto();
     syncUrl();
@@ -1543,14 +1585,15 @@ function renderShift() {
     renderFlags(shiftData);
 }
 
+/** A period, or one day's All (a period of one day, without day columns). */
 function renderRange() {
     completenessEl.hidden = true;
-    // The one-shift box; a period's left-out shifts go in the quiet line.
+    // The one-shift box; left-out shifts go in the quiet line here.
     flagsBanner.hidden = true;
     leftOutEl.hidden = true;
     const range = rangeFor(payload.date, periodDays());
     const loaded = range !== null && range !== "error";
-    syncDayColumns(loaded ? range : null);
+    syncDayColumns(loaded && isRange() ? range : null);
     document.querySelectorAll(".oee-grid tfoot").forEach((foot) => { foot.hidden = !loaded; });
     renderFloorTotal(range);
     if (!loaded) {
@@ -1559,9 +1602,9 @@ function renderRange() {
         return;
     }
 
-    const floor = range.floor[rangeShift];
+    const floor = range.floor[shownShift()];
     if (!floor.counted && !floor.left_out) {
-        showEmpty(`Nothing has been entered for OEE, ${periodPhrase(range)}.`);
+        showEmpty(nothingToAddUp(range));
         floorTotal.hidden = true;
         return;
     }
@@ -1579,6 +1622,20 @@ function renderRange() {
     });
 
     renderLeftOut(range);
+}
+
+/** Why a period or a day's All has no machine-shift to count or leave out. */
+function nothingToAddUp(range) {
+    if (!range.tracked_start && range.tracking_start) {
+        return `No OEE before ${formatDate(range.tracking_start)}, when OEE tracking began: ` +
+            "nobody was entering downtime yet.";
+    }
+    if (!isRange()) {
+        // A shift still running without its downtime is neither counted nor left out.
+        return `No OEE for ${formatDate(range.end)} yet: no shift has both production and ` +
+            "downtime entered. Pick a shift to see what's there.";
+    }
+    return `Nothing has been entered for OEE, ${periodPhrase(range)}.`;
 }
 
 function renderQuickPicks(dates) {
@@ -1659,14 +1716,14 @@ customStartInput.addEventListener("change", () => {
     if (value && payload) setCustomPeriod(value, payload.date, value);
 });
 
-// A period starts on All; going back to "This shift" shows the last single
-// shift picked. A custom period keeps its first day for the visit.
+// A period starts on All; going back to one day shows the last shift picked,
+// All included. A custom period keeps its first day for the visit.
 periodToggle.addEventListener("click", (event) => {
     const button = event.target.closest(".shift-option");
     if (!button) return;
     const value = button.dataset.period;
     const days = parseInt(value, 10);
-    const next = value === CUSTOM ? CUSTOM : PERIOD_DAYS.includes(days) ? days : "shift";
+    const next = value === CUSTOM ? CUSTOM : PERIOD_DAYS.includes(days) ? days : ONE_DAY;
     if (next === period) return;
     if (!isRange()) rangeShift = ALL_SHIFTS;
     period = next;
@@ -1679,8 +1736,9 @@ shiftToggle.addEventListener("click", (event) => {
     if (!button) return;
     const shift = button.dataset.shift;
     if (isRange()) rangeShift = shift;
-    if (SHIFT_ORDER.includes(shift)) currentShift = shift;
-    render(); // all three shifts, and each period's shifts, are already loaded
+    currentShift = shift;
+    // A day's three shifts are already loaded; All and periods fetch once, then are cached.
+    render();
 });
 
 // A zone chip ticks exactly that zone's machines and All clears the ticks; a

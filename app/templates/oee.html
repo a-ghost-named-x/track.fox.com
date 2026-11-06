@@ -12,10 +12,10 @@
         <a href="/dashboard">Dashboards</a>
     </p>
 
-    {# Same controls as /supervisor, minus "All Day": each shift has its own
+    {# Like /supervisor's controls. "All" adds the three shifts together and
+       shows each one's OEE beside the total, since each shift has its own
        planned time, downtime and crew. Over a period the date is the
-       period's last day, and "All" adds the three shifts together. A custom
-       period adds its first day in front of it. #}
+       period's last day. A custom period adds its first day in front of it. #}
     <div class="supervisor-controls">
         <div class="control-group" id="custom-start-group" hidden>
             <label class="control-label" for="custom-start">From</label>
@@ -35,7 +35,7 @@
         <div class="control-group">
             <span class="control-label">Period</span>
             <div class="shift-toggle" id="period-toggle">
-                <button type="button" class="shift-option" data-period="shift">This shift</button>
+                <button type="button" class="shift-option" data-period="day">1 day</button>
                 {% for days in period_days %}
                 <button type="button" class="shift-option" data-period="{{ days }}">{{ days }} days</button>
                 {% endfor %}
@@ -46,7 +46,7 @@
         <div class="control-group">
             <span class="control-label">Shift</span>
             <div class="shift-toggle" id="shift-toggle">
-                <button type="button" class="shift-option" data-shift="{{ all_shifts_label }}" hidden>{{ all_shifts_label }}</button>
+                <button type="button" class="shift-option" data-shift="{{ all_shifts_label }}">{{ all_shifts_label }}</button>
                 {% for label in shift_order %}
                 <button type="button" class="shift-option" data-shift="{{ label }}">{{ label.split(' ')[0] }}</button>
                 {% endfor %}
@@ -54,8 +54,8 @@
         </div>
     </div>
 
-    {# The floor's OEE over a period, compared with the period before,
-       then each day's (or week's). #}
+    {# The floor's OEE under All: over a period, compared with the period
+       before, then each day's (or week's); on one day, just the day's. #}
     <div class="floor-total" id="floor-total" hidden>
         <span class="control-label">Floor</span>
         <span class="floor-total-oee" id="floor-total-oee"></span>
@@ -63,9 +63,9 @@
         <span class="floor-total-days" id="floor-total-days"></span>
     </div>
 
-    {# Over a period: the left-out machine-shifts as one quiet line, with
-       the list behind it. Closed by default; a known backlog shouldn't read
-       as an alarm. #}
+    {# Over a period or a day's All: the left-out machine-shifts as one quiet
+       line, with the list behind it. Closed by default; a known backlog
+       shouldn't read as an alarm. #}
     <details class="left-out" id="left-out" hidden>
         <summary class="left-out-summary">
             <span class="left-out-counts" id="left-out-counts"></span>
@@ -140,7 +140,7 @@
                     </tr>
                     {% endfor %}
                 </tbody>
-                {# The zone's own row over a period, filled like a machine's. #}
+                {# The zone's own row under All, filled like a machine's. #}
                 <tfoot hidden>
                     <tr class="zone-total-row" data-zone-total>
                         <td class="machine-col">

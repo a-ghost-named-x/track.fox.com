@@ -20,7 +20,7 @@ It covers 37 machines in six zones, three shifts a day.
 | `/console` | Corrections | One machine at a time. |
 | `/console/oee` | End of shift | One person enters the whole floor's downtime, scrap, scheduling, shift lengths and start times. |
 | `/supervisor` | Supervisors | Any past day and shift, including machines that never reported. |
-| `/oee` | Supervisors | OEE per machine per shift, or over the last 7 or 30 days or a custom range compared with the period before, with zone and floor rollups and a downtime Pareto. |
+| `/oee` | Supervisors | OEE per machine per shift or for the whole day, or over the last 7 or 30 days or a custom range compared with the period before, with zone and floor rollups and a downtime Pareto. |
 | `/dashboard` | Everyone | Site menu. |
 
 [docs/how-the-numbers-work.md](docs/how-the-numbers-work.md) explains every

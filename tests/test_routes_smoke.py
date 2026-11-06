@@ -23,8 +23,8 @@ What it checks:
   5. Short shifts: the 2/4/6 hours box, which only counts with the short
      option picked, inside the normal 8-hour shift on every page, and later
      shifts starting unticked after one.
-  6. /oee's periods (7 and 30 days, and custom): their controls, ?period,
-     ?start and ?shift=All, and /api/oee-range.
+  6. /oee's periods (7 and 30 days, and custom) and All on one day: their
+     controls, ?period, ?start and ?shift=All, and /api/oee-range.
 """
 import os
 import sys
@@ -1011,7 +1011,8 @@ check("?pareto= is passed through to the page",
 
 print("\n== the 7 and 30-day and custom periods ==")
 check("/oee has the period toggle",
-      all(f'data-period="{p}"' in oee_page for p in ("shift", "7", "30", "custom")))
+      all(f'data-period="{p}"' in oee_page for p in ("day", "7", "30", "custom")))
+check("...whose first button reads 1 day", 'data-period="day">1 day</button>' in oee_page)
 check("the From box is there, hidden until Custom is picked",
       'id="custom-start-group" hidden' in oee_page and 'id="custom-start"' in oee_page)
 custom_page = client.get("/oee?period=custom&start=2026-10-12&date=2026-10-26").text
@@ -1027,22 +1028,27 @@ check("?start is ignored without a custom period",
       'window.INITIAL_START = ""' in client.get("/oee?period=7&start=2026-10-12").text)
 check("a custom period opens on All", 'window.INITIAL_SHIFT = "All"' in custom_page)
 check("...at the top, not inside the Pareto", 'id="pareto-period"' not in oee_page)
-check("the All button is there, hidden until a period is picked",
-      'data-shift="All" hidden' in oee_page)
+check("the All button is there on one day too",
+      'data-shift="All">' in oee_page and 'data-shift="All" hidden' not in oee_page)
 check("the floor total is there, hidden", 'id="floor-total" hidden' in oee_page)
-check("the left-out line is there, hidden until a period is picked",
+check("the left-out line is there, hidden until All or a period is picked",
       'id="left-out" hidden' in oee_page)
-check("each zone has a total row, hidden until a period is picked",
+check("each zone has a total row, hidden until All or a period is picked",
       oee_page.count("<tfoot hidden>") == len(DASHBOARD_ZONES)
       and oee_page.count("data-zone-total") == len(DASHBOARD_ZONES))
 check("?period=30 is passed through", "window.INITIAL_PERIOD = 30" in client.get("/oee?period=30").text)
-check("an unknown period means one shift",
+check("an unknown period means one day",
       "window.INITIAL_PERIOD = null" in client.get("/oee?period=9").text)
 check("a period opens on All", 'window.INITIAL_SHIFT = "All"' in client.get("/oee?period=7").text)
 check("...unless a shift is asked for",
       'window.INITIAL_SHIFT = "2nd Shift"' in client.get("/oee?period=7&shift=2nd%20Shift").text)
-check("All without a period falls back to a real shift",
-      'window.INITIAL_SHIFT = "All"' not in client.get("/oee?shift=All").text)
+one_day_all = client.get("/oee?shift=All").text
+check("All on one day is passed through",
+      'window.INITIAL_SHIFT = "All"' in one_day_all and "window.INITIAL_PERIOD = null" in one_day_all)
+check("one day without a shift still opens on a real shift",
+      'window.INITIAL_SHIFT = "All"' not in oee_page)
+check("an unknown shift still falls back to a real shift",
+      'window.INITIAL_SHIFT = "All"' not in client.get("/oee?shift=Nope").text)
 
 reset()
 # C1 reported at standard (see `entries`) and ran clean: counted. C2 has
@@ -1076,6 +1082,10 @@ check("any length works: 15 days, still a column per day, compared with the 15 b
       == (15, 1, 15, (DAY - timedelta(days=15)).isoformat()))
 check("16 days is a column per week: two, then the leftover two days",
       len(client.get(f"/api/oee-range?end={DAY.isoformat()}&days=16").json()["columns"]) == 3)
+one_day = client.get(f"/api/oee-range?end={DAY.isoformat()}&days=1").json()
+check("one day (the page's All on a single day) works, C1 counted once",
+      (one_day["days"], one_day["start"], one_day["end"],
+       one_day["machines"]["C1"]["All"]["counted"]) == (1, DAY.isoformat(), DAY.isoformat(), 1))
 check("longer than 60 days is cut to 60",
       client.get(f"/api/oee-range?end={DAY.isoformat()}&days=365").json()["days"] == 60)
 check("zero days falls back to 7", client.get("/api/oee-range?days=0").json()["days"] == 7)

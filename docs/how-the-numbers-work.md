@@ -157,9 +157,20 @@ That's why hitting standard = 75%: 46,800 ÷ 62,400 = 75%.
 - One wrinkle you don't need to worry about but might notice: for a *group* of machines, Availability is weighted by each machine's capacity, not just clock minutes. A minute of downtime on a Leno machine (1,680/hr) costs the floor a lot less than a minute on a Combo line (7,800/hr), and the rollup accounts for that. For a single machine it makes no difference.
 - If some machines have scrap entered and some don't, OEE and Availability count all of them, but Performance and Quality only count the ones with scrap. The hover text says how many.
 
+### All three shifts of one day
+
+On **1 day**, the **Shift** control has **All** next to 1st, 2nd and 3rd: each machine's shifts that day added up into one OEE for the day.
+
+- It's added up the same way as the zone totals: all the day's good units divided by what the machine could have made in all its scheduled time that day. It is **not the average of the three shifts' percentages**, so a 4-hour shift counts for less than an 8-hour one.
+- Under each OEE, in small print, are the three shifts' own figures (`1st 61 · 2nd 57 · 3rd 49`), the same numbers you see by picking that shift. A bad night can't hide inside a good day.
+- The rest works like *All* over a week (below): the floor total at the top, a **Zone total** row in each table, "2/3 shifts" under each machine name, and the line counting left-out shifts, which names the shift (`C4 (2nd)`). Top reasons stays, and Downtime is in minutes.
+- There's no arrow comparing the day with the day before: one day against the next is mostly noise. Use 7 days for that.
+- The red box of problems and the "Data entered" counts belong to a single shift, so pick a shift to see them.
+- The page still opens on the current shift. A link with All picked opens on All.
+
 ### A week, a month, or your own dates
 
-The **Period** control at the top switches the whole page, table and chart, from one shift to **7 days** or **30 days**: the week or month ending on the date in the date box. Pick an older date and you get the week that ended then.
+The **Period** control at the top switches the whole page, table and chart, from **1 day** to **7 days** or **30 days**: the week or month ending on the date in the date box. Pick an older date and you get the week that ended then.
 
 **Custom** lets you pick both ends. A **From** box appears next to the date box, which becomes **To** and shows how many days that is. From starts two weeks before To. Any run of up to 60 days works, and dates typed the wrong way round are swapped. If a range would be longer than 60 days, the date you just picked stays and the other one moves. The page address keeps both dates, so a custom view can be bookmarked or sent to someone. To see whether a change on the floor helped, start the range on the day it went in: the arrow (below) then compares it with the same number of days just before.
 

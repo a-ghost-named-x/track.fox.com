@@ -16,7 +16,8 @@ still in the payload for the Good column's tooltip.
 The whole page, grid and Pareto, can also show the last 7 or 30 production
 days ending on the selected date, or a custom run of days ending on it, each
 compared with the same number of days before it, for all shifts together or
-one at a time (/api/oee-range).
+one at a time (/api/oee-range). A single day's "All" is that same summary
+over one day, without the comparison.
 
 Read-only. All OEE inputs are written on /console/oee.
 """
@@ -114,22 +115,20 @@ def oee_page(
     bookmarked):
       date   - production day; its 3rd Shift starts at 10PM that day. Over a
                period, the period's last day.
-      shift  - which shift to show, or "All" over a period (the default
-               there)
+      shift  - which shift to show, or "All" for the three added together.
+               A period opens on All; one day opens on the current shift.
       pareto - comma-separated machine ids for the Pareto; absent = whole floor
       period - 7 or 30 for a rolling window, "custom" for one from `start`;
-               absent = one shift
+               absent = one day
       start  - a custom period's first day. Swapped with `date` when it's
                later. Absent, oee.js picks two weeks before `date`.
 
-    One shift has no "All" option: each shift has its own planned time,
-    downtime and crew, and one number across a single day's three would hide
-    the differences. Over a period, All is shown with each shift's OEE beside
-    it for the same reason.
+    Each shift has its own planned time, downtime and crew, so All always
+    shows each shift's OEE beside the total, on one day as over a period.
     """
     days = _parse_period(period)
     default_shift = resolve_shift(None, datetime.now())
-    if days and shift in (None, ALL_SHIFTS_LABEL):
+    if shift == ALL_SHIFTS_LABEL or (days and shift is None):
         requested_shift = ALL_SHIFTS_LABEL
     else:
         requested_shift = resolve_shift(shift, datetime.now())
@@ -151,7 +150,7 @@ def oee_page(
             "standard_pct_of_ideal": STANDARD_PCT_OF_IDEAL,
             "requested_date": date or "",
             "requested_shift": requested_shift,
-            # The single shift to show when leaving a period opened on All.
+            # The shift one day shows when leaving a period opened on All.
             "default_shift": default_shift,
             "requested_pareto": pareto or "",
             "requested_period": days,
@@ -188,9 +187,9 @@ def oee_data(date: str | None = None):
 @router.get("/api/oee-range")
 def oee_range(end: str | None = None, days: str | None = None):
     """OEE over the `days` production days ending on `end`, and the `days`
-    before them, for the page's periods. Per machine, per zone and for the
-    floor, all shifts together and each shift, plus each machine's Pareto
-    reasons.
+    before them, for the page's periods and a single day's All (days=1).
+    Per machine, per zone and for the floor, all shifts together and each
+    shift, plus each machine's Pareto reasons.
 
     A missing or invalid `end` means the latest production day with data.
     `days` is at most OEE_CUSTOM_MAX_DAYS, and anything unusable means the
