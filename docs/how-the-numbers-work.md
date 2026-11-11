@@ -135,6 +135,8 @@ Quick sanity check, and a handy way to think about it: OEE is also just **good u
 
 That's why hitting standard = 75%: 46,800 ÷ 62,400 = 75%.
 
+The page shows OEE rounded to a whole number, so this shift reads **64%**. Availability, Performance and Quality keep their decimal.
+
 ### The colours
 
 - **85% and up** — excellent (generally considered world-class)
@@ -142,6 +144,8 @@ That's why hitting standard = 75%: 46,800 ÷ 62,400 = 75%.
 - **60% to 75%** — fair (needs a look)
 - **Under 60%** — poor
 - **No colour** — nothing to score yet (see "when a machine shows nothing" below)
+
+The colour goes by the whole number shown, so 84.6% reads 85% and is coloured excellent.
 
 ### The other columns
 
@@ -176,7 +180,7 @@ The **Period** control at the top switches the whole page, table and chart, from
 
 - **A row is now "this machine over the period."** Its OEE is worked out the same way as the zone totals: every counted shift's good units added up, divided by what the machine could have made in all that scheduled time. It is **not the average of each day's percentage**, so a 4-hour Saturday counts for less than a 12-hour shift, as it should.
 - **Shift:** *All* (the default) adds the three shifts together, with each shift's OEE in small print underneath (`1st 61 · 2nd 57 · 3rd 49`) so crews can be compared at a glance. Pick 1st, 2nd or 3rd to see just that shift across the period.
-- **The arrow** (`▲3.1`) is the change in percentage points from the period before: this week against last week, this month against last month, a custom range against the same number of days just before it. Hover it for the earlier number. It's left off when either period doesn't have enough counted shifts to be fair (see below), when fewer than half the earlier period's days were after OEE tracking began, or when there's no earlier data yet.
+- **The arrow** (`▲3`) is the change in percentage points from the period before: this week against last week, this month against last month, a custom range against the same number of days just before it. It's the difference between the two whole numbers, so 61% after 58% is always `▲3`. Hover it for the earlier number. It's left off when either period doesn't have enough counted shifts to be fair (see below), when fewer than half the earlier period's days were after OEE tracking began, or when there's no earlier data yet.
 - **Days before OEE tracking began don't count.** Production numbers were being entered for weeks before downtime was, so the site takes the first day anyone entered downtime as the start of OEE tracking. Earlier days aren't part of any figure, aren't "left out", and show as a grey dash in the day columns. A period that reaches back past that day is labelled from it ("Thu, 9/3 – Tue, 9/29").
 - **Each day's OEE** fills the columns on the right, newest day first: `Mon 9/28`, `Sun 9/27`, and so on back to the start of the week. Each is that day's shifts added up the same way (with a single shift picked, it's the same number the one-shift view shows for that day). Over anything longer than 15 days the columns are weeks instead, ending on the last day, with any leftover days in the oldest column: 30 days is four weeks, then two days. A dim "—" means nothing was entered that day, "!" means everything entered that day was left out, and hovering a cell shows each shift's figure. These columns replace Top reasons over a period; the downtime chart below still has the reasons.
 - **Zone total**, the last row of each zone's table, is the zone added up the same way, with its own daily figures.

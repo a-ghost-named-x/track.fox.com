@@ -1715,7 +1715,7 @@ button.shift-option {
     font-size: inherit;
 }
 
-/* "▲3.1": change in points from the period before. Coloured by direction,
+/* "▲3": change in points from the period before. Coloured by direction,
    not by band, so a low OEE that's improving still reads as improving. */
 .oee-change {
     margin-left: 0.35rem;

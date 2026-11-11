@@ -309,6 +309,26 @@ function pct(value, digits) {
     return `${(value * 100).toFixed(digits === undefined ? 1 : digits)}%`;
 }
 
+/**
+ * OEE in whole points, or null when unknown. Every OEE on the page goes
+ * through this, so the colours and the arrow agree with the number shown.
+ */
+function oeePoints(value) {
+    if (value === null || value === undefined) return null;
+    return Math.round(value * 100);
+}
+
+/** OEE as shown: "61%", or "—" when unknown. */
+function oeePct(value) {
+    const points = oeePoints(value);
+    return points === null ? "—" : `${points}%`;
+}
+
+/** Change in shown points from the period before: 61% after 58% is 3. */
+function changePoints(group) {
+    return oeePoints(group.current.oee) - oeePoints(group.previous.oee);
+}
+
 function count(value) {
     if (value === null || value === undefined) return "—";
     return value.toLocaleString("en-US");
@@ -335,25 +355,25 @@ function periodPhrase(range) {
 }
 
 /**
- * The "▲3.1" beside a period's OEE: the change in percentage points from the
+ * The "▲3" beside a period's OEE: the change in percentage points from the
  * period before, or null when the server says the two can't be compared.
  * One day isn't compared with the day before; day to day is mostly noise.
  */
 function changeBadge(group) {
     if (!isRange()) return null;
     if (group.change === null || group.change === undefined) return null;
-    const points = Math.round(group.change * 1000) / 10;
+    const points = changePoints(group);
     const badge = document.createElement("span");
     badge.className = "oee-change";
     if (points > 0) {
         badge.dataset.dir = "up";
-        badge.textContent = `▲${points.toFixed(1)}`;
+        badge.textContent = `▲${points}`;
     } else if (points < 0) {
         badge.dataset.dir = "down";
-        badge.textContent = `▼${Math.abs(points).toFixed(1)}`;
+        badge.textContent = `▼${Math.abs(points)}`;
     } else {
         badge.dataset.dir = "flat";
-        badge.textContent = "±0.0";
+        badge.textContent = "±0";
     }
     return badge;
 }
@@ -365,9 +385,10 @@ function changeTitle(group, range) {
     const before = `the previous ${days} days (${formatQuickPick(range.previous_start)} – ` +
         `${formatQuickPick(range.previous_end)})`;
     if (group.change !== null && group.change !== undefined) {
-        const points = Math.abs(group.change * 100).toFixed(1);
-        const dir = group.change > 0 ? "up" : group.change < 0 ? "down" : "unchanged,";
-        return `${pct(group.previous.oee)} over ${before}, so ${dir} ${points} points.`;
+        const points = changePoints(group);
+        const size = `${Math.abs(points)} point${Math.abs(points) === 1 ? "" : "s"}`;
+        const dir = points > 0 ? `up ${size}` : points < 0 ? `down ${size}` : "unchanged";
+        return `${oeePct(group.previous.oee)} over ${before}, so ${dir}.`;
     }
     const began = range.tracking_start ? ` (${formatQuickPick(range.tracking_start)})` : "";
     if (!range.previous_tracked_days) {
@@ -381,7 +402,7 @@ function changeTitle(group, range) {
     if (group.thin) return "Not compared with the period before: fewer than half this period's shifts counted.";
     const total = group.previous_counted + group.previous_left_out;
     return `Not compared: ${before} had only ${group.previous_counted} of ${total} shifts ` +
-        `counted, so its ${pct(group.previous.oee)} isn't a fair comparison.`;
+        `counted, so its ${oeePct(group.previous.oee)} isn't a fair comparison.`;
 }
 
 /** "1st 61 · 2nd 57 · 3rd —": each shift's OEE, shown under All. */
@@ -390,7 +411,7 @@ function byShiftLine(byKey) {
     line.className = "oee-by-shift";
     line.textContent = SHIFT_ORDER.map((label) => {
         const current = byKey[label] && byKey[label].current;
-        const value = current && current.oee !== null ? Math.round(current.oee * 100) : "—";
+        const value = current && current.oee !== null ? oeePoints(current.oee) : "—";
         return `${shortShift(label)} ${value}`;
     }).join(" · ");
     return line;
@@ -401,7 +422,7 @@ function byShiftTitle(byKey) {
     return SHIFT_ORDER.map((label) => {
         const group = byKey[label];
         if (!group || !group.current) return `   ${shortShift(label)}: nothing counted`;
-        return `   ${shortShift(label)}: ${pct(group.current.oee)} over ${group.counted} ` +
+        return `   ${shortShift(label)}: ${oeePct(group.current.oee)} over ${group.counted} ` +
             `shift${group.counted === 1 ? "" : "s"}`;
     }).join("\n");
 }
@@ -411,11 +432,13 @@ function byShiftTitle(byKey) {
  * Missing data shouldn't look like a bad score.
  */
 function bandFor(value) {
-    if (value === null || value === undefined) return null;
-    if (value >= WORLD_CLASS) return "excellent";
-    if (value >= AT_STANDARD) return "good";
+    // Judged on the whole number shown, so 84.6% reads 85% and is coloured as 85%.
+    const points = oeePoints(value);
+    if (points === null) return null;
+    if (points >= Math.round(WORLD_CLASS * 100)) return "excellent";
+    if (points >= Math.round(AT_STANDARD * 100)) return "good";
     // 80% of standard: 60% OEE on the default 0.75.
-    if (value >= AT_STANDARD * 0.8) return "fair";
+    if (points >= Math.round(AT_STANDARD * 80)) return "fair";
     return "poor";
 }
 
@@ -653,7 +676,7 @@ function fillMachineRow(row, machine) {
         return;
     }
 
-    setBand(set("oee", pct(shift.oee)), shift.oee);
+    setBand(set("oee", oeePct(shift.oee)), shift.oee);
     if (machine.warnings && machine.warnings.length) {
         const cell = row.querySelector('[data-field="oee"]');
         cell.setAttribute("data-warned", "");
@@ -687,7 +710,7 @@ function fillZoneRollup(section, shiftData) {
     }
 
     target.textContent = [
-        `OEE ${pct(rollup.oee)}`,
+        `OEE ${oeePct(rollup.oee)}`,
         `A ${pct(rollup.availability, 0)}`,
         `P ${pct(rollup.performance, 0)}`,
         `Q ${pct(rollup.quality, 1)}`,
@@ -817,9 +840,9 @@ function fillDayCells(row, byKey, range) {
             return;
         }
 
-        cell.textContent = pct(value.oee, 0);
+        cell.textContent = oeePct(value.oee);
         setBand(cell, value.oee);
-        const lines = [`${when}: ${pct(value.oee)} OEE over ${value.counted} of ${total} ` +
+        const lines = [`${when}: ${oeePct(value.oee)} OEE over ${value.counted} of ${total} ` +
             `shift${total === 1 ? "" : "s"}.`];
         if (value.thin) {
             cell.setAttribute("data-warned", "");
@@ -828,7 +851,7 @@ function fillDayCells(row, byKey, range) {
         if (shownShift() === ALL_SHIFTS) {
             for (const label of SHIFT_ORDER) {
                 const one = byKey[label].columns[index];
-                const text = one.oee !== null ? pct(one.oee)
+                const text = one.oee !== null ? oeePct(one.oee)
                     : one.left_out ? "left out" : "—";
                 lines.push(`   ${shortShift(label)}: ${text}`);
             }
@@ -849,14 +872,14 @@ function renderFloorDays(range) {
             ? weekday(column.start)
             : `${monthDay(column.start)}–${monthDay(column.end)}`;
         const total = value.counted + value.left_out;
-        const shown = value.oee !== null ? Math.round(value.oee * 100) : total ? "!" : "—";
+        const shown = value.oee !== null ? oeePoints(value.oee) : total ? "!" : "—";
         item.textContent = `${label} ${shown}`;
         setBand(item, value.oee);
         if (value.oee === null && total) item.setAttribute("data-band", "poor");
         item.title = column.before_tracking
             ? `${columnPhrase(column)}: before OEE tracking began`
             : value.oee !== null
-                ? `${columnPhrase(column)}: ${pct(value.oee)} over ${value.counted} of ${total} machine-shifts`
+                ? `${columnPhrase(column)}: ${oeePct(value.oee)} over ${value.counted} of ${total} machine-shifts`
                 : total
                     ? `${columnPhrase(column)}: every machine-shift left out (${value.left_out})`
                     : `${columnPhrase(column)}: nothing entered`;
@@ -906,13 +929,13 @@ function fillRangeRow(row, byKey, range) {
         return;
     }
 
-    const cell = set("oee", pct(current.oee));
+    const cell = set("oee", oeePct(current.oee));
     setBand(cell, current.oee);
     const change = changeBadge(group);
     if (change) cell.appendChild(change);
     if (shift === ALL_SHIFTS) cell.appendChild(byShiftLine(byKey));
     const title = [
-        `${pct(current.oee)} OEE over ${group.counted} counted shift${group.counted === 1 ? "" : "s"}, ` +
+        `${oeePct(current.oee)} OEE over ${group.counted} counted shift${group.counted === 1 ? "" : "s"}, ` +
         `${periodPhrase(range)}.`,
         changeTitle(group, range),
     ];
@@ -966,7 +989,7 @@ function fillRangeZone(section, range) {
 
     const current = group.current;
     target.textContent = [
-        `OEE ${pct(current.oee)}`,
+        `OEE ${oeePct(current.oee)}`,
         `A ${pct(current.availability, 0)}`,
         `P ${pct(current.performance, 0)}`,
         `Q ${pct(current.quality, 1)}`,
@@ -1019,7 +1042,7 @@ function renderFloorTotal(range) {
     }
 
     const current = group.current;
-    floorTotalOee.textContent = `OEE ${pct(current.oee)}`;
+    floorTotalOee.textContent = `OEE ${oeePct(current.oee)}`;
     setBand(floorTotalOee, current.oee);
     const change = changeBadge(group);
     if (change) floorTotalOee.appendChild(change);
